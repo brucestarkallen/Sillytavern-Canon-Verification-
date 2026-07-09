@@ -913,63 +913,83 @@ async function addSettingsUI() {
                     <input id="cg_enabled" type="checkbox">
                     <span>Enabled</span>
                 </label>
+                <small class="cg-hint">Master switch. Off = no grounding and nothing injected.</small>
                 <hr>
-                <small><b>What to ground:</b></small>
+                <small><b>What to ground</b> — which kinds of canon facts to inject:</small>
                 <label class="checkbox_label">
                     <input id="cg_physical" type="checkbox">
                     <span>Physical (hair, eyes, appearance)</span>
                 </label>
+                <small class="cg-hint">Hair and eye color. Leanest and most useful — fixes wrong looks. Leave this on.</small>
                 <label class="checkbox_label">
                     <input id="cg_personality" type="checkbox">
                     <span>Personality</span>
                 </label>
+                <small class="cg-hint">How they behave. Adds a short paragraph of tokens.</small>
                 <label class="checkbox_label">
                     <input id="cg_relationship" type="checkbox">
                     <span>Relationships / family</span>
                 </label>
+                <small class="cg-hint">Parents, siblings, key ties. Good for stopping invented family.</small>
                 <label class="checkbox_label">
                     <input id="cg_biography" type="checkbox">
                     <span>Biography (role, background)</span>
                 </label>
+                <small class="cg-hint">Role, affiliation, backstory. Verbose — use only if needed.</small>
                 <label class="checkbox_label">
                     <input id="cg_abilities" type="checkbox">
                     <span>Powers &amp; Abilities</span>
                 </label>
+                <small class="cg-hint">Powers, skills, weapons. Verbose, and the model often half-knows these.</small>
                 <hr>
-                <label class="checkbox_label">
-                    <input id="cg_debug" type="checkbox">
-                    <span>Debug (show a toast for each lookup)</span>
-                </label>
-                <label class="checkbox_label">
-                    <input id="cg_replies" type="checkbox">
-                    <span>Also ground names from AI replies</span>
-                </label>
-                <label class="checkbox_label">
-                    <input id="cg_ledger" type="checkbox">
-                    <span>Use Summaryception ledger for the real cast (recommended)</span>
-                </label>
+                <small><b>How characters are found</b>:</small>
                 <label class="checkbox_label">
                     <input id="cg_llm" type="checkbox">
-                    <span>Use a fast LLM to pick names (best accuracy, adds a call when new names appear)</span>
+                    <span>Use a fast LLM to pick names (recommended)</span>
                 </label>
-                <label>Parser model (Connection Manager profile — blank = main model)</label>
+                <small class="cg-hint">Best accuracy. A model reads the current scene and decides what to look up — no false matches like "Current". Costs one small call, and only when a new name appears.</small>
+                <label>Parser model</label>
+                <small class="cg-hint">Which model the parser uses. Blank = your main chat model (simplest). For speed, pick a fast/cheap Connection Manager profile. ↻ refreshes the list.</small>
                 <div style="display:flex; gap:4px; align-items:center;">
                     <select id="cg_profile" class="text_pole" style="flex:1;"></select>
                     <div id="cg_profile_refresh" class="menu_button fa-solid fa-rotate" title="Refresh profiles"></div>
                 </div>
                 <label class="checkbox_label">
                     <input id="cg_llm_every" type="checkbox">
-                    <span>Run the parser every turn (turn on if you write names in lowercase)</span>
+                    <span>Run the parser every turn</span>
                 </label>
+                <small class="cg-hint">Off = only when a new capitalized name shows up (efficient). On = every turn — needed only if you write character names in lowercase. Pair with a fast model.</small>
+                <label class="checkbox_label">
+                    <input id="cg_ledger" type="checkbox">
+                    <span>Use Summaryception ledger (fallback if no parser)</span>
+                </label>
+                <small class="cg-hint">If you run Summaryception, use its character list. Only knows characters from earlier turns (its list builds after each reply), so it can't see brand-new ones — the LLM parser is better. Ignored when the parser is on.</small>
+                <label class="checkbox_label">
+                    <input id="cg_replies" type="checkbox">
+                    <span>Also ground names from AI replies</span>
+                </label>
+                <small class="cg-hint">Learn characters the AI introduces on its own. Only used in plain regex mode — the parser and ledger already cover this.</small>
+                <label class="checkbox_label">
+                    <input id="cg_debug" type="checkbox">
+                    <span>Debug toasts</span>
+                </label>
+                <small class="cg-hint">Pop-up for every lookup (found / miss / error) and the parser's picks. Turn on to see what's happening; off for normal play.</small>
+                <hr>
+                <small><b>Wiki</b> — where facts come from:</small>
                 <label>Wiki subdomains (comma-separated) — active for this story</label>
+                <small class="cg-hint">The part before .fandom.com for your story's wiki (e.g. the-eminence-in-shadow). Add several, comma-separated, for a crossover.</small>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
                 <div style="margin-top:4px;">
                     <input id="cg_save_wiki" class="menu_button" type="button" value="+ Save active to library">
                 </div>
+                <small class="cg-hint">Saves the current subdomain(s) as tap-to-use chips so you never retype them.</small>
                 <small>Saved wikis (tap to toggle in active, × to remove):</small>
                 <div id="cg_saved_wikis" class="cg-chips"></div>
+                <hr>
+                <small><b>Advanced</b> — where each category lives in the wiki. Defaults cover most wikis; edit only if a category comes up empty.</small>
                 <label>Physical fields (infobox)</label>
                 <input id="cg_fields" class="text_pole" type="text">
+                <small class="cg-hint">Infobox field names that hold appearance (matched loosely). Default: hair/eyes only.</small>
                 <label>Relationship keywords (infobox fields + sections)</label>
                 <input id="cg_relkw" class="text_pole" type="text">
                 <label>Biography keywords</label>
@@ -978,33 +998,43 @@ async function addSettingsUI() {
                 <input id="cg_perkw" class="text_pole" type="text">
                 <label>Powers &amp; abilities keywords</label>
                 <input id="cg_abikw" class="text_pole" type="text">
+                <small class="cg-hint">Words that tell the extension which infobox fields and section titles feed each category above.</small>
                 <label>Alias / nickname keywords (so "Alya" finds "Alisa")</label>
                 <input id="cg_aliaskw" class="text_pole" type="text">
+                <small class="cg-hint">Infobox fields that list a character's other names, so any nickname matches their full-name page.</small>
                 <label>Scene window (visible messages that count as "now")</label>
                 <input id="cg_window" class="text_pole" type="number" min="1" max="100">
-                <small><b>Size limits</b> (stop the prompt ballooning with a big cast):</small>
+                <small class="cg-hint">How many recent visible messages count as the current scene. A character stops injecting once their name scrolls past this many messages. Lower = drops off-screen characters faster.</small>
+                <hr>
+                <small><b>Size limits</b> — hard caps so a big cast can't balloon the prompt:</small>
                 <label>Max characters injected at once</label>
                 <input id="cg_maxchars" class="text_pole" type="number" min="1" max="30">
+                <small class="cg-hint">Never inject more than this many at once (most recently mentioned win).</small>
                 <label>Max characters (text length) per character</label>
                 <input id="cg_maxper" class="text_pole" type="number" min="80" max="2000" step="50">
+                <small class="cg-hint">Length cap on each character's block. Lower = leaner, trims the wordy categories first.</small>
                 <label>Max total length for the whole canon block</label>
                 <input id="cg_maxtotal" class="text_pole" type="number" min="200" max="20000" step="100">
+                <small class="cg-hint">Overall cap on the whole note. Roughly 4 characters ≈ 1 token (so 2400 ≈ 600 tokens).</small>
                 <div style="margin-top:4px;">
                     <input id="cg_reset_kw" class="menu_button" type="button" value="Reset fields &amp; keywords to defaults">
                 </div>
+                <small class="cg-hint">Restores the field/keyword boxes above to defaults. Clear the cache afterwards so entries re-fetch.</small>
                 <hr>
-                <small><b>Cache</b> — what's grounded (× removes one, so it re-fetches):</small>
+                <small><b>Cache</b> — everything grounded so far:</small>
                 <div id="cg_cache_list" class="cg-cache"></div>
+                <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry.</small>
                 <div style="margin-top:6px;">
                     <input id="cg_refresh" class="menu_button" type="button" value="Refresh">
                     <input id="cg_clear" class="menu_button" type="button" value="Clear all">
                 </div>
                 <hr>
-                <small><b>Last injection</b> <span id="cg_inject_time" class="cg-empty"></span> — exactly what was added to the prompt:</small>
+                <small><b>Last injection</b> <span id="cg_inject_time" class="cg-empty"></span></small>
                 <pre id="cg_last_inject" class="cg-inject"></pre>
-                <small>Why each was injected (which name matched, and where):</small>
+                <small class="cg-hint">The exact text sent to the model last turn. The line above shows its rough token size and whether the cast was chosen by the ledger or by name-matching. Tap Refresh to update after a message.</small>
+                <small><b>Why each was injected</b>:</small>
                 <div id="cg_why" class="cg-why"></div>
-                <small>Facts are fetched once per character and cached across sessions.</small>
+                <small class="cg-hint">For each injected character, which of their names matched and where — if something wrong shows up, this tells you why.</small>
             </div>
         </div>
     </div>`;
