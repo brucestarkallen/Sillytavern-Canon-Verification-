@@ -91,6 +91,13 @@ function settings() {
             extension_settings[MODULE_NAME][k] = structuredClone(defaultSettings[k]);
         }
     }
+    // One-time migration: early versions defaulted physical fields to a broad list
+    // (height/age/race/gender) that pulled noise. If the saved value is exactly that
+    // old default (i.e. never customized), quietly move it to the new hair/eyes-only.
+    const OLD_FIELDS = "hair,haircolor,hair color,eyes,eye color,eyecolor,height,age,race,species,gender";
+    if (extension_settings[MODULE_NAME].fields === OLD_FIELDS) {
+        extension_settings[MODULE_NAME].fields = defaultSettings.fields;
+    }
     return extension_settings[MODULE_NAME];
 }
 
@@ -242,38 +249,6 @@ async function fetchExtract(wiki, title) {
     return first?.extract || "";
 }
 
-/** Extract the configured physical fields from an infobox block in wikitext. */
-function extractFacts(wikitext, fieldList) {
-    if (!wikitext) return "";
-    const wanted = fieldList.split(",").map(f => f.trim().toLowerCase()).filter(Boolean);
-    const found = [];
-    const seen = new Set();
-    // Match |field = value lines (infobox params).
-    const re = /\|\s*([A-Za-z][A-Za-z0-9 _-]*?)\s*=\s*([^\n|]+)/g;
-    let m;
-    while ((m = re.exec(wikitext)) !== null) {
-        const key = m[1].trim().toLowerCase();
-        if (!wanted.includes(key)) continue;
-        let val = m[2].trim();
-        // Clean common wiki markup.
-        val = val.replace(/\[\[([^\]|]*\|)?([^\]]+)\]\]/g, "$2") // [[link|text]] -> text
-                 .replace(/'''?/g, "")
-                 .replace(/<[^>]+>/g, "")
-                 .replace(/\{\{[^}]*\}\}/g, "")
-                 .replace(/\s+/g, " ")
-                 .trim();
-        if (!val || seen.has(key)) continue;
-        // Reject infobox image-sizing / file / bare-number values (e.g. "250px",
-        // "Sherry.png", "3") that are not real appearance descriptors.
-        if (/^\d+\s*px$/i.test(val) || /\.(png|jpe?g|gif|webp|svg)$/i.test(val) || /^\d+$/.test(val)) continue;
-        seen.add(key);
-        // Normalize key for display (collapse the hair/haircolor variants).
-        const label = key.replace(/colou?r/, "").trim() || key;
-        found.push(`${label}: ${val}`);
-    }
-    return found.join("; ");
-}
-
 // Words to strip when reading a descriptor out of prose.
 const PROSE_STOP = new Set([
     "with", "and", "a", "an", "the", "her", "his", "long", "short", "girl",
@@ -420,7 +395,9 @@ async function ensureGrounded(name) {
             const wikitext = await fetchWikitext(wiki, title);
 
             // Physical: infobox hair/eyes, else prose appearance.
-            let physical = extractFacts(wikitext, s.fields);
+            // Physical: infobox hair/eyes (robust extractor handles piped links and
+            // <br> lists), else prose appearance with the "pink hair and eyes" handling.
+            let physical = extractInfoboxFields(wikitext, s.fields.split(","));
             if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
 
             // For the other categories, look in BOTH infobox fields and prose sections,
@@ -751,6 +728,9 @@ async function addSettingsUI() {
                 <input id="cg_maxper" class="text_pole" type="number" min="80" max="2000" step="50">
                 <label>Max total length for the whole canon block</label>
                 <input id="cg_maxtotal" class="text_pole" type="number" min="200" max="20000" step="100">
+                <div style="margin-top:4px;">
+                    <input id="cg_reset_kw" class="menu_button" type="button" value="Reset fields &amp; keywords to defaults">
+                </div>
                 <hr>
                 <small><b>Cache</b> — what's grounded (× removes one, so it re-fetches):</small>
                 <div id="cg_cache_list" class="cg-cache"></div>
@@ -818,6 +798,19 @@ async function addSettingsUI() {
     numHandler("#cg_maxchars", "maxCharacters", 1, 6);
     numHandler("#cg_maxper", "maxCharsPerChar", 80, 400);
     numHandler("#cg_maxtotal", "maxTotalChars", 200, 2400);
+
+    $("#cg_reset_kw").on("click", function () {
+        for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords"]) {
+            s[k] = defaultSettings[k];
+        }
+        $("#cg_fields").val(s.fields);
+        $("#cg_relkw").val(s.relationshipKeywords);
+        $("#cg_biokw").val(s.biographyKeywords);
+        $("#cg_perkw").val(s.personalityKeywords);
+        $("#cg_abikw").val(s.abilitiesKeywords);
+        saveSettingsDebounced();
+        toastr?.info?.("Fields & keywords reset. Clear the cache to re-fetch with the new fields.");
+    });
 
     // Keep the active field and the saved-wiki highlights in sync.
     $("#cg_wikis").off("input").on("input", function () {
