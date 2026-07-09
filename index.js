@@ -40,6 +40,12 @@ const defaultSettings = {
     // Which infobox fields count as "physical" facts. Kept to hair/eyes on purpose:
     // other fields (height, age) collide with infobox image-sizing params and add noise.
     fields: "hair,haircolor,hair color,eyes,eye color,eyecolor",
+    // Keyword lists that say WHERE each category lives — matched against BOTH infobox
+    // field names (e.g. "Relatives") AND prose section headers (e.g. "== History =="),
+    // so family that sits in an infobox field is found, not just prose. Editable below.
+    relationshipKeywords: "relatives,relationships,relations,family,parents,father,mother,spouse,children,siblings,partner",
+    biographyKeywords: "history,background,biography,backstory,occupation,affiliation,status,race,origin,residence,alias",
+    personalityKeywords: "personality,character,traits,temperament",
     // What KIND of canon to ground and inject. Physical is on by default; the others
     // are opt-in because they inject prose and can make the model more rigid.
     physical: true,       // appearance: hair, eyes, look
@@ -300,19 +306,48 @@ function extractFromProse(text) {
 function cleanWikitext(wt) {
     if (!wt) return "";
     let s = wt;
-    for (let i = 0; i < 4; i++) s = s.replace(/\{\{[^{}]*\}\}/g, ""); // templates (nested)
+    // Convert links to their text BEFORE removing templates, so names inside list
+    // templates (e.g. a Relatives field) survive.
+    s = s.replace(/\[\[[^\]|]*\|([^\]]+)\]\]/g, "$1").replace(/\[\[([^\]]+)\]\]/g, "$1");
+    s = s.replace(/<br\s*\/?>/gi, ", ");
+    // Keep the content of common list templates instead of deleting them.
+    s = s.replace(/\{\{\s*(?:plainlist|unbulleted list|ubl|flatlist|hlist|bulleted list|cslist)\s*\|([\s\S]*?)\}\}/gi, "$1");
+    for (let i = 0; i < 4; i++) s = s.replace(/\{\{[^{}]*\}\}/g, ""); // remaining templates (nested)
     return s
         .replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "")
         .replace(/<ref[^>]*\/>/gi, "")
         .replace(/<[^>]+>/g, "")
-        .replace(/\[\[[^\]|]*\|([^\]]+)\]\]/g, "$1") // [[link|text]] -> text
-        .replace(/\[\[([^\]]+)\]\]/g, "$1")          // [[link]] -> link
         .replace(/'''?/g, "")
         .replace(/^[\s*#:;]+/gm, "")
         .replace(/\[\d+\]/g, "")
         .replace(/={2,}[^=]+={2,}/g, "")             // stray sub-headers
+        .replace(/\s*,\s*,\s*/g, ", ")               // collapse empty list items
         .replace(/\s+/g, " ")
+        .replace(/^[,;\s]+|[,;\s]+$/g, "")
         .trim();
+}
+
+/** Extract infobox fields whose NAME contains any of the given keywords. */
+function extractInfoboxFields(wikitext, keywords, maxLen = 320) {
+    if (!wikitext) return "";
+    const kw = keywords.map(k => k.trim().toLowerCase()).filter(Boolean);
+    const out = [];
+    const seen = new Set();
+    // |Field = value, where value runs until the next "\n|" param or the "\n}}" close.
+    const re = /\n\|\s*([A-Za-z][A-Za-z0-9 _()'-]*?)\s*=\s*([\s\S]*?)(?=\n\s*\||\n\s*\}\})/g;
+    let m;
+    const src = "\n" + wikitext;
+    while ((m = re.exec(src)) !== null) {
+        const rawKey = m[1].trim();
+        const key = rawKey.toLowerCase();
+        if (!kw.some(k => key.includes(k))) continue;
+        const val = cleanWikitext(m[2]);
+        if (!val || seen.has(key)) continue;
+        if (/^\d+\s*px$/i.test(val) || /\.(png|jpe?g|gif|webp|svg)$/i.test(val) || /^\d+$/.test(val)) continue;
+        seen.add(key);
+        out.push(`${rawKey}: ${val}`);
+    }
+    return out.join("; ").slice(0, maxLen);
 }
 
 /** Return the body of the first section whose title matches one of `titles`. */
@@ -371,12 +406,28 @@ async function ensureGrounded(name) {
             let physical = extractFacts(wikitext, s.fields);
             if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
 
+            // For the other categories, look in BOTH infobox fields and prose sections,
+            // using the keyword lists — so family in an infobox "Relatives" field is found.
+            const relKw = s.relationshipKeywords.split(",");
+            const bioKw = s.biographyKeywords.split(",");
+            const perKw = s.personalityKeywords.split(",");
+
+            const join = (...parts) => parts.filter(Boolean).join(" — ");
+
             const sections = {
                 physical,
-                personality: extractSection(wikitext, ["personality", "character", "traits"]),
-                relationship: extractSection(wikitext, ["relationships", "relations", "family"]),
-                biography: extractSection(wikitext, ["history", "background", "biography", "backstory"])
-                           || extractLead(wikitext),
+                personality: join(
+                    extractInfoboxFields(wikitext, perKw),
+                    extractSection(wikitext, perKw)
+                ),
+                relationship: join(
+                    extractInfoboxFields(wikitext, relKw),
+                    extractSection(wikitext, relKw)
+                ),
+                biography: join(
+                    extractInfoboxFields(wikitext, bioKw),
+                    extractSection(wikitext, bioKw)
+                ) || extractLead(wikitext),
             };
 
             const anything = Object.values(sections).some(Boolean);
@@ -552,9 +603,15 @@ async function addSettingsUI() {
                     <span>Also ground names from AI replies</span>
                 </label>
                 <label>Wiki subdomains (comma-separated)</label>
-                <input id="cg_wikis" class="text_pole" type="text" placeholder="eminence-in-shadow,dc">
-                <label>Physical fields to ground</label>
+                <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
+                <label>Physical fields (infobox)</label>
                 <input id="cg_fields" class="text_pole" type="text">
+                <label>Relationship keywords (infobox fields + sections)</label>
+                <input id="cg_relkw" class="text_pole" type="text">
+                <label>Biography keywords</label>
+                <input id="cg_biokw" class="text_pole" type="text">
+                <label>Personality keywords</label>
+                <input id="cg_perkw" class="text_pole" type="text">
                 <div style="margin-top:6px;">
                     <input id="cg_clear" class="menu_button" type="button" value="Clear cached canon">
                 </div>
@@ -584,6 +641,15 @@ async function addSettingsUI() {
     });
     $("#cg_fields").val(s.fields).on("input", function () {
         s.fields = String($(this).val()); saveSettingsDebounced();
+    });
+    $("#cg_relkw").val(s.relationshipKeywords).on("input", function () {
+        s.relationshipKeywords = String($(this).val()); saveSettingsDebounced();
+    });
+    $("#cg_biokw").val(s.biographyKeywords).on("input", function () {
+        s.biographyKeywords = String($(this).val()); saveSettingsDebounced();
+    });
+    $("#cg_perkw").val(s.personalityKeywords).on("input", function () {
+        s.personalityKeywords = String($(this).val()); saveSettingsDebounced();
     });
     $("#cg_clear").on("click", function () {
         s.cache = {}; saveSettingsDebounced();
