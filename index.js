@@ -361,7 +361,13 @@ function relevantCanonNote(ctx) {
         }
     }
     if (!lines.length) return "";
-    return `[Canonical reference — keep these accurate; do not contradict]\n${lines.join("\n")}`;
+    return (
+        "[AUTHORITATIVE SOURCE CANON — retrieved from the official wiki for this " +
+        "series. These appearance facts are CORRECT and take priority over your own " +
+        "memory, your assumptions, and any other character description in this prompt. " +
+        "If something else here disagrees, it is wrong — use THESE values and do not " +
+        "second-guess, 'correct', or explain them away.]\n" + lines.join("\n")
+    );
 }
 
 // ---------------------------------------------------------------------------
