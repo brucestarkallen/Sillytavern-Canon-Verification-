@@ -40,16 +40,21 @@ const defaultSettings = {
     // Which infobox fields count as "physical" facts. Kept to hair/eyes on purpose:
     // other fields (height, age) collide with infobox image-sizing params and add noise.
     fields: "hair,haircolor,hair color,eyes,eye color,eyecolor",
+    // What KIND of canon to ground and inject. Physical is on by default; the others
+    // are opt-in because they inject prose and can make the model more rigid.
+    physical: true,       // appearance: hair, eyes, look
+    personality: false,   // temperament / how they behave
+    relationship: false,  // family and key connections (helps correct invented parents)
+    biography: false,     // role, affiliation, background
     // How many recent messages to consider when deciding which cached entities
     // are currently relevant enough to inject.
     contextWindow: 6,
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
-    // When on, also grounds names found in the AI's OWN replies. Default OFF so the
-    // extension never chases the model's hallucinated/invented names — it only grounds
-    // characters YOU name. Turn on if you want model-introduced characters grounded too.
-    groundFromReplies: false,
-    // cache: { "lower name": { name, facts, aliases:[], wiki, found:bool, ts } }
+    // When on, grounds names found in the AI's replies too (not just yours), so
+    // characters the AI introduces into a scene get grounded. On by default.
+    groundFromReplies: true,
+    // cache: { "lower name": { name, sections:{physical,personality,relationship,biography}, wiki, found, ts } }
     cache: {},
 };
 
@@ -288,6 +293,55 @@ function extractFromProse(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Wikitext section extraction (for personality / relationships / biography)
+// ---------------------------------------------------------------------------
+
+/** Strip common wiki markup down to readable prose. */
+function cleanWikitext(wt) {
+    if (!wt) return "";
+    let s = wt;
+    for (let i = 0; i < 4; i++) s = s.replace(/\{\{[^{}]*\}\}/g, ""); // templates (nested)
+    return s
+        .replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "")
+        .replace(/<ref[^>]*\/>/gi, "")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\[\[[^\]|]*\|([^\]]+)\]\]/g, "$1") // [[link|text]] -> text
+        .replace(/\[\[([^\]]+)\]\]/g, "$1")          // [[link]] -> link
+        .replace(/'''?/g, "")
+        .replace(/^[\s*#:;]+/gm, "")
+        .replace(/\[\d+\]/g, "")
+        .replace(/={2,}[^=]+={2,}/g, "")             // stray sub-headers
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+/** Return the body of the first section whose title matches one of `titles`. */
+function extractSection(wikitext, titles, maxLen = 350) {
+    if (!wikitext) return "";
+    // Split before any line that starts a header (== ... ==).
+    const chunks = wikitext.split(/\n(?==={1,4}[^=])/);
+    const want = titles.map(t => t.toLowerCase());
+    for (const chunk of chunks) {
+        const m = chunk.match(/^=+\s*(.+?)\s*=+\s*\n([\s\S]*)$/);
+        if (!m) continue;
+        const title = m[1].trim().toLowerCase();
+        if (want.some(w => title === w || title.includes(w))) {
+            const body = cleanWikitext(m[2]);
+            if (body) return body.length > maxLen ? body.slice(0, maxLen).replace(/\s+\S*$/, "") + "…" : body;
+        }
+    }
+    return "";
+}
+
+/** Lead (intro) paragraph of the article, before the first section header. */
+function extractLead(wikitext, maxLen = 300) {
+    if (!wikitext) return "";
+    const lead = wikitext.split(/\n=={1,4}[^=]/)[0] || "";
+    const body = cleanWikitext(lead);
+    return body.length > maxLen ? body.slice(0, maxLen).replace(/\s+\S*$/, "") + "…" : body;
+}
+
+// ---------------------------------------------------------------------------
 // Grounding: fetch + cache a single entity (once, ever)
 // ---------------------------------------------------------------------------
 
@@ -297,7 +351,7 @@ async function ensureGrounded(name) {
     const s = settings();
     const key = name.toLowerCase();
     const existing = s.cache[key];
-    if (existing) {
+    if (existing && existing.sections) {
         if (existing.found) return existing;                       // already grounded
         if (Date.now() - existing.ts < NEGATIVE_TTL) return existing; // genuine recent miss
     }
@@ -310,16 +364,31 @@ async function ensureGrounded(name) {
         try {
             const title = await findPageTitle(wiki, name);
             if (!title) continue; // no such page on this wiki — a real miss, not an error
-            let facts = extractFacts(await fetchWikitext(wiki, title), s.fields);
-            if (!facts) facts = extractFromProse(await fetchExtract(wiki, title));
-            if (facts) {
-                s.cache[key] = { name: title, facts, aliases: [], wiki, found: true, ts: Date.now() };
+
+            const wikitext = await fetchWikitext(wiki, title);
+
+            // Physical: infobox hair/eyes, else prose appearance.
+            let physical = extractFacts(wikitext, s.fields);
+            if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
+
+            const sections = {
+                physical,
+                personality: extractSection(wikitext, ["personality", "character", "traits"]),
+                relationship: extractSection(wikitext, ["relationships", "relations", "family"]),
+                biography: extractSection(wikitext, ["history", "background", "biography", "backstory"])
+                           || extractLead(wikitext),
+            };
+
+            const anything = Object.values(sections).some(Boolean);
+            if (anything) {
+                s.cache[key] = { name: title, sections, wiki, found: true, ts: Date.now() };
                 saveSettingsDebounced();
-                debug(`✓ ${title} → ${facts}`);
+                const got = Object.entries(sections).filter(([, v]) => v).map(([k]) => k).join(", ");
+                debug(`✓ ${title} → ${physical || "(no appearance)"} [have: ${got}]`);
                 return s.cache[key];
             }
             pageFoundNoFacts = true;
-            debug(`⚠ found page "${title}" on ${wiki} but no hair/eye facts in infobox or prose`);
+            debug(`⚠ found page "${title}" on ${wiki} but no usable sections`);
         } catch (err) {
             hadError = true;
             debug(`✕ fetch error for "${name}" on ${wiki}: ${err.message}`);
@@ -327,14 +396,13 @@ async function ensureGrounded(name) {
     }
 
     // Only persist a "not found" when we actually searched cleanly and the wiki
-    // has no page. Transient errors and extraction gaps are NOT locked in, so the
-    // next mention retries instead of being stuck for 24h.
+    // has no page. Transient errors and extraction gaps are NOT locked in.
     if (!hadError && !pageFoundNoFacts) {
-        s.cache[key] = { name, facts: "", aliases: [], wiki: null, found: false, ts: Date.now() };
+        s.cache[key] = { name, sections: {}, wiki: null, found: false, ts: Date.now() };
         saveSettingsDebounced();
         debug(`✕ no wiki page found for "${name}" on: ${s.wikis}`);
     }
-    return s.cache[key] || { name, facts: "", found: false };
+    return s.cache[key] || { name, sections: {}, found: false };
 }
 
 async function groundNames(names) {
@@ -355,22 +423,34 @@ function recentText(ctx, windowSize) {
 function relevantCanonNote(ctx) {
     const s = settings();
     const text = recentText(ctx, s.contextWindow).toLowerCase();
-    const lines = [];
+    const labels = {
+        physical: "Appearance",
+        personality: "Personality",
+        relationship: "Relationships",
+        biography: "Background",
+    };
+    const blocks = [];
     for (const key of Object.keys(s.cache)) {
         const entry = s.cache[key];
-        if (!entry.found || !entry.facts) continue;
-        const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())];
-        if (names.some(n => n && text.includes(n))) {
-            lines.push(`- ${entry.name} — ${entry.facts}`);
+        if (!entry.found || !entry.sections) continue;
+        const names = [entry.name.toLowerCase(), key];
+        if (!names.some(n => n && text.includes(n))) continue;
+
+        const lines = [];
+        for (const cat of ["physical", "personality", "relationship", "biography"]) {
+            if (s[cat] && entry.sections[cat]) {
+                lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
+            }
         }
+        if (lines.length) blocks.push(`${entry.name}:\n${lines.join("\n")}`);
     }
-    if (!lines.length) return "";
+    if (!blocks.length) return "";
     return (
         "[AUTHORITATIVE SOURCE CANON — retrieved from the official wiki for this " +
-        "series. These appearance facts are CORRECT and take priority over your own " +
-        "memory, your assumptions, and any other character description in this prompt. " +
-        "If something else here disagrees, it is wrong — use THESE values and do not " +
-        "second-guess, 'correct', or explain them away.]\n" + lines.join("\n")
+        "series. These facts are CORRECT and take priority over your own memory, your " +
+        "assumptions, and any other description in this prompt. If something else here " +
+        "disagrees, it is wrong — use THESE and do not second-guess, 'correct', or " +
+        "invent alternatives.]\n" + blocks.join("\n")
     );
 }
 
@@ -444,13 +524,32 @@ async function addSettingsUI() {
                     <input id="cg_enabled" type="checkbox">
                     <span>Enabled</span>
                 </label>
+                <hr>
+                <small><b>What to ground:</b></small>
+                <label class="checkbox_label">
+                    <input id="cg_physical" type="checkbox">
+                    <span>Physical (hair, eyes, appearance)</span>
+                </label>
+                <label class="checkbox_label">
+                    <input id="cg_personality" type="checkbox">
+                    <span>Personality</span>
+                </label>
+                <label class="checkbox_label">
+                    <input id="cg_relationship" type="checkbox">
+                    <span>Relationships / family</span>
+                </label>
+                <label class="checkbox_label">
+                    <input id="cg_biography" type="checkbox">
+                    <span>Biography (role, background)</span>
+                </label>
+                <hr>
                 <label class="checkbox_label">
                     <input id="cg_debug" type="checkbox">
                     <span>Debug (show a toast for each lookup)</span>
                 </label>
                 <label class="checkbox_label">
                     <input id="cg_replies" type="checkbox">
-                    <span>Also ground names from AI replies (off = only names you type)</span>
+                    <span>Also ground names from AI replies</span>
                 </label>
                 <label>Wiki subdomains (comma-separated)</label>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="eminence-in-shadow,dc">
@@ -469,6 +568,11 @@ async function addSettingsUI() {
     $("#cg_enabled").prop("checked", s.enabled).on("input", function () {
         s.enabled = $(this).prop("checked"); saveSettingsDebounced();
     });
+    for (const cat of ["physical", "personality", "relationship", "biography"]) {
+        $(`#cg_${cat}`).prop("checked", s[cat]).on("input", function () {
+            s[cat] = $(this).prop("checked"); saveSettingsDebounced();
+        });
+    }
     $("#cg_debug").prop("checked", s.debug).on("input", function () {
         s.debug = $(this).prop("checked"); saveSettingsDebounced();
     });
