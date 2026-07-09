@@ -37,6 +37,7 @@ const MODULE_NAME = "canon_grounding";
 let lastInjection = "";
 let lastInjectionAt = 0;
 let lastMatchReasons = [];  // why each injected character was considered "present"
+let parsedWords = new Set(); // lowercased candidate words already shown to the LLM parser
 
 const defaultSettings = {
     enabled: true,
@@ -80,6 +81,10 @@ const defaultSettings = {
     // it only fires when a potentially-new name appears, so a settled cast costs nothing.
     llmParser: false,
     llmProfileId: "",   // Connection Manager profile for the fast model ("" = main model)
+    // When on, run the parser EVERY turn (needed if you write character names in
+    // lowercase, since the cheap "new capitalized word" gate can't see those). When
+    // off, the gate only calls the model when a genuinely new name appears.
+    parserEveryTurn: false,
     // When on, use Summaryception's LLM-built ledger (if present) as the authoritative
     // list of REAL characters — so only genuine cast get grounded/injected, not regex
     // junk. Falls back to name detection when no ledger is available.
@@ -764,13 +769,25 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const lgNames = ledgerNames();
 
         if (s.llmParser) {
-            // Primary path: a fast model reads THIS scene and names the characters —
-            // real-time and clean (no "Current"/"Steam"). Only call it when a capitalized
-            // word appears that we haven't already grounded/tried, so a settled cast is free.
+            // Primary path: a fast model reads THIS scene and names the characters.
+            // Deciding WHEN to call it:
+            //  - "every turn" mode: always (needed if you write names in lowercase, or
+            //    just want max accuracy — pair with a fast profile).
+            //  - default gate: call only when a capitalized word appears that we have
+            //    NOT already shown the model. We remember every word we've parsed (not
+            //    just grounded ones), so recurring non-characters like "Mitsugoshi"
+            //    don't re-fire forever — the parser settles once the scene is stable.
+            let shouldParse = s.parserEveryTurn;
             const quick = extractCandidateNames(sceneText);
-            const hasNew = quick.some(n => !s.cache[n.toLowerCase()]);
-            if (hasNew) {
+            if (!shouldParse) {
+                shouldParse = quick.some(n => {
+                    const lc = n.toLowerCase();
+                    return !parsedWords.has(lc) && !s.cache[lc];
+                });
+            }
+            if (shouldParse) {
                 const cast = await parseSceneCharacters(sceneText);
+                for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
                 if (cast.length) {
                     debug(`LLM parser → ${cast.join(", ")}`);
                     await groundNames(cast);
@@ -897,6 +914,10 @@ async function addSettingsUI() {
                     <select id="cg_profile" class="text_pole" style="flex:1;"></select>
                     <div id="cg_profile_refresh" class="menu_button fa-solid fa-rotate" title="Refresh profiles"></div>
                 </div>
+                <label class="checkbox_label">
+                    <input id="cg_llm_every" type="checkbox">
+                    <span>Run the parser every turn (turn on if you write names in lowercase)</span>
+                </label>
                 <label>Wiki subdomains (comma-separated) — active for this story</label>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
                 <div style="margin-top:4px;">
@@ -980,6 +1001,9 @@ async function addSettingsUI() {
         s.llmProfileId = String($(this).val()); saveSettingsDebounced();
     });
     $("#cg_profile_refresh").on("click", fillProfiles);
+    $("#cg_llm_every").prop("checked", s.parserEveryTurn).on("input", function () {
+        s.parserEveryTurn = $(this).prop("checked"); saveSettingsDebounced();
+    });
     $("#cg_wikis").val(s.wikis).on("input", function () {
         s.wikis = String($(this).val()); saveSettingsDebounced();
     });
