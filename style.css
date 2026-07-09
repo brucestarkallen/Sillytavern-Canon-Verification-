@@ -60,3 +60,17 @@
 .cg-cache-x:hover { opacity: 1; }
 
 .cg-empty { opacity: 0.5; font-size: 0.85em; }
+
+.cg-inject {
+    max-height: 200px;
+    overflow-y: auto;
+    margin: 4px 0;
+    padding: 6px 8px;
+    font-size: 0.8em;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: rgba(128, 128, 128, 0.1);
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 6px;
+}

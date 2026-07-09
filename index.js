@@ -33,6 +33,10 @@ import { saveSettingsDebounced, eventSource, event_types } from "../../../../scr
 
 const MODULE_NAME = "canon_grounding";
 
+// What the extension injected on the most recent turn (for the settings display).
+let lastInjection = "";
+let lastInjectionAt = 0;
+
 const defaultSettings = {
     enabled: true,
     // Comma-separated Fandom subdomains to search, e.g. "the-eminence-in-shadow,dc".
@@ -557,6 +561,12 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // and overwhelm the model). sceneText excludes hidden turns and memory blocks.
         const ctx = getContext();
         const note = relevantCanonNote(sceneText(ctx, s.contextWindow));
+
+        // Record exactly what we injected this turn so it can be shown in settings.
+        lastInjection = note || "";
+        lastInjectionAt = Date.now();
+        renderLastInjection();
+
         if (note) {
             const injected = {
                 is_user: false,
@@ -665,6 +675,9 @@ async function addSettingsUI() {
                     <input id="cg_refresh" class="menu_button" type="button" value="Refresh">
                     <input id="cg_clear" class="menu_button" type="button" value="Clear all">
                 </div>
+                <hr>
+                <small><b>Last injection</b> <span id="cg_inject_time" class="cg-empty"></span> — exactly what was added to the prompt:</small>
+                <pre id="cg_last_inject" class="cg-inject"></pre>
                 <small>Facts are fetched once per character and cached across sessions.</small>
             </div>
         </div>
@@ -724,7 +737,10 @@ async function addSettingsUI() {
         renderSavedWikis();
     });
 
-    $("#cg_refresh").on("click", renderCacheList);
+    $("#cg_refresh").on("click", function () {
+        renderCacheList();
+        renderLastInjection();
+    });
     $("#cg_clear").on("click", function () {
         s.cache = {}; saveSettingsDebounced();
         renderCacheList();
@@ -733,6 +749,19 @@ async function addSettingsUI() {
 
     renderSavedWikis();
     renderCacheList();
+    renderLastInjection();
+}
+
+function renderLastInjection() {
+    const $el = $("#cg_last_inject");
+    if (!$el.length) return;
+    if (!lastInjection) {
+        $el.text("Nothing injected last turn (no grounded character was in the visible scene).");
+        $("#cg_inject_time").text("");
+        return;
+    }
+    $el.text(lastInjection);
+    $("#cg_inject_time").text(lastInjectionAt ? `at ${new Date(lastInjectionAt).toLocaleTimeString()}` : "");
 }
 
 // Toggle a saved subdomain in/out of the active field.
