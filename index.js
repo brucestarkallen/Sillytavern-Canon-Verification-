@@ -886,18 +886,35 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 }
             }
             // Inject the parser's present-cast (pronoun-proof), reused between gated runs.
-            cast = lastCast;
+            cast = lastCast ? [...lastCast] : [];
         } else if (lgNames) {
             // Ledger present → its real characters that are on-screen (named in the window).
             const sceneLower = sceneText.toLowerCase();
             cast = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
             if (cast.length) await groundNames(cast);
         } else {
-            // No parser, no ledger → regex fallback; injection uses the scene-scan (cast=null).
-            const lastUser = [...chat].reverse().find(m => m.is_user);
-            if (lastUser) {
-                const names = extractCandidateNames(lastUser.mes);
-                if (names.length) await groundNames(names);
+            // No parser, no ledger → regex fallback. Grounding of the user's names happens
+            // in the shared block below; injection then uses the scene-scan (cast stays null).
+        }
+
+        // A name the PLAYER typed always gets looked up, in any mode — the parser's
+        // judgment (or the ledger) can miss someone you ask about ("have you seen Mary?").
+        // Search those names directly; if they resolve and we're injecting by cast, put
+        // them FIRST so they aren't capped out. (Character-gated: only real character pages
+        // ground, so a stray capitalized word can't pollute anything.)
+        {
+            const lastUserMsg = ([...chat].reverse().find(m => m.is_user) || {}).mes || "";
+            const userNames = extractCandidateNames(lastUserMsg);
+            if (userNames.length) {
+                await groundNames(userNames);
+                if (cast) {
+                    const groundedUser = [];
+                    for (const n of userNames) {
+                        const hit = cacheEntryFor(n.toLowerCase());
+                        if (hit) groundedUser.push(hit.entry.name);
+                    }
+                    if (groundedUser.length) cast = [...new Set([...groundedUser, ...cast])];
+                }
             }
         }
 
