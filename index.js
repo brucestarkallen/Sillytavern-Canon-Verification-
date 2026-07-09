@@ -29,7 +29,7 @@
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
+import { saveSettingsDebounced, eventSource, event_types, chat_metadata } from "../../../../script.js";
 
 const MODULE_NAME = "canon_grounding";
 
@@ -51,7 +51,7 @@ const defaultSettings = {
     // templates (Marvel/DC/anime), so most wikis work with no editing. Editable below.
     relationshipKeywords: "relative,relations,family,parent,mother,father,sibling,brother,sister,spouse,wife,husband,child,marital,partner,ancestor,grandparent,descendant,love interest",
     biographyKeywords: "history,background,biography,backstory,origin,occupation,affiliation,alignment,status,alias,identity,citizenship,nationality,residence,base,birthplace,birthday,born,education,universe,reality,first appearance,rank,position,species,race",
-    personalityKeywords: "personality,character,temperament,traits",
+    personalityKeywords: "personality,temperament,disposition,demeanor",
     abilitiesKeywords: "power,abilities,ability,skill,technique,weapon,equipment,arsenal,strength,weakness,magic,quirk,devil fruit,semblance,jutsu,nen,stand",
     // Infobox fields that list a character's other names, so nicknames (e.g. "Alya"
     // for "Alisa Mikhailovna Kujou") match the same grounded entry automatically.
@@ -207,6 +207,14 @@ function apiBase(wiki) {
     return `https://${wiki.trim()}.fandom.com/api.php`;
 }
 
+/** Non-character / media / meta pages we should never ground as a character. */
+function isMediaTitle(t) {
+    if (!t) return true;
+    return /\((light novel|novel|anime|manga|manhwa|manhua|film|movie|ova|ona|web series|series|video game|game|soundtrack|album|song|volume|vol\.?|chapter|episode|arc|season|character|disambiguation|franchise)\)/i.test(t)
+        || /\b(disambiguation|list of|volume \d|episode \d|chapter \d)\b/i.test(t)
+        || String(t).includes("/"); // subpages
+}
+
 async function findPageTitle(wiki, name) {
     // 1) Exact-title lookup first. A character's page is almost always titled with
     //    their name, so this avoids search returning a subpage ("X/Relationships")
@@ -217,19 +225,21 @@ async function findPageTitle(wiki, name) {
         if (r.ok) {
             const d = await r.json();
             const p = Object.values(d?.query?.pages || {})[0];
-            if (p && p.pageid && !("missing" in p) && !String(p.title).includes("/")) {
+            if (p && p.pageid && !("missing" in p) && !isMediaTitle(p.title)) {
                 return p.title;
             }
         }
     } catch (e) { /* fall through to search */ }
 
-    // 2) Fall back to full-text search, preferring a non-subpage result.
-    const url = `${apiBase(wiki)}?action=query&list=search&srlimit=5&format=json&origin=*&srsearch=${encodeURIComponent(name)}`;
+    // 2) Fall back to full-text search, skipping media/meta/subpage results so a
+    //    character name resolves to the CHARACTER page, not the "(Light Novel)" or
+    //    "(Anime)" series pages that also match the query.
+    const url = `${apiBase(wiki)}?action=query&list=search&srlimit=8&format=json&origin=*&srsearch=${encodeURIComponent(name)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`search HTTP ${res.status}`);
     const hits = (await res.json())?.query?.search || [];
-    const main = hits.find(h => !String(h.title).includes("/"));
-    return main ? main.title : (hits[0] ? hits[0].title : null);
+    const good = hits.find(h => !isMediaTitle(h.title));
+    return good ? good.title : null; // if only media pages matched, treat as "not found"
 }
 
 async function fetchWikitext(wiki, title) {
@@ -336,7 +346,10 @@ function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
         const rawKey = m[1].trim();
         const key = rawKey.toLowerCase();
         if (!kw.some(k => key.includes(k))) continue;
-        const val = cleanWikitext(m[2]);
+        // Guard: on inline infoboxes the value regex can over-run into the next
+        // "| NextField =" on the same line — cut it off there.
+        let raw = m[2].split(/(?:^|[\s\n])\|\s*[A-Za-z][A-Za-z0-9 _()'-]*\s*=/)[0];
+        const val = cleanWikitext(raw);
         if (!val || seen.has(key)) continue;
         if (/^\d+\s*px$/i.test(val) || /\.(png|jpe?g|gif|webp|svg)$/i.test(val) || /^\d+$/.test(val)) continue;
         seen.add(key);
@@ -411,7 +424,21 @@ async function ensureGrounded(name) {
 
             const wikitext = await fetchWikitext(wiki, title);
 
-            // Physical: infobox hair/eyes, else prose appearance.
+            // Gate: is this actually a CHARACTER page? Series/media pages (Light Novel,
+            // Anime, franchise) have infobox fields like Author/Studio/Volumes, not
+            // Gender/Hair/Relatives — and no Personality/Relationships/Appearance section.
+            // Reject them so they never get grounded as a character.
+            const charSignal = extractInfoboxFields(wikitext,
+                ["gender", "age", "hair", "eye", "relatives", "species", "race", "affiliation",
+                 "occupation", "height", "birthday", "birthdate", "status", "spouse", "family",
+                 "blood", "voiced", "voice actor", "seiyu", "alias", "nickname"]);
+            const charSection = extractSection(wikitext, ["personality", "relationships", "appearance"], 40);
+            if (!charSignal && !charSection) {
+                debug(`⚠ "${title}" isn't a character page (no character fields) — skipped`);
+                pageFoundNoFacts = true;
+                continue;
+            }
+
             // Physical: infobox hair/eyes (robust extractor handles piped links and
             // <br> lists), else prose appearance with the "pink hair and eyes" handling.
             let physical = extractInfoboxFields(wikitext, s.fields.split(","));
@@ -521,11 +548,15 @@ function sceneMessages(ctx, windowSize) {
 function ledgerNames() {
     try {
         if (!settings().useLedger) return null;
-        const md = getContext().chatMetadata;
-        const ledger = md && md.summaryception && md.summaryception.ledger;
-        if (ledger && typeof ledger === "object" && !Array.isArray(ledger)) {
-            const keys = Object.keys(ledger);
-            if (keys.length) return keys;
+        // Try the context's metadata, then the imported global — either can be the
+        // live object Summaryception writes its ledger into, depending on ST version.
+        const sources = [getContext() && getContext().chatMetadata, chat_metadata];
+        for (const md of sources) {
+            const ledger = md && md.summaryception && md.summaryception.ledger;
+            if (ledger && typeof ledger === "object" && !Array.isArray(ledger)) {
+                const keys = Object.keys(ledger);
+                if (keys.length) return keys;
+            }
         }
     } catch (e) { /* Summaryception not present — fall back */ }
     return null;
