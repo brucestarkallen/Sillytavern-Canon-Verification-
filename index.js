@@ -54,9 +54,10 @@ const defaultSettings = {
     relationship: false,  // family and key connections (helps correct invented parents)
     biography: false,     // role, affiliation, background
     abilities: false,     // powers, skills, weapons
-    // How many recent messages to consider when deciding which cached entities
-    // are currently relevant enough to inject.
-    contextWindow: 6,
+    // How many recent VISIBLE messages count as "the current scene" for deciding who
+    // to inject. ~10 matches a setup that summarizes everything older. Higher = a
+    // character stays grounded longer after they stop being mentioned.
+    contextWindow: 10,
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
     // When on, grounds names found in the AI's replies too (not just yours), so
@@ -476,6 +477,28 @@ async function groundNames(names) {
 // Which cached entities are relevant to the current moment?
 // ---------------------------------------------------------------------------
 
+/**
+ * Text of the CURRENT scene only — used to decide who to inject. Deliberately
+ * excludes anything that would keep an off-screen character "present" forever:
+ *  - hidden/summarized turns (Summaryception /hide's them; they stay in chat as
+ *    is_system, so we skip is_system messages)
+ *  - the permanent memory/summary block and our own canon block (by marker)
+ * Summaryception's summary is a setExtensionPrompt injection (not a chat message),
+ * so it isn't in ctx.chat anyway — but we also guard by marker in case a summary
+ * is ever written as a visible message. Result: a name that merely lingers in the
+ * running summary does NOT trigger injection; only a character actually in the last
+ * few visible messages does. Leaves the scene → stops injecting; returns → instant
+ * re-inject from cache.
+ */
+function sceneText(ctx, windowSize) {
+    const chat = ctx.chat || [];
+    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[Canonical reference", "[Plot essential"];
+    const visible = chat.filter(m =>
+        !m.is_system && !markers.some(mk => (m.mes || "").includes(mk))
+    );
+    return visible.slice(-Math.max(1, windowSize)).map(m => m.mes || "").join("\n");
+}
+
 function relevantCanonNote(scanText) {
     const s = settings();
     const text = (scanText || "").toLowerCase();
@@ -527,11 +550,11 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             if (names.length) await groundNames(names);
         }
 
-        // Inject a compact note for every cached entity that appears ANYWHERE in the
-        // prompt being built — including a summary added by another extension — so a
-        // character kept alive in the summary stays grounded even after scrolling off.
-        const scanText = chat.map(m => m.mes || "").join("\n");
-        const note = relevantCanonNote(scanText);
+        // Inject only for characters ACTUALLY in the current visible scene — not for
+        // every name that lingers in the permanent summary (that would pile up forever
+        // and overwhelm the model). sceneText excludes hidden turns and memory blocks.
+        const ctx = getContext();
+        const note = relevantCanonNote(sceneText(ctx, s.contextWindow));
         if (note) {
             const injected = {
                 is_user: false,
@@ -626,6 +649,8 @@ async function addSettingsUI() {
                 <input id="cg_perkw" class="text_pole" type="text">
                 <label>Powers &amp; abilities keywords</label>
                 <input id="cg_abikw" class="text_pole" type="text">
+                <label>Scene window (visible messages that count as "now")</label>
+                <input id="cg_window" class="text_pole" type="number" min="1" max="100">
                 <div style="margin-top:6px;">
                     <input id="cg_clear" class="menu_button" type="button" value="Clear cached canon">
                 </div>
@@ -667,6 +692,11 @@ async function addSettingsUI() {
     });
     $("#cg_abikw").val(s.abilitiesKeywords).on("input", function () {
         s.abilitiesKeywords = String($(this).val()); saveSettingsDebounced();
+    });
+    $("#cg_window").val(s.contextWindow).on("input", function () {
+        const n = parseInt($(this).val(), 10);
+        s.contextWindow = Number.isFinite(n) && n > 0 ? n : 10;
+        saveSettingsDebounced();
     });
     $("#cg_clear").on("click", function () {
         s.cache = {}; saveSettingsDebounced();
