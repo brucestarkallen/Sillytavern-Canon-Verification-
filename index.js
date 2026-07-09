@@ -39,6 +39,7 @@ let lastInjectionAt = 0;
 let lastMatchReasons = [];  // why each injected character was considered "present"
 let parsedWords = new Set(); // lowercased candidate words already shown to the LLM parser
 let cgInFlight = false;      // guard: don't re-enter the interceptor during our own sub-generation
+let lastCast = [];          // entities the parser last judged present (reused between gated runs)
 const INJECT_KEY = "CANON_GROUNDING";
 
 const defaultSettings = {
@@ -619,16 +620,32 @@ function mentioned(name, lowerText) {
     }
 }
 
-function relevantCanonNote(sceneMsgs) {
+/** Find the cached, grounded entry for a name (by key, then title/alias). */
+function cacheEntryFor(nameLc) {
+    const s = settings();
+    if (s.cache[nameLc] && s.cache[nameLc].found && s.cache[nameLc].sections) {
+        return { key: nameLc, entry: s.cache[nameLc] };
+    }
+    for (const [k, e] of Object.entries(s.cache)) {
+        if (!e.found || !e.sections) continue;
+        const names = [e.name && e.name.toLowerCase(), k, ...(e.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
+        if (names.includes(nameLc)) return { key: k, entry: e };
+    }
+    return null;
+}
+
+/**
+ * Build the canon note.
+ *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
+ *    present THIS turn), inject exactly those, in that order. This is pronoun-proof: a
+ *    character the parser says is here gets injected even if only "she" appears in the text.
+ *  - Otherwise fall back to scanning the visible scene for grounded names (regex mode).
+ * Hard-capped by count / per-entity / total length either way.
+ */
+function relevantCanonNote(sceneMsgs, castNames) {
     const s = settings();
     const msgs = sceneMsgs || [];
     const lowerMsgs = msgs.map(m => m.toLowerCase());
-    // If the ledger is available AND we're not using the LLM parser, restrict injection
-    // to real ledger characters (removes regex false-positives). With the parser on, the
-    // cache already holds only real characters, and filtering by ledger would wrongly drop
-    // a character the parser found this turn that the ledger hasn't recorded yet.
-    const lgNames = (!s.llmParser) ? ledgerNames() : null;
-    const ledger = lgNames ? new Set(lgNames.map(n => n.toLowerCase())) : null;
     const labels = {
         physical: "Appearance",
         relationship: "Relationships",
@@ -640,30 +657,43 @@ function relevantCanonNote(sceneMsgs) {
     // verbose biography/abilities are trimmed first when space runs out.
     const order = ["physical", "relationship", "personality", "biography", "abilities"];
 
-    // Find every cached character present in the scene and WHERE they were last mentioned.
-    const present = [];
-    for (const key of Object.keys(s.cache)) {
-        const entry = s.cache[key];
-        if (!entry.found || !entry.sections) continue;
-        // All the names this character goes by: page title, search key, and aliases.
-        const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())]
-            .filter(Boolean);
-        // Ledger filter: keep only real cast — but a nickname counts, so check aliases too.
-        if (ledger && !names.some(n => ledger.has(n))) continue;
-        let lastIdx = -1, matchedName = "";
-        for (let i = lowerMsgs.length - 1; i >= 0; i--) {
-            const hit = names.find(n => mentioned(n, lowerMsgs[i]));
-            if (hit) { lastIdx = i; matchedName = hit; break; }
+    const present = [];  // { entry, matchedName }
+    if (castNames && castNames.length) {
+        // Cast-driven: inject the entities identified as present, in centrality order.
+        const usedKeys = new Set();
+        for (const cn of castNames) {
+            const found = cacheEntryFor(cn.toLowerCase());
+            if (found && !usedKeys.has(found.key)) {
+                usedKeys.add(found.key);
+                present.push({ entry: found.entry, matchedName: cn });
+            }
         }
-        if (lastIdx >= 0) present.push({ entry, lastIdx, matchedName });
+    } else {
+        // Scene-scan fallback (regex mode): grounded names actually in the recent window.
+        const lgNames = (!s.llmParser) ? ledgerNames() : null;
+        const ledger = lgNames ? new Set(lgNames.map(n => n.toLowerCase())) : null;
+        const scored = [];
+        for (const key of Object.keys(s.cache)) {
+            const entry = s.cache[key];
+            if (!entry.found || !entry.sections) continue;
+            const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())]
+                .filter(Boolean);
+            if (ledger && !names.some(n => ledger.has(n))) continue;
+            let lastIdx = -1, matchedName = "";
+            for (let i = lowerMsgs.length - 1; i >= 0; i--) {
+                const hit = names.find(n => mentioned(n, lowerMsgs[i]));
+                if (hit) { lastIdx = i; matchedName = hit; break; }
+            }
+            if (lastIdx >= 0) scored.push({ entry, lastIdx, matchedName });
+        }
+        scored.sort((a, b) => b.lastIdx - a.lastIdx);  // most recently mentioned first
+        for (const sc of scored) present.push({ entry: sc.entry, matchedName: sc.matchedName });
     }
-    // Most recently mentioned first — those are the characters actually in play now.
-    present.sort((a, b) => b.lastIdx - a.lastIdx);
 
     const blocks = [];
     const reasons = [];
     let total = 0;
-    for (const { entry, matchedName, lastIdx } of present) {
+    for (const { entry, matchedName } of present) {
         if (blocks.length >= s.maxCharacters) break;
         const lines = [];
         for (const cat of order) {
@@ -677,10 +707,7 @@ function relevantCanonNote(sceneMsgs) {
         }
         blocks.push(block);
         total += block.length;
-        const snippet = (msgs[lastIdx] || "").replace(/\s+/g, " ").trim();
-        const at = snippet.toLowerCase().indexOf(matchedName);
-        const around = at >= 0 ? snippet.slice(Math.max(0, at - 25), at + matchedName.length + 25) : snippet.slice(0, 60);
-        reasons.push(`${entry.name} ← matched "${matchedName}" in: …${around}…`);
+        reasons.push(`${entry.name} ← ${matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene"}`);
     }
     lastMatchReasons = reasons;
     if (!blocks.length) return "";
@@ -813,16 +840,14 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const scene = sceneMessages(getContext(), s.contextWindow);
         const sceneText = scene.join("\n");
         const lgNames = ledgerNames();
+        let cast = null;  // entities present this turn; drives injection when known
 
         if (s.llmParser) {
-            // Primary path: a fast model reads THIS scene and names the characters.
-            // Deciding WHEN to call it:
-            //  - "every turn" mode: always (needed if you write names in lowercase, or
-            //    just want max accuracy — pair with a fast profile).
-            //  - default gate: call only when a capitalized word appears that we have
-            //    NOT already shown the model. We remember every word we've parsed (not
-            //    just grounded ones), so recurring non-characters like "Mitsugoshi"
-            //    don't re-fire forever — the parser settles once the scene is stable.
+            // Primary path: a fast model reads THIS scene and names the characters present.
+            //  - "every turn" mode: always (needed if you write names in lowercase).
+            //  - default gate: only when a capitalized word appears that we have NOT already
+            //    shown the model. We remember every word parsed (not just grounded ones), so
+            //    recurring non-characters (Mitsugoshi) don't re-fire — it settles when stable.
             let shouldParse = s.parserEveryTurn;
             const quick = extractCandidateNames(sceneText);
             if (!shouldParse) {
@@ -832,20 +857,23 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 });
             }
             if (shouldParse) {
-                const cast = await parseSceneCharacters(sceneText);
+                const parsed = await parseSceneCharacters(sceneText);
                 for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
-                if (cast.length) {
-                    debug(`LLM parser → ${cast.join(", ")}`);
-                    await groundNames(cast, true); // trusted: the model chose these (may be lore/places)
+                if (parsed.length) {
+                    debug(`LLM parser → ${parsed.join(", ")}`);
+                    lastCast = parsed;                       // remember for turns the gate skips
+                    await groundNames(parsed, true);         // trusted: model chose these (may be lore)
                 }
             }
+            // Inject the parser's present-cast (pronoun-proof), reused between gated runs.
+            cast = lastCast;
         } else if (lgNames) {
-            // Ledger present → ground ONLY its real, LLM-verified characters in the scene.
+            // Ledger present → its real characters that are on-screen (named in the window).
             const sceneLower = sceneText.toLowerCase();
-            const onScreen = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
-            if (onScreen.length) await groundNames(onScreen);
+            cast = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
+            if (cast.length) await groundNames(cast);
         } else {
-            // No parser, no ledger → regex fallback (sentence-initial words filtered out).
+            // No parser, no ledger → regex fallback; injection uses the scene-scan (cast=null).
             const lastUser = [...chat].reverse().find(m => m.is_user);
             if (lastUser) {
                 const names = extractCandidateNames(lastUser.mes);
@@ -853,9 +881,8 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
         }
 
-        // Inject only for entities ACTUALLY in the current visible scene — not for every
-        // name that lingers in the permanent summary. Recency-prioritized, hard-capped.
-        const note = relevantCanonNote(sceneMessages(getContext(), s.contextWindow));
+        // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
+        const note = relevantCanonNote(sceneMessages(getContext(), s.contextWindow), cast);
 
         // Record exactly what we injected this turn so it can be shown in settings.
         lastInjection = note || "";
@@ -884,14 +911,32 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 
 async function onMessageReceived() {
     const s = settings();
-    if (!s.enabled || !s.groundFromReplies) return; // don't chase the model's own output by default
-    // The parser and the ledger both already account for the AI's output on the next
-    // turn, so only the plain regex fallback needs this post-hoc scan.
-    if (s.llmParser || ledgerNames()) return;
+    if (!s.enabled || cgInFlight) return;
     const ctx = getContext();
     const chat = ctx.chat || [];
     const last = chat[chat.length - 1];
-    if (!last || last.is_user) return;
+    if (!last || last.is_user) return; // only after an AI reply
+
+    if (s.llmParser) {
+        // Scan the AI's fresh output so characters IT introduced are grounded now and the
+        // present-cast is up to date for the next turn's injection. Same gate as pre-gen.
+        const sceneText = sceneMessages(getContext(), s.contextWindow).join("\n");
+        const quick = extractCandidateNames(sceneText);
+        const hasNew = s.parserEveryTurn ||
+            quick.some(n => !parsedWords.has(n.toLowerCase()) && !s.cache[n.toLowerCase()]);
+        if (!hasNew) return;
+        cgInFlight = true; // block the interceptor from re-entering during our generateRaw
+        try {
+            const parsed = await parseSceneCharacters(sceneText);
+            for (const n of quick) parsedWords.add(n.toLowerCase());
+            if (parsed.length) { lastCast = parsed; await groundNames(parsed, true); }
+        } finally {
+            cgInFlight = false;
+        }
+        return;
+    }
+    if (ledgerNames()) return;        // ledger already tracks the cast
+    if (!s.groundFromReplies) return; // regex fallback is opt-in
     const names = extractCandidateNames(last.mes);
     if (names.length) await groundNames(names); // fills cache; does NOT edit text
 }
@@ -1025,9 +1070,11 @@ async function addSettingsUI() {
                 <div id="cg_cache_list" class="cg-cache"></div>
                 <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry.</small>
                 <div style="margin-top:6px;">
+                    <input id="cg_rescan" class="menu_button" type="button" value="Scan current scene now">
                     <input id="cg_refresh" class="menu_button" type="button" value="Refresh">
                     <input id="cg_clear" class="menu_button" type="button" value="Clear all">
                 </div>
+                <small class="cg-hint">"Scan current scene now" grounds whoever is in the scene right away — use it after clearing the cache mid-story, so you don't have to wait for a character to be named again.</small>
                 <hr>
                 <small><b>Last injection</b> <span id="cg_inject_time" class="cg-empty"></span></small>
                 <pre id="cg_last_inject" class="cg-inject"></pre>
@@ -1148,8 +1195,40 @@ async function addSettingsUI() {
     });
     $("#cg_clear").on("click", function () {
         s.cache = {}; saveSettingsDebounced();
+        parsedWords = new Set();   // let the parser re-evaluate every name again
+        lastCast = [];
         renderCacheList();
-        toastr?.info?.("Canon cache cleared.");
+        toastr?.info?.("Canon cache cleared. Send a message (or 'Scan current scene now') to re-ground.");
+    });
+    $("#cg_rescan").on("click", async function () {
+        const st = settings();
+        if (!st.enabled) { toastr?.warning?.("Canon Grounding is disabled."); return; }
+        const sceneText = sceneMessages(getContext(), st.contextWindow).join("\n");
+        if (!sceneText.trim()) { toastr?.info?.("No visible scene to scan yet."); return; }
+        try {
+            if (st.llmParser) {
+                toastr?.info?.("Scanning the current scene…");
+                cgInFlight = true;
+                let parsed = [];
+                try { parsed = await parseSceneCharacters(sceneText); }
+                finally { cgInFlight = false; }
+                for (const n of extractCandidateNames(sceneText)) parsedWords.add(n.toLowerCase());
+                if (parsed.length) {
+                    lastCast = parsed;
+                    await groundNames(parsed, true);
+                    toastr?.success?.(`Grounded: ${parsed.join(", ")}`);
+                } else {
+                    toastr?.info?.("Parser returned no entities.");
+                }
+            } else {
+                const names = extractCandidateNames(sceneText);
+                await groundNames(names);
+                toastr?.info?.(`Scanned ${names.length} name(s) from the scene.`);
+            }
+        } catch (e) {
+            toastr?.error?.("Scan failed: " + e.message);
+        }
+        renderCacheList();
     });
 
     renderSavedWikis();
@@ -1255,6 +1334,7 @@ jQuery(async () => {
     if (event_types.CHAT_CHANGED) {
         eventSource.on(event_types.CHAT_CHANGED, () => {
             parsedWords = new Set();
+            lastCast = [];
             try { setInjection(""); } catch (e) { /* not critical */ }
         });
     }
