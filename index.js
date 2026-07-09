@@ -40,18 +40,20 @@ const defaultSettings = {
     // Which infobox fields count as "physical" facts. Kept to hair/eyes on purpose:
     // other fields (height, age) collide with infobox image-sizing params and add noise.
     fields: "hair,haircolor,hair color,eyes,eye color,eyecolor",
-    // Keyword lists that say WHERE each category lives — matched against BOTH infobox
-    // field names (e.g. "Relatives") AND prose section headers (e.g. "== History =="),
-    // so family that sits in an infobox field is found, not just prose. Editable below.
-    relationshipKeywords: "relatives,relationships,relations,family,parents,father,mother,spouse,children,siblings,partner",
-    biographyKeywords: "history,background,biography,backstory,occupation,affiliation,status,race,origin,residence,alias",
-    personalityKeywords: "personality,character,traits,temperament",
+    // Keyword lists that say WHERE each category lives — matched (as substrings) against
+    // BOTH infobox field names AND prose section headers. Defaults cover Fandom's common
+    // templates (Marvel/DC/anime), so most wikis work with no editing. Editable below.
+    relationshipKeywords: "relative,relations,family,parent,mother,father,sibling,brother,sister,spouse,wife,husband,child,marital,partner,ancestor,grandparent,descendant,love interest",
+    biographyKeywords: "history,background,biography,backstory,origin,occupation,affiliation,alignment,status,alias,identity,citizenship,nationality,residence,base,birthplace,birthday,born,education,universe,reality,first appearance,rank,position,species,race",
+    personalityKeywords: "personality,character,temperament,traits",
+    abilitiesKeywords: "power,abilities,ability,skill,technique,weapon,equipment,arsenal,strength,weakness,magic,quirk,devil fruit,semblance,jutsu,nen,stand",
     // What KIND of canon to ground and inject. Physical is on by default; the others
     // are opt-in because they inject prose and can make the model more rigid.
     physical: true,       // appearance: hair, eyes, look
     personality: false,   // temperament / how they behave
     relationship: false,  // family and key connections (helps correct invented parents)
     biography: false,     // role, affiliation, background
+    abilities: false,     // powers, skills, weapons
     // How many recent messages to consider when deciding which cached entities
     // are currently relevant enough to inject.
     contextWindow: 6,
@@ -411,8 +413,9 @@ async function ensureGrounded(name) {
             const relKw = s.relationshipKeywords.split(",");
             const bioKw = s.biographyKeywords.split(",");
             const perKw = s.personalityKeywords.split(",");
+            const abiKw = s.abilitiesKeywords.split(",");
 
-            const join = (...parts) => parts.filter(Boolean).join(" — ");
+            const join = (...parts) => [...new Set(parts.filter(Boolean))].join(" — ");
 
             const sections = {
                 physical,
@@ -424,10 +427,17 @@ async function ensureGrounded(name) {
                     extractInfoboxFields(wikitext, relKw),
                     extractSection(wikitext, relKw)
                 ),
+                // Biography always leads with the intro paragraph (the "X is a …" line
+                // that has no header), then adds infobox bio fields and a history section.
                 biography: join(
+                    extractLead(wikitext),
                     extractInfoboxFields(wikitext, bioKw),
                     extractSection(wikitext, bioKw)
-                ) || extractLead(wikitext),
+                ),
+                abilities: join(
+                    extractInfoboxFields(wikitext, abiKw),
+                    extractSection(wikitext, abiKw)
+                ),
             };
 
             const anything = Object.values(sections).some(Boolean);
@@ -466,19 +476,15 @@ async function groundNames(names) {
 // Which cached entities are relevant to the current moment?
 // ---------------------------------------------------------------------------
 
-function recentText(ctx, windowSize) {
-    const chat = ctx.chat || [];
-    return chat.slice(-windowSize).map(m => m.mes || "").join("\n");
-}
-
-function relevantCanonNote(ctx) {
+function relevantCanonNote(scanText) {
     const s = settings();
-    const text = recentText(ctx, s.contextWindow).toLowerCase();
+    const text = (scanText || "").toLowerCase();
     const labels = {
         physical: "Appearance",
         personality: "Personality",
         relationship: "Relationships",
         biography: "Background",
+        abilities: "Powers & Abilities",
     };
     const blocks = [];
     for (const key of Object.keys(s.cache)) {
@@ -488,7 +494,7 @@ function relevantCanonNote(ctx) {
         if (!names.some(n => n && text.includes(n))) continue;
 
         const lines = [];
-        for (const cat of ["physical", "personality", "relationship", "biography"]) {
+        for (const cat of ["physical", "personality", "relationship", "biography", "abilities"]) {
             if (s[cat] && entry.sections[cat]) {
                 lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
             }
@@ -521,9 +527,11 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             if (names.length) await groundNames(names);
         }
 
-        // Inject a compact note for every cached entity relevant right now.
-        const ctx = getContext();
-        const note = relevantCanonNote(ctx);
+        // Inject a compact note for every cached entity that appears ANYWHERE in the
+        // prompt being built — including a summary added by another extension — so a
+        // character kept alive in the summary stays grounded even after scrolling off.
+        const scanText = chat.map(m => m.mes || "").join("\n");
+        const note = relevantCanonNote(scanText);
         if (note) {
             const injected = {
                 is_user: false,
@@ -593,6 +601,10 @@ async function addSettingsUI() {
                     <input id="cg_biography" type="checkbox">
                     <span>Biography (role, background)</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="cg_abilities" type="checkbox">
+                    <span>Powers &amp; Abilities</span>
+                </label>
                 <hr>
                 <label class="checkbox_label">
                     <input id="cg_debug" type="checkbox">
@@ -612,6 +624,8 @@ async function addSettingsUI() {
                 <input id="cg_biokw" class="text_pole" type="text">
                 <label>Personality keywords</label>
                 <input id="cg_perkw" class="text_pole" type="text">
+                <label>Powers &amp; abilities keywords</label>
+                <input id="cg_abikw" class="text_pole" type="text">
                 <div style="margin-top:6px;">
                     <input id="cg_clear" class="menu_button" type="button" value="Clear cached canon">
                 </div>
@@ -625,7 +639,7 @@ async function addSettingsUI() {
     $("#cg_enabled").prop("checked", s.enabled).on("input", function () {
         s.enabled = $(this).prop("checked"); saveSettingsDebounced();
     });
-    for (const cat of ["physical", "personality", "relationship", "biography"]) {
+    for (const cat of ["physical", "personality", "relationship", "biography", "abilities"]) {
         $(`#cg_${cat}`).prop("checked", s[cat]).on("input", function () {
             s[cat] = $(this).prop("checked"); saveSettingsDebounced();
         });
@@ -650,6 +664,9 @@ async function addSettingsUI() {
     });
     $("#cg_perkw").val(s.personalityKeywords).on("input", function () {
         s.personalityKeywords = String($(this).val()); saveSettingsDebounced();
+    });
+    $("#cg_abikw").val(s.abilitiesKeywords).on("input", function () {
+        s.abilitiesKeywords = String($(this).val()); saveSettingsDebounced();
     });
     $("#cg_clear").on("click", function () {
         s.cache = {}; saveSettingsDebounced();
