@@ -45,6 +45,10 @@ const defaultSettings = {
     contextWindow: 6,
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
+    // When on, also grounds names found in the AI's OWN replies. Default OFF so the
+    // extension never chases the model's hallucinated/invented names — it only grounds
+    // characters YOU name. Turn on if you want model-introduced characters grounded too.
+    groundFromReplies: false,
     // cache: { "lower name": { name, facts, aliases:[], wiki, found:bool, ts } }
     cache: {},
 };
@@ -414,7 +418,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 
 async function onMessageReceived() {
     const s = settings();
-    if (!s.enabled) return;
+    if (!s.enabled || !s.groundFromReplies) return; // don't chase the model's own output by default
     const ctx = getContext();
     const chat = ctx.chat || [];
     const last = chat[chat.length - 1];
@@ -444,6 +448,10 @@ async function addSettingsUI() {
                     <input id="cg_debug" type="checkbox">
                     <span>Debug (show a toast for each lookup)</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="cg_replies" type="checkbox">
+                    <span>Also ground names from AI replies (off = only names you type)</span>
+                </label>
                 <label>Wiki subdomains (comma-separated)</label>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="eminence-in-shadow,dc">
                 <label>Physical fields to ground</label>
@@ -463,6 +471,9 @@ async function addSettingsUI() {
     });
     $("#cg_debug").prop("checked", s.debug).on("input", function () {
         s.debug = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_replies").prop("checked", s.groundFromReplies).on("input", function () {
+        s.groundFromReplies = $(this).prop("checked"); saveSettingsDebounced();
     });
     $("#cg_wikis").val(s.wikis).on("input", function () {
         s.wikis = String($(this).val()); saveSettingsDebounced();
