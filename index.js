@@ -71,21 +71,74 @@ const STOPWORDS = new Set([
     "Why", "How", "OK", "Okay", "Yes", "No", "Mr", "Mrs", "Ms", "Dr",
 ]);
 
-/** Pull candidate proper-noun phrases (sequences of Capitalized words). */
+// Filler/question/appearance words that should never be part of a name. Used to
+// carve names out of casual lowercase questions like "what's rose oriana hair".
+const NOISE_WORDS = new Set([
+    "what", "whats", "what's", "who", "whos", "who's", "is", "are", "was", "were",
+    "the", "a", "an", "and", "or", "of", "to", "for", "with", "in", "on", "at",
+    "by", "tell", "me", "about", "does", "do", "did", "has", "have", "hair",
+    "eye", "eyes", "haircolor", "color", "colour", "colored", "coloured", "look",
+    "looks", "looking", "like", "appearance", "describe", "description", "this",
+    "that", "her", "his", "their", "its", "he", "she", "they", "it", "you",
+    "your", "my", "our", "how", "why", "when", "where", "which", "please",
+    "give", "show", "name", "named", "called", "from", "source", "material",
+    "canon", "character", "physical", "personality",
+]);
+
+function isNameToken(tok) {
+    return /^[A-Za-z][A-Za-z'’-]+$/.test(tok) && tok.length >= 2;
+}
+
+/**
+ * Pull candidate character names from text.
+ *  (1) Capitalized phrases (Rose Oriana) — high confidence, always scanned. This
+ *      is how names appear in RP prose, so it covers normal play.
+ *  (2) Lowercase multi-word runs — only for SHORT messages (casual questions),
+ *      with filler words stripped. Fixes first-mention grounding when a name is
+ *      typed lowercase, without flooding lookups on long narration.
+ * False positives are cheap: an unknown phrase fails the wiki search and gets
+ * negative-cached; only real, found characters are ever injected.
+ */
 function extractCandidateNames(text) {
     if (!text) return [];
     const out = new Set();
-    // Strip common RP action asterisks/quotes to avoid gluing tokens.
-    const clean = text.replace(/[*_`~"']/g, " ");
-    const re = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g;
+    const clean = text.replace(/[*_`~"“”()]/g, " ");
+
+    // (1) Capitalized phrases.
+    const capRe = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g;
     let m;
-    while ((m = re.exec(clean)) !== null) {
+    while ((m = capRe.exec(clean)) !== null) {
         const phrase = m[1].trim();
         const first = phrase.split(/\s+/)[0];
-        // Skip single stopword tokens (sentence starts etc.).
         if (phrase.split(/\s+/).length === 1 && STOPWORDS.has(first)) continue;
         out.add(phrase);
     }
+
+    // (2) Lowercase runs — short messages only.
+    const tokens = clean.split(/\s+/).filter(Boolean);
+    if (tokens.length <= 20) {
+        const lowerCandidates = [];
+        let run = [];
+        const flush = () => {
+            // Most character names are 1-2 words; take the first two tokens of a
+            // run so trailing verbs ("cid kagenou before speaking") don't glue on.
+            if (run.length >= 2) lowerCandidates.push(run.slice(0, 2).join(" "));
+            run = [];
+        };
+        for (const raw of tokens) {
+            const tok = raw.replace(/[.,;:!?]+$/, "");
+            if (isNameToken(tok) && !NOISE_WORDS.has(tok.toLowerCase())) {
+                run.push(tok);
+            } else {
+                flush();
+            }
+        }
+        flush();
+        for (const c of lowerCandidates.slice(0, 6)) {
+            if (![...out].some(o => o.toLowerCase() === c.toLowerCase())) out.add(c);
+        }
+    }
+
     return [...out];
 }
 
