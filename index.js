@@ -37,6 +37,8 @@ const defaultSettings = {
     enabled: true,
     // Comma-separated Fandom subdomains to search, e.g. "the-eminence-in-shadow,dc".
     wikis: "the-eminence-in-shadow",
+    // Saved library of subdomains you switch between, shown as one-tap chips.
+    savedWikis: [],
     // Which infobox fields count as "physical" facts. Kept to hair/eyes on purpose:
     // other fields (height, age) collide with infobox image-sizing params and add noise.
     fields: "hair,haircolor,hair color,eyes,eye color,eyecolor",
@@ -637,8 +639,13 @@ async function addSettingsUI() {
                     <input id="cg_replies" type="checkbox">
                     <span>Also ground names from AI replies</span>
                 </label>
-                <label>Wiki subdomains (comma-separated)</label>
+                <label>Wiki subdomains (comma-separated) — active for this story</label>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
+                <div style="margin-top:4px;">
+                    <input id="cg_save_wiki" class="menu_button" type="button" value="+ Save active to library">
+                </div>
+                <small>Saved wikis (tap to toggle in active, × to remove):</small>
+                <div id="cg_saved_wikis" class="cg-chips"></div>
                 <label>Physical fields (infobox)</label>
                 <input id="cg_fields" class="text_pole" type="text">
                 <label>Relationship keywords (infobox fields + sections)</label>
@@ -651,10 +658,14 @@ async function addSettingsUI() {
                 <input id="cg_abikw" class="text_pole" type="text">
                 <label>Scene window (visible messages that count as "now")</label>
                 <input id="cg_window" class="text_pole" type="number" min="1" max="100">
+                <hr>
+                <small><b>Cache</b> — what's grounded (× removes one, so it re-fetches):</small>
+                <div id="cg_cache_list" class="cg-cache"></div>
                 <div style="margin-top:6px;">
-                    <input id="cg_clear" class="menu_button" type="button" value="Clear cached canon">
+                    <input id="cg_refresh" class="menu_button" type="button" value="Refresh">
+                    <input id="cg_clear" class="menu_button" type="button" value="Clear all">
                 </div>
-                <small>Facts are fetched once per character and cached. Set the wiki(s) for your current story here.</small>
+                <small>Facts are fetched once per character and cached across sessions.</small>
             </div>
         </div>
     </div>`;
@@ -698,10 +709,89 @@ async function addSettingsUI() {
         s.contextWindow = Number.isFinite(n) && n > 0 ? n : 10;
         saveSettingsDebounced();
     });
+
+    // Keep the active field and the saved-wiki highlights in sync.
+    $("#cg_wikis").off("input").on("input", function () {
+        s.wikis = String($(this).val()); saveSettingsDebounced();
+        renderSavedWikis();
+    });
+
+    $("#cg_save_wiki").on("click", function () {
+        const active = String($("#cg_wikis").val()).split(",").map(x => x.trim()).filter(Boolean);
+        s.savedWikis = s.savedWikis || [];
+        for (const w of active) if (!s.savedWikis.includes(w)) s.savedWikis.push(w);
+        saveSettingsDebounced();
+        renderSavedWikis();
+    });
+
+    $("#cg_refresh").on("click", renderCacheList);
     $("#cg_clear").on("click", function () {
         s.cache = {}; saveSettingsDebounced();
+        renderCacheList();
         toastr?.info?.("Canon cache cleared.");
     });
+
+    renderSavedWikis();
+    renderCacheList();
+}
+
+// Toggle a saved subdomain in/out of the active field.
+function toggleActiveWiki(w) {
+    const s = settings();
+    const cur = String($("#cg_wikis").val()).split(",").map(x => x.trim()).filter(Boolean);
+    const i = cur.indexOf(w);
+    if (i >= 0) cur.splice(i, 1); else cur.push(w);
+    const val = cur.join(",");
+    $("#cg_wikis").val(val);
+    s.wikis = val; saveSettingsDebounced();
+    renderSavedWikis();
+}
+
+function renderSavedWikis() {
+    const s = settings();
+    const active = String(s.wikis || "").split(",").map(x => x.trim()).filter(Boolean);
+    const $box = $("#cg_saved_wikis").empty();
+    if (!s.savedWikis || !s.savedWikis.length) {
+        $box.append('<span class="cg-empty">Nothing saved yet — tap "+ Save active to library".</span>');
+        return;
+    }
+    for (const w of s.savedWikis) {
+        const on = active.includes(w);
+        const $chip = $('<span class="cg-chip"></span>').toggleClass("cg-chip-on", on);
+        $('<span class="cg-chip-name"></span>').text(w).on("click", () => toggleActiveWiki(w)).appendTo($chip);
+        $('<span class="cg-chip-x">×</span>').on("click", (e) => {
+            e.stopPropagation();
+            s.savedWikis = s.savedWikis.filter(x => x !== w);
+            saveSettingsDebounced();
+            renderSavedWikis();
+        }).appendTo($chip);
+        $box.append($chip);
+    }
+}
+
+function renderCacheList() {
+    const s = settings();
+    const $box = $("#cg_cache_list").empty();
+    const keys = Object.keys(s.cache || {});
+    if (!keys.length) { $box.append('<span class="cg-empty">Cache is empty.</span>'); return; }
+    for (const key of keys) {
+        const e = s.cache[key];
+        let label;
+        if (e && e.found) {
+            const cats = e.sections
+                ? Object.entries(e.sections).filter(([, v]) => v).map(([k]) => k).join(", ")
+                : "";
+            label = `✓ ${e.name} (${e.wiki}) — ${cats || "no data"}`;
+        } else {
+            label = `✕ ${(e && e.name) || key} — not found`;
+        }
+        const $row = $('<div class="cg-cache-row"></div>');
+        $('<span class="cg-cache-label"></span>').text(label).appendTo($row);
+        $('<span class="cg-cache-x">×</span>').on("click", () => {
+            delete s.cache[key]; saveSettingsDebounced(); renderCacheList();
+        }).appendTo($row);
+        $box.append($row);
+    }
 }
 
 // ---------------------------------------------------------------------------
