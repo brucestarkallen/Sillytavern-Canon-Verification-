@@ -616,11 +616,6 @@ function relevantCanonNote(sceneMsgs) {
             .filter(Boolean);
         // Ledger filter: keep only real cast — but a nickname counts, so check aliases too.
         if (ledger && !names.some(n => ledger.has(n))) continue;
-        // All the names this character goes by: page title, search key, and aliases.
-        const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())]
-            .filter(Boolean);
-        // Ledger filter: keep only real cast — but a nickname counts, so check aliases too.
-        if (ledger && !names.some(n => ledger.has(n))) continue;
         let lastIdx = -1, matchedName = "";
         for (let i = lowerMsgs.length - 1; i >= 0; i--) {
             const hit = names.find(n => mentioned(n, lowerMsgs[i]));
