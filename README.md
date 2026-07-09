@@ -32,9 +32,9 @@ Then reload SillyTavern.
 
 In the Canon Grounding panel, set **Wiki subdomains** to the Fandom wiki for your
 current universe. Examples:
-- Eminence in Shadow → `eminence-in-shadow`
+- Eminence in Shadow → `the-eminence-in-shadow`
 - DC / Superman → `dc`
-- Multiple at once → `eminence-in-shadow,dc`
+- Multiple at once → `the-eminence-in-shadow,dc`
 
 Find the subdomain in any Fandom URL: `https://SUBDOMAIN.fandom.com/...`
 

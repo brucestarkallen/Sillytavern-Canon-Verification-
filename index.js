@@ -35,8 +35,8 @@ const MODULE_NAME = "canon_grounding";
 
 const defaultSettings = {
     enabled: true,
-    // Comma-separated Fandom subdomains to search, e.g. "eminence-in-shadow,dc".
-    wikis: "eminence-in-shadow",
+    // Comma-separated Fandom subdomains to search, e.g. "the-eminence-in-shadow,dc".
+    wikis: "the-eminence-in-shadow",
     // Which infobox fields count as "physical/canonical" facts worth grounding.
     fields: "hair,haircolor,hair color,eyes,eye color,eyecolor,height,age,race,species,gender",
     // How many recent messages to consider when deciding which cached entities
@@ -115,6 +115,18 @@ async function fetchWikitext(wiki, title) {
     return data?.parse?.wikitext?.["*"] || "";
 }
 
+async function fetchExtract(wiki, title) {
+    // Plain-text article extract — used to recover facts that live in prose
+    // (e.g. an "Appearance" paragraph) rather than in infobox fields.
+    const url = `${apiBase(wiki)}?action=query&prop=extracts&explaintext=1&redirects=1&format=json&origin=*&titles=${encodeURIComponent(title)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`extract HTTP ${res.status}`);
+    const data = await res.json();
+    const pages = data?.query?.pages || {};
+    const first = Object.values(pages)[0];
+    return first?.extract || "";
+}
+
 /** Extract the configured physical fields from an infobox block in wikitext. */
 function extractFacts(wikitext, fieldList) {
     if (!wikitext) return "";
@@ -144,6 +156,34 @@ function extractFacts(wikitext, fieldList) {
     return found.join("; ");
 }
 
+// Words to strip when reading a descriptor out of prose.
+const PROSE_STOP = new Set([
+    "with", "and", "a", "an", "the", "her", "his", "long", "short", "girl",
+    "boy", "young", "has", "have", "is", "are", "of", "to", "very", "quite",
+    "she", "he", "who", "beautiful", "gorgeous", "stunning", "captivating",
+]);
+
+/** Fallback: recover "hair"/"eyes" descriptors from prose when the infobox lacks them. */
+function extractFromProse(text) {
+    if (!text) return "";
+    const snippet = text.slice(0, 4000);
+    const found = [];
+    const grab = (noun) => {
+        const re = new RegExp(`((?:[A-Za-z][A-Za-z-]+\\s+){1,4})${noun}\\b`, "i");
+        const m = snippet.match(re);
+        if (!m) return null;
+        let words = m[1].trim().split(/\s+/);
+        while (words.length && PROSE_STOP.has(words[0].toLowerCase())) words.shift();
+        if (words.length > 2) words = words.slice(-2); // keep the closest 2 descriptors
+        return words.length ? words.join(" ") : null;
+    };
+    const hair = grab("hair");
+    const eyes = grab("eyes");
+    if (hair) found.push(`hair: ${hair}`);
+    if (eyes) found.push(`eyes: ${eyes}`);
+    return found.join("; ");
+}
+
 // ---------------------------------------------------------------------------
 // Grounding: fetch + cache a single entity (once, ever)
 // ---------------------------------------------------------------------------
@@ -166,7 +206,16 @@ async function ensureGrounded(name) {
             const title = await findPageTitle(wiki, name);
             if (!title) continue;
             const wikitext = await fetchWikitext(wiki, title);
-            const facts = extractFacts(wikitext, s.fields);
+            let facts = extractFacts(wikitext, s.fields);
+            if (!facts) {
+                // Infobox had nothing usable — try to read it out of the prose.
+                try {
+                    const extract = await fetchExtract(wiki, title);
+                    facts = extractFromProse(extract);
+                } catch (e) {
+                    console.warn(`[CanonGrounding] prose fallback failed for "${name}":`, e.message);
+                }
+            }
             if (facts) {
                 s.cache[key] = { name: title, facts, aliases: [], wiki, found: true, ts: Date.now() };
                 saveSettingsDebounced();
