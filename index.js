@@ -1,31 +1,31 @@
 /*
- * Canon Grounding — SillyTavern extension (v0.1)
- * -------------------------------------------------
- * Goal: keep source-material characters physically/factually accurate WITHOUT
- * breaking immersion and WITHOUT manual per-character entry.
+ * Canon Grounding — SillyTavern extension
+ * ---------------------------------------
+ * Keeps source-material entities (characters, and optionally places/lore) accurate
+ * during roleplay by pulling facts from a Fandom wiki and injecting them BEFORE
+ * generation — no manual per-character entry, streaming-safe.
  *
- * How it works (streaming-safe):
- *   1. Before each generation, a `generate_interceptor` scans the latest user
- *      message for proper-noun candidates.
- *   2. Any NEW candidate is looked up once against your configured wiki(s) via
- *      the MediaWiki API (client-side, no server plugin, no CORS issue).
- *   3. The distilled canonical facts are cached FOREVER (persisted in settings)
- *      keyed by name, and injected as a compact system note BEFORE the last
- *      user message — so the model writes them correctly from the first token.
- *      Streaming can stay ON; nothing is ever rewritten mid-stream.
- *   4. A silent post-generation scan grounds any character the MODEL introduced
- *      on its own (Rose-at-turn-50 case). The visible text is NOT edited; the
- *      fact is cached so the next mention / a swipe comes out correct.
+ * Pipeline (in the generate_interceptor, which runs before generation):
+ *   1. Decide WHO/WHAT is in the current scene. Priority:
+ *        a. LLM parser (recommended): a fast model reads the scene and returns the
+ *           canon entities to look up (Arbiter-style, via ConnectionManagerRequestService
+ *           or generateRaw). Gated so it only runs when a new name appears.
+ *        b. Summaryception ledger (if present): its LLM-built cast list.
+ *        c. Regex candidates (fallback): capitalized names, sentence-initial words filtered.
+ *   2. Ground each NEW entity once via the MediaWiki API (client-side, origin=* → no
+ *      CORS, no server plugin). Facts are cached FOREVER in settings, keyed by name,
+ *      with aliases so a nickname matches its full-name page. Cached entities never
+ *      re-hit the wiki.
+ *   3. Inject a compact, capped canon note for the entities present in the current
+ *      visible scene, via setExtensionPrompt (reliable) — not a chat splice.
+ *   4. A post-generation scan grounds entities the MODEL introduced (fallback mode only;
+ *      the parser/ledger already cover the AI's output).
  *
- * KNOWN v0.1 LIMITATIONS (documented, not hidden):
- *   - Entity detection is a capitalization heuristic. It will miss lowercase
- *     aliases and occasionally flag non-characters. This is the #1 thing to
- *     improve next (LLM-based extraction or NER).
- *   - Infobox field extraction is regex over wikitext; field names vary by wiki.
- *   - Which wiki(s) to search is a per-story SETTING (set once, out of scene).
- *     Auto-detecting the franchise from freeform RP is unreliable, so it is
- *     intentionally a one-time config rather than a guess.
- *   - Real-world people (Wikipedia) and alias resolution are deferred.
+ * Safety/robustness: interceptor runs only on real generations (normal/swipe/regenerate/
+ * continue) to avoid injecting into background calls and to stop the parser's own
+ * generateRaw from re-entering; a re-entry flag guards overlaps; all wiki/LLM work is
+ * time-boxed and wrapped so it can never block or break a turn. Injection size is hard-
+ * capped (per-entity + total) so a big cast can't balloon the prompt.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -38,6 +38,8 @@ let lastInjection = "";
 let lastInjectionAt = 0;
 let lastMatchReasons = [];  // why each injected character was considered "present"
 let parsedWords = new Set(); // lowercased candidate words already shown to the LLM parser
+let cgInFlight = false;      // guard: don't re-enter the interceptor during our own sub-generation
+const INJECT_KEY = "CANON_GROUNDING";
 
 const defaultSettings = {
     enabled: true,
@@ -230,7 +232,9 @@ function apiBase(wiki) {
 /** Non-character / media / meta pages we should never ground as a character. */
 function isMediaTitle(t) {
     if (!t) return true;
-    return /\((light novel|novel|anime|manga|manhwa|manhua|film|movie|ova|ona|web series|series|video game|game|soundtrack|album|song|volume|vol\.?|chapter|episode|arc|season|character|disambiguation|franchise)\)/i.test(t)
+    // NOTE: "(Character)" is intentionally NOT here — some wikis disambiguate a real
+    // character page that way, and rejecting it would drop the character.
+    return /\((light novel|novel|anime|manga|manhwa|manhua|film|movie|ova|ona|web series|series|video game|soundtrack|album|song|volume|vol\.?|chapter|episode|arc|season|disambiguation|franchise)\)/i.test(t)
         || /\b(disambiguation|list of|volume \d|episode \d|chapter \d)\b/i.test(t)
         || String(t).includes("/"); // subpages
 }
@@ -430,12 +434,17 @@ async function ensureGrounded(name, trusted = false) {
     const existing = s.cache[key];
     if (existing && existing.sections) {
         if (existing.found) return existing;                       // already grounded
-        if (Date.now() - existing.ts < NEGATIVE_TTL) return existing; // genuine recent miss
+        if (Date.now() - existing.ts < NEGATIVE_TTL) {
+            // A page rejected ONLY because it didn't look like a character can still be
+            // valid lore (a place/org). If the caller now trusts it (LLM parser), re-fetch
+            // instead of reusing the untrusted miss; otherwise honor the recent miss.
+            if (!(existing.reason === "not-character" && trusted)) return existing;
+        }
     }
 
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
-    let hadError = false;      // network / HTTP / parse failure (transient — retry later)
-    let pageFoundNoFacts = false;
+    let hadError = false;          // network / HTTP / parse failure (transient — retry later)
+    let missReason = "no-page";    // upgraded to "not-character" / "no-facts" as we learn more
 
     for (const wiki of wikis) {
         try {
@@ -455,8 +464,8 @@ async function ensureGrounded(name, trusted = false) {
                  "blood", "voiced", "voice actor", "seiyu", "alias", "nickname"]);
             const charSection = extractSection(wikitext, ["personality", "relationships", "appearance"], 40);
             if (!trusted && !charSignal && !charSection) {
+                missReason = "not-character";
                 debug(`⚠ "${title}" isn't a character page (no character fields) — skipped`);
-                pageFoundNoFacts = true;
                 continue;
             }
 
@@ -509,7 +518,7 @@ async function ensureGrounded(name, trusted = false) {
                 debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${physical || "(no appearance)"} [have: ${got}]`);
                 return s.cache[key];
             }
-            pageFoundNoFacts = true;
+            missReason = "no-facts";
             debug(`⚠ found page "${title}" on ${wiki} but no usable sections`);
         } catch (err) {
             hadError = true;
@@ -517,12 +526,14 @@ async function ensureGrounded(name, trusted = false) {
         }
     }
 
-    // Only persist a "not found" when we actually searched cleanly and the wiki
-    // has no page. Transient errors and extraction gaps are NOT locked in.
-    if (!hadError && !pageFoundNoFacts) {
-        s.cache[key] = { name, sections: {}, wiki: null, found: false, ts: Date.now() };
+    // Persist a "not found" when we searched cleanly, whether the wiki had no page at
+    // all OR the page wasn't usable (media page, no character fields, no sections). This
+    // prevents re-fetching the same dead end every turn. Transient network errors are NOT
+    // locked in (hadError skips this), and the 24h TTL lets it retry later.
+    if (!hadError) {
+        s.cache[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, ts: Date.now() };
         saveSettingsDebounced();
-        debug(`✕ no wiki page found for "${name}" on: ${s.wikis}`);
+        debug(`✕ no usable wiki page for "${name}" on: ${s.wikis}`);
     }
     return s.cache[key] || { name, sections: {}, found: false };
 }
@@ -766,9 +777,37 @@ async function parseSceneCharacters(sceneText) {
     }
 }
 
+/**
+ * Inject the canon note reliably via setExtensionPrompt (the documented API, same as
+ * Summaryception/Arbiter) — an is_system chat-splice can be silently dropped from the
+ * prompt on some builds. Empty text clears the injection. Returns false if the API is
+ * unavailable (caller then falls back to a chat splice).
+ */
+function setInjection(text) {
+    try {
+        const c = getContext();
+        if (typeof c.setExtensionPrompt !== "function") return false;
+        const types = c.extension_prompt_types || {};
+        const roles = c.extension_prompt_roles || {};
+        const pos = types.IN_CHAT !== undefined ? types.IN_CHAT : 1;   // in-chat @ depth
+        const role = roles.SYSTEM !== undefined ? roles.SYSTEM : 0;    // system role
+        c.setExtensionPrompt(INJECT_KEY, text || "", pos, 1, false, role); // depth 1 = just above the latest message
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, type) {
+    // Only real user-facing generations. Skipping quiet/impersonate also prevents our
+    // own parser generateRaw call (a quiet generation) from re-entering this interceptor.
+    const genType = type || "normal";
+    if (!["normal", "swipe", "regenerate", "continue"].includes(genType)) return;
+    if (cgInFlight) return;
+    cgInFlight = true;
     try {
         const s = settings();
+        setInjection("");            // start each generation clean; re-set below if needed
         if (!s.enabled) return;
 
         const scene = sceneMessages(getContext(), s.contextWindow);
@@ -814,11 +853,9 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
         }
 
-        // Inject only for characters ACTUALLY in the current visible scene — not for
-        // every name that lingers in the permanent summary (that would pile up forever
-        // and overwhelm the model). Recency-prioritized and hard-capped by size.
-        const ctx = getContext();
-        const note = relevantCanonNote(sceneMessages(ctx, s.contextWindow));
+        // Inject only for entities ACTUALLY in the current visible scene — not for every
+        // name that lingers in the permanent summary. Recency-prioritized, hard-capped.
+        const note = relevantCanonNote(sceneMessages(getContext(), s.contextWindow));
 
         // Record exactly what we injected this turn so it can be shown in settings.
         lastInjection = note || "";
@@ -826,21 +863,18 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         renderLastInjection();
 
         if (note) {
-            const injected = {
-                is_user: false,
-                is_system: true,
-                name: "Canon",
-                send_date: Date.now(),
-                mes: note,
-                // Not a reference to an existing message object, so this stays
-                // in the prompt only and does not persist to saved chat history.
-            };
-            const at = Math.max(chat.length - 1, 0);
-            chat.splice(at, 0, injected);
+            const ok = setInjection(note);
+            if (!ok) {
+                // Fallback for very old ST without setExtensionPrompt.
+                const injected = { is_user: false, is_system: true, name: "Canon", send_date: Date.now(), mes: note };
+                chat.splice(Math.max(chat.length - 1, 0), 0, injected);
+            }
         }
     } catch (err) {
         console.error("[CanonGrounding] interceptor error:", err);
         // Never block generation on our account.
+    } finally {
+        cgInFlight = false;
     }
 };
 
@@ -851,7 +885,9 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 async function onMessageReceived() {
     const s = settings();
     if (!s.enabled || !s.groundFromReplies) return; // don't chase the model's own output by default
-    if (ledgerNames()) return; // ledger present → it already tracks the cast; skip regex
+    // The parser and the ledger both already account for the AI's output on the next
+    // turn, so only the plain regex fallback needs this post-hoc scan.
+    if (s.llmParser || ledgerNames()) return;
     const ctx = getContext();
     const chat = ctx.chat || [];
     const last = chat[chat.length - 1];
@@ -1184,5 +1220,13 @@ jQuery(async () => {
     settings();
     await addSettingsUI();
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    // Switching chats: forget the previous story's parsed words and drop any lingering
+    // canon injection so it can't bleed into the new chat's first generation.
+    if (event_types.CHAT_CHANGED) {
+        eventSource.on(event_types.CHAT_CHANGED, () => {
+            parsedWords = new Set();
+            try { setInjection(""); } catch (e) { /* not critical */ }
+        });
+    }
     console.log("[CanonGrounding] loaded.");
 });
