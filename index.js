@@ -37,8 +37,9 @@ const defaultSettings = {
     enabled: true,
     // Comma-separated Fandom subdomains to search, e.g. "the-eminence-in-shadow,dc".
     wikis: "the-eminence-in-shadow",
-    // Which infobox fields count as "physical/canonical" facts worth grounding.
-    fields: "hair,haircolor,hair color,eyes,eye color,eyecolor,height,age,race,species,gender",
+    // Which infobox fields count as "physical" facts. Kept to hair/eyes on purpose:
+    // other fields (height, age) collide with infobox image-sizing params and add noise.
+    fields: "hair,haircolor,hair color,eyes,eye color,eyecolor",
     // How many recent messages to consider when deciding which cached entities
     // are currently relevant enough to inject.
     contextWindow: 6,
@@ -165,12 +166,28 @@ function apiBase(wiki) {
 }
 
 async function findPageTitle(wiki, name) {
-    const url = `${apiBase(wiki)}?action=query&list=search&srlimit=1&format=json&origin=*&srsearch=${encodeURIComponent(name)}`;
+    // 1) Exact-title lookup first. A character's page is almost always titled with
+    //    their name, so this avoids search returning a subpage ("X/Relationships")
+    //    or an unrelated page ("Shadow Garden", "Anime").
+    try {
+        const u = `${apiBase(wiki)}?action=query&titles=${encodeURIComponent(name)}&redirects=1&format=json&origin=*`;
+        const r = await fetch(u);
+        if (r.ok) {
+            const d = await r.json();
+            const p = Object.values(d?.query?.pages || {})[0];
+            if (p && p.pageid && !("missing" in p) && !String(p.title).includes("/")) {
+                return p.title;
+            }
+        }
+    } catch (e) { /* fall through to search */ }
+
+    // 2) Fall back to full-text search, preferring a non-subpage result.
+    const url = `${apiBase(wiki)}?action=query&list=search&srlimit=5&format=json&origin=*&srsearch=${encodeURIComponent(name)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`search HTTP ${res.status}`);
-    const data = await res.json();
-    const hit = data?.query?.search?.[0];
-    return hit ? hit.title : null;
+    const hits = (await res.json())?.query?.search || [];
+    const main = hits.find(h => !String(h.title).includes("/"));
+    return main ? main.title : (hits[0] ? hits[0].title : null);
 }
 
 async function fetchWikitext(wiki, title) {
@@ -214,6 +231,9 @@ function extractFacts(wikitext, fieldList) {
                  .replace(/\s+/g, " ")
                  .trim();
         if (!val || seen.has(key)) continue;
+        // Reject infobox image-sizing / file / bare-number values (e.g. "250px",
+        // "Sherry.png", "3") that are not real appearance descriptors.
+        if (/^\d+\s*px$/i.test(val) || /\.(png|jpe?g|gif|webp|svg)$/i.test(val) || /^\d+$/.test(val)) continue;
         seen.add(key);
         // Normalize key for display (collapse the hair/haircolor variants).
         const label = key.replace(/colou?r/, "").trim() || key;
