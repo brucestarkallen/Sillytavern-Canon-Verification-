@@ -166,8 +166,16 @@ function extractCandidateNames(text) {
     let m;
     while ((m = capRe.exec(clean)) !== null) {
         const phrase = m[1].trim();
-        const first = phrase.split(/\s+/)[0];
-        if (phrase.split(/\s+/).length === 1 && STOPWORDS.has(first)) continue;
+        const words = phrase.split(/\s+/);
+        if (words.length === 1) {
+            if (STOPWORDS.has(words[0])) continue;
+            // A lone capitalized word that merely STARTS a sentence is not a name
+            // signal ("Current scene…", "Steam drifted…", "Water pooled…"). Only keep
+            // single capitals that appear MID-sentence (a real proper-noun signal).
+            // Multi-word phrases (Rose Oriana) are always kept.
+            const before = clean.slice(0, m.index).replace(/\s+$/, "");
+            if (before === "" || /[.!?:;\n"”)]$/.test(before)) continue;
+        }
         out.add(phrase);
     }
 
@@ -668,22 +676,24 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const s = settings();
         if (!s.enabled) return;
 
-        // Ground names appearing in the latest USER message before we generate.
-        const lastUser = [...chat].reverse().find(m => m.is_user);
-        if (lastUser) {
-            const names = extractCandidateNames(lastUser.mes);
-            if (names.length) await groundNames(names);
-        }
-
-        // If Summaryception's ledger is available, also ground its real characters that
-        // are in the current scene — a clean, LLM-verified cast (handles pronoun-only
-        // introductions and aliases the regex would miss), at no extra LLM cost.
         const scene = sceneMessages(getContext(), s.contextWindow);
         const lgNames = ledgerNames();
+
         if (lgNames) {
+            // Ledger present → ground ONLY its real, LLM-verified characters that are in
+            // the scene. This is the clean path: no regex candidates, so words like
+            // "Current"/"Steam" never get grounded, and aliases/pronoun cases are covered.
             const sceneLower = scene.join("\n").toLowerCase();
             const onScreen = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
             if (onScreen.length) await groundNames(onScreen);
+        } else {
+            // No ledger → fall back to grounding capitalized names from the user's
+            // message (sentence-initial words are already filtered out).
+            const lastUser = [...chat].reverse().find(m => m.is_user);
+            if (lastUser) {
+                const names = extractCandidateNames(lastUser.mes);
+                if (names.length) await groundNames(names);
+            }
         }
 
         // Inject only for characters ACTUALLY in the current visible scene — not for
@@ -723,6 +733,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 async function onMessageReceived() {
     const s = settings();
     if (!s.enabled || !s.groundFromReplies) return; // don't chase the model's own output by default
+    if (ledgerNames()) return; // ledger present → it already tracks the cast; skip regex
     const ctx = getContext();
     const chat = ctx.chat || [];
     const last = chat[chat.length - 1];
