@@ -74,6 +74,12 @@ const defaultSettings = {
     maxTotalChars: 2400,    // hard cap on the whole canon block; stop once reached
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
+    // LLM parser (Arbiter-style): before generation, a fast model reads the current
+    // scene and decides which CHARACTER names to search — replacing the dumb regex that
+    // grabbed words like "Current". Off by default (needs a model/adds a call); when on,
+    // it only fires when a potentially-new name appears, so a settled cast costs nothing.
+    llmParser: false,
+    llmProfileId: "",   // Connection Manager profile for the fast model ("" = main model)
     // When on, use Summaryception's LLM-built ledger (if present) as the authoritative
     // list of REAL characters — so only genuine cast get grounded/injected, not regex
     // junk. Falls back to name detection when no ledger is available.
@@ -598,10 +604,11 @@ function relevantCanonNote(sceneMsgs) {
     const s = settings();
     const msgs = sceneMsgs || [];
     const lowerMsgs = msgs.map(m => m.toLowerCase());
-    // If the ledger is available, restrict injection to its real characters — this
-    // removes regex false-positives ("Shadow Garden", "Anime", stray words) that
-    // would otherwise sit in the cache and match loosely.
-    const lgNames = ledgerNames();
+    // If the ledger is available AND we're not using the LLM parser, restrict injection
+    // to real ledger characters (removes regex false-positives). With the parser on, the
+    // cache already holds only real characters, and filtering by ledger would wrongly drop
+    // a character the parser found this turn that the ledger hasn't recorded yet.
+    const lgNames = (!s.llmParser) ? ledgerNames() : null;
     const ledger = lgNames ? new Set(lgNames.map(n => n.toLowerCase())) : null;
     const labels = {
         physical: "Appearance",
@@ -671,24 +678,111 @@ function relevantCanonNote(sceneMsgs) {
 // The pre-generation interceptor (streaming-safe injection)
 // ---------------------------------------------------------------------------
 
+/** Connection Manager profiles (for the fast parser model dropdown). */
+function getProfiles() {
+    try {
+        const list = getContext().extensionSettings?.connectionManager?.profiles;
+        return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
+}
+
+/** Pull a JSON array of strings out of model output (may include reasoning/fences). */
+function parseNameArray(text) {
+    if (!text) return [];
+    const cleaned = String(text).replace(/```(?:json)?/gi, "");
+    const start = cleaned.indexOf("[");
+    const end = cleaned.lastIndexOf("]");
+    if (start >= 0 && end > start) {
+        try {
+            const arr = JSON.parse(cleaned.slice(start, end + 1));
+            if (Array.isArray(arr)) {
+                return [...new Set(arr
+                    .filter(x => typeof x === "string")
+                    .map(x => x.trim())
+                    .filter(x => x.length >= 2 && x.length <= 50 && /[A-Za-z]/.test(x)))];
+            }
+        } catch (e) { /* fall through */ }
+    }
+    return [];
+}
+
+/**
+ * Arbiter-style pre-generation parse: a fast model reads the scene and returns the
+ * character names actually present. Time-boxed; returns [] on any failure so it can
+ * never block or break a turn.
+ */
+async function parseSceneCharacters(sceneText) {
+    const c = getContext();
+    const s = settings();
+    const systemText =
+        "You identify the fictional CHARACTERS (named people or beings) who are PRESENT " +
+        "or directly acting in a roleplay scene. Output ONLY a JSON array of their proper " +
+        "names as strings, most central first. Include a character even if later referred " +
+        "to only by a pronoun. EXCLUDE places, organizations, companies, objects, titles, " +
+        "and ordinary words. Output [] if there are none. No prose, no markdown.";
+    const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of character names present:`;
+    const budgetMs = 15000, maxTokens = 200;
+    const controller = new AbortController();
+    const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, budgetMs);
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const extract = (res) =>
+        typeof res === "string" ? res.trim()
+        : (res && typeof res === "object" ? String(res.content ?? res.text ?? "").trim() : "");
+    try {
+        let out = "";
+        const svc = c.ConnectionManagerRequestService;
+        if (s.llmProfileId && svc && typeof svc.sendRequest === "function") {
+            const messages = [{ role: "system", content: systemText }, { role: "user", content: userText }];
+            const res = await Promise.race([
+                svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true }),
+                sleep(budgetMs + 250).then(() => null),
+            ]);
+            out = extract(res);
+        } else if (typeof c.generateRaw === "function") {
+            const res = await Promise.race([
+                c.generateRaw({ prompt: userText, systemPrompt: systemText, responseLength: maxTokens }),
+                sleep(budgetMs).then(() => null),
+            ]);
+            out = extract(res);
+        }
+        return parseNameArray(out);
+    } catch (e) {
+        debug(`LLM parser failed: ${e.message}`);
+        return [];
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, type) {
     try {
         const s = settings();
         if (!s.enabled) return;
 
         const scene = sceneMessages(getContext(), s.contextWindow);
+        const sceneText = scene.join("\n");
         const lgNames = ledgerNames();
 
-        if (lgNames) {
-            // Ledger present → ground ONLY its real, LLM-verified characters that are in
-            // the scene. This is the clean path: no regex candidates, so words like
-            // "Current"/"Steam" never get grounded, and aliases/pronoun cases are covered.
-            const sceneLower = scene.join("\n").toLowerCase();
+        if (s.llmParser) {
+            // Primary path: a fast model reads THIS scene and names the characters —
+            // real-time and clean (no "Current"/"Steam"). Only call it when a capitalized
+            // word appears that we haven't already grounded/tried, so a settled cast is free.
+            const quick = extractCandidateNames(sceneText);
+            const hasNew = quick.some(n => !s.cache[n.toLowerCase()]);
+            if (hasNew) {
+                const cast = await parseSceneCharacters(sceneText);
+                if (cast.length) {
+                    debug(`LLM parser → ${cast.join(", ")}`);
+                    await groundNames(cast);
+                }
+            }
+        } else if (lgNames) {
+            // Ledger present → ground ONLY its real, LLM-verified characters in the scene.
+            const sceneLower = sceneText.toLowerCase();
             const onScreen = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
             if (onScreen.length) await groundNames(onScreen);
         } else {
-            // No ledger → fall back to grounding capitalized names from the user's
-            // message (sentence-initial words are already filtered out).
+            // No parser, no ledger → regex fallback (sentence-initial words filtered out).
             const lastUser = [...chat].reverse().find(m => m.is_user);
             if (lastUser) {
                 const names = extractCandidateNames(lastUser.mes);
@@ -794,6 +888,15 @@ async function addSettingsUI() {
                     <input id="cg_ledger" type="checkbox">
                     <span>Use Summaryception ledger for the real cast (recommended)</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="cg_llm" type="checkbox">
+                    <span>Use a fast LLM to pick names (best accuracy, adds a call when new names appear)</span>
+                </label>
+                <label>Parser model (Connection Manager profile — blank = main model)</label>
+                <div style="display:flex; gap:4px; align-items:center;">
+                    <select id="cg_profile" class="text_pole" style="flex:1;"></select>
+                    <div id="cg_profile_refresh" class="menu_button fa-solid fa-rotate" title="Refresh profiles"></div>
+                </div>
                 <label>Wiki subdomains (comma-separated) — active for this story</label>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
                 <div style="margin-top:4px;">
@@ -861,6 +964,22 @@ async function addSettingsUI() {
     $("#cg_ledger").prop("checked", s.useLedger).on("input", function () {
         s.useLedger = $(this).prop("checked"); saveSettingsDebounced();
     });
+    $("#cg_llm").prop("checked", s.llmParser).on("input", function () {
+        s.llmParser = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    const fillProfiles = () => {
+        const $sel = $("#cg_profile").empty();
+        $sel.append('<option value="">(main model)</option>');
+        for (const p of getProfiles()) {
+            if (p && p.id) $sel.append($("<option></option>").val(p.id).text(p.name || p.id));
+        }
+        $sel.val(s.llmProfileId || "");
+    };
+    fillProfiles();
+    $("#cg_profile").on("change", function () {
+        s.llmProfileId = String($(this).val()); saveSettingsDebounced();
+    });
+    $("#cg_profile_refresh").on("click", fillProfiles);
     $("#cg_wikis").val(s.wikis).on("input", function () {
         s.wikis = String($(this).val()); saveSettingsDebounced();
     });
