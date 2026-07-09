@@ -70,6 +70,10 @@ const defaultSettings = {
     maxTotalChars: 2400,    // hard cap on the whole canon block; stop once reached
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
+    // When on, use Summaryception's LLM-built ledger (if present) as the authoritative
+    // list of REAL characters — so only genuine cast get grounded/injected, not regex
+    // junk. Falls back to name detection when no ledger is available.
+    useLedger: true,
     // When on, grounds names found in the AI's replies too (not just yours), so
     // characters the AI introduces into a scene get grounded. On by default.
     groundFromReplies: true,
@@ -509,6 +513,26 @@ function sceneMessages(ctx, windowSize) {
     return visible.slice(-Math.max(1, windowSize)).map(m => m.mes || "");
 }
 
+/**
+ * Summaryception's ledger — an LLM-maintained, curated list of the REAL characters
+ * in this story (keyed by name, with whereabouts in each entry). Reading it lets us
+ * ground/inject only genuine cast instead of trusting regex, at zero extra LLM cost
+ * because Summaryception already computed it. Returns a lowercase Set of names, or
+ * null when Summaryception isn't running / has no ledger.
+ */
+function ledgerNames() {
+    try {
+        if (!settings().useLedger) return null;
+        const md = getContext().chatMetadata;
+        const ledger = md && md.summaryception && md.summaryception.ledger;
+        if (ledger && typeof ledger === "object" && !Array.isArray(ledger)) {
+            const keys = Object.keys(ledger);
+            if (keys.length) return keys;
+        }
+    } catch (e) { /* Summaryception not present — fall back */ }
+    return null;
+}
+
 function clip(str, max) {
     if (str.length <= max) return str;
     return str.slice(0, max).replace(/\s+\S*$/, "") + "…";
@@ -518,6 +542,11 @@ function relevantCanonNote(sceneMsgs) {
     const s = settings();
     const msgs = sceneMsgs || [];
     const lowerMsgs = msgs.map(m => m.toLowerCase());
+    // If the ledger is available, restrict injection to its real characters — this
+    // removes regex false-positives ("Shadow Garden", "Anime", stray words) that
+    // would otherwise sit in the cache and match loosely.
+    const lgNames = ledgerNames();
+    const ledger = lgNames ? new Set(lgNames.map(n => n.toLowerCase())) : null;
     const labels = {
         physical: "Appearance",
         relationship: "Relationships",
@@ -534,6 +563,7 @@ function relevantCanonNote(sceneMsgs) {
     for (const key of Object.keys(s.cache)) {
         const entry = s.cache[key];
         if (!entry.found || !entry.sections) continue;
+        if (ledger && !ledger.has(entry.name.toLowerCase()) && !ledger.has(key)) continue; // not real cast
         const names = [entry.name.toLowerCase(), key].filter(Boolean);
         let lastIdx = -1;
         for (let i = lowerMsgs.length - 1; i >= 0; i--) {
@@ -585,6 +615,17 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         if (lastUser) {
             const names = extractCandidateNames(lastUser.mes);
             if (names.length) await groundNames(names);
+        }
+
+        // If Summaryception's ledger is available, also ground its real characters that
+        // are in the current scene — a clean, LLM-verified cast (handles pronoun-only
+        // introductions and aliases the regex would miss), at no extra LLM cost.
+        const scene = sceneMessages(getContext(), s.contextWindow);
+        const lgNames = ledgerNames();
+        if (lgNames) {
+            const sceneLower = scene.join("\n").toLowerCase();
+            const onScreen = lgNames.filter(n => sceneLower.includes(n.toLowerCase()));
+            if (onScreen.length) await groundNames(onScreen);
         }
 
         // Inject only for characters ACTUALLY in the current visible scene — not for
@@ -680,6 +721,10 @@ async function addSettingsUI() {
                     <input id="cg_replies" type="checkbox">
                     <span>Also ground names from AI replies</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="cg_ledger" type="checkbox">
+                    <span>Use Summaryception ledger for the real cast (recommended)</span>
+                </label>
                 <label>Wiki subdomains (comma-separated) — active for this story</label>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
                 <div style="margin-top:4px;">
@@ -736,6 +781,9 @@ async function addSettingsUI() {
     });
     $("#cg_replies").prop("checked", s.groundFromReplies).on("input", function () {
         s.groundFromReplies = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_ledger").prop("checked", s.useLedger).on("input", function () {
+        s.useLedger = $(this).prop("checked"); saveSettingsDebounced();
     });
     $("#cg_wikis").val(s.wikis).on("input", function () {
         s.wikis = String($(this).val()); saveSettingsDebounced();
@@ -811,7 +859,9 @@ function renderLastInjection() {
     $el.text(lastInjection);
     const approxTokens = Math.round(lastInjection.length / 4);
     const when = lastInjectionAt ? new Date(lastInjectionAt).toLocaleTimeString() : "";
-    $("#cg_inject_time").text(`~${approxTokens} tokens${when ? " · " + when : ""}`);
+    const lg = ledgerNames();
+    const src = lg ? `ledger cast (${lg.length})` : "name-matching";
+    $("#cg_inject_time").text(`~${approxTokens} tokens · ${src}${when ? " · " + when : ""}`);
 }
 
 // Toggle a saved subdomain in/out of the active field.
