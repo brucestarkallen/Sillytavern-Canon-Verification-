@@ -36,6 +36,7 @@ const MODULE_NAME = "canon_grounding";
 // What the extension injected on the most recent turn (for the settings display).
 let lastInjection = "";
 let lastInjectionAt = 0;
+let lastMatchReasons = [];  // why each injected character was considered "present"
 
 const defaultSettings = {
     enabled: true,
@@ -615,18 +616,25 @@ function relevantCanonNote(sceneMsgs) {
             .filter(Boolean);
         // Ledger filter: keep only real cast — but a nickname counts, so check aliases too.
         if (ledger && !names.some(n => ledger.has(n))) continue;
-        let lastIdx = -1;
+        // All the names this character goes by: page title, search key, and aliases.
+        const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())]
+            .filter(Boolean);
+        // Ledger filter: keep only real cast — but a nickname counts, so check aliases too.
+        if (ledger && !names.some(n => ledger.has(n))) continue;
+        let lastIdx = -1, matchedName = "";
         for (let i = lowerMsgs.length - 1; i >= 0; i--) {
-            if (names.some(n => mentioned(n, lowerMsgs[i]))) { lastIdx = i; break; }
+            const hit = names.find(n => mentioned(n, lowerMsgs[i]));
+            if (hit) { lastIdx = i; matchedName = hit; break; }
         }
-        if (lastIdx >= 0) present.push({ entry, lastIdx });
+        if (lastIdx >= 0) present.push({ entry, lastIdx, matchedName });
     }
     // Most recently mentioned first — those are the characters actually in play now.
     present.sort((a, b) => b.lastIdx - a.lastIdx);
 
     const blocks = [];
+    const reasons = [];
     let total = 0;
-    for (const { entry } of present) {
+    for (const { entry, matchedName, lastIdx } of present) {
         if (blocks.length >= s.maxCharacters) break;
         const lines = [];
         for (const cat of order) {
@@ -640,7 +648,12 @@ function relevantCanonNote(sceneMsgs) {
         }
         blocks.push(block);
         total += block.length;
+        const snippet = (msgs[lastIdx] || "").replace(/\s+/g, " ").trim();
+        const at = snippet.toLowerCase().indexOf(matchedName);
+        const around = at >= 0 ? snippet.slice(Math.max(0, at - 25), at + matchedName.length + 25) : snippet.slice(0, 60);
+        reasons.push(`${entry.name} ← matched "${matchedName}" in: …${around}…`);
     }
+    lastMatchReasons = reasons;
     if (!blocks.length) return "";
     return (
         "[AUTHORITATIVE SOURCE CANON — retrieved from the official wiki for this " +
@@ -816,6 +829,8 @@ async function addSettingsUI() {
                 <hr>
                 <small><b>Last injection</b> <span id="cg_inject_time" class="cg-empty"></span> — exactly what was added to the prompt:</small>
                 <pre id="cg_last_inject" class="cg-inject"></pre>
+                <small>Why each was injected (which name matched, and where):</small>
+                <div id="cg_why" class="cg-why"></div>
                 <small>Facts are fetched once per character and cached across sessions.</small>
             </div>
         </div>
@@ -934,6 +949,16 @@ function renderLastInjection() {
     const lg = ledgerNames();
     const src = lg ? `ledger cast (${lg.length})` : "name-matching";
     $("#cg_inject_time").text(`~${approxTokens} tokens · ${src}${when ? " · " + when : ""}`);
+    // Show WHY each character was injected — reveals a wrong match at a glance.
+    const $why = $("#cg_why");
+    if ($why.length) {
+        $why.empty();
+        if (lastMatchReasons.length) {
+            for (const r of lastMatchReasons) $("<div class='cg-why-row'></div>").text(r).appendTo($why);
+        } else {
+            $why.append('<span class="cg-empty">—</span>');
+        }
+    }
 }
 
 // Toggle a saved subdomain in/out of the active field.
