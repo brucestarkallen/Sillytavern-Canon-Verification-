@@ -53,6 +53,9 @@ const defaultSettings = {
     biographyKeywords: "history,background,biography,backstory,origin,occupation,affiliation,alignment,status,alias,identity,citizenship,nationality,residence,base,birthplace,birthday,born,education,universe,reality,first appearance,rank,position,species,race",
     personalityKeywords: "personality,character,temperament,traits",
     abilitiesKeywords: "power,abilities,ability,skill,technique,weapon,equipment,arsenal,strength,weakness,magic,quirk,devil fruit,semblance,jutsu,nen,stand",
+    // Infobox fields that list a character's other names, so nicknames (e.g. "Alya"
+    // for "Alisa Mikhailovna Kujou") match the same grounded entry automatically.
+    aliasKeywords: "alias,nickname,also known,other name,epithet,codename,aka,known as",
     // What KIND of canon to ground and inject. Physical is on by default; the others
     // are opt-in because they inject prose and can make the model more rigid.
     physical: true,       // appearance: hair, eyes, look
@@ -368,6 +371,20 @@ function extractLead(wikitext, maxLen = 220) {
     return body.length > maxLen ? body.slice(0, maxLen).replace(/\s+\S*$/, "") + "…" : body;
 }
 
+/** Individual other-names for a character, from infobox nickname/alias fields. */
+function extractAliases(wikitext, keywords) {
+    const raw = extractInfoboxFields(wikitext, keywords, 500);
+    if (!raw) return [];
+    // "Nicknames: Alya, Alya-chan; Aliases: Solitary Princess" -> ["Alya","Solitary Princess",...]
+    const values = raw.split(";").map(part => part.replace(/^[^:]+:\s*/, "")).join(",");
+    const out = [];
+    for (let a of values.split(/[,、]/)) {
+        a = a.replace(/\([^)]*\)/g, "").replace(/["'“”]/g, "").trim(); // drop "(by X)" notes, quotes
+        if (a.length >= 2 && a.length <= 40 && /[A-Za-z]/.test(a)) out.push(a);
+    }
+    return [...new Set(out)];
+}
+
 // ---------------------------------------------------------------------------
 // Grounding: fetch + cache a single entity (once, ever)
 // ---------------------------------------------------------------------------
@@ -434,10 +451,14 @@ async function ensureGrounded(name) {
 
             const anything = Object.values(sections).some(Boolean);
             if (anything) {
-                s.cache[key] = { name: title, sections, wiki, found: true, ts: Date.now() };
+                // Remember the character's other names (nickname/alias fields) plus the
+                // term we searched with, so any of them match this entry later.
+                const aliases = extractAliases(wikitext, s.aliasKeywords.split(","));
+                if (name && name.toLowerCase() !== title.toLowerCase()) aliases.push(name);
+                s.cache[key] = { name: title, sections, aliases, wiki, found: true, ts: Date.now() };
                 saveSettingsDebounced();
                 const got = Object.entries(sections).filter(([, v]) => v).map(([k]) => k).join(", ");
-                debug(`✓ ${title} → ${physical || "(no appearance)"} [have: ${got}]`);
+                debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${physical || "(no appearance)"} [have: ${got}]`);
                 return s.cache[key];
             }
             pageFoundNoFacts = true;
@@ -540,8 +561,11 @@ function relevantCanonNote(sceneMsgs) {
     for (const key of Object.keys(s.cache)) {
         const entry = s.cache[key];
         if (!entry.found || !entry.sections) continue;
-        if (ledger && !ledger.has(entry.name.toLowerCase()) && !ledger.has(key)) continue; // not real cast
-        const names = [entry.name.toLowerCase(), key].filter(Boolean);
+        // All the names this character goes by: page title, search key, and aliases.
+        const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())]
+            .filter(Boolean);
+        // Ledger filter: keep only real cast — but a nickname counts, so check aliases too.
+        if (ledger && !names.some(n => ledger.has(n))) continue;
         let lastIdx = -1;
         for (let i = lowerMsgs.length - 1; i >= 0; i--) {
             if (names.some(n => lowerMsgs[i].includes(n))) { lastIdx = i; break; }
@@ -719,6 +743,8 @@ async function addSettingsUI() {
                 <input id="cg_perkw" class="text_pole" type="text">
                 <label>Powers &amp; abilities keywords</label>
                 <input id="cg_abikw" class="text_pole" type="text">
+                <label>Alias / nickname keywords (so "Alya" finds "Alisa")</label>
+                <input id="cg_aliaskw" class="text_pole" type="text">
                 <label>Scene window (visible messages that count as "now")</label>
                 <input id="cg_window" class="text_pole" type="number" min="1" max="100">
                 <small><b>Size limits</b> (stop the prompt ballooning with a big cast):</small>
@@ -783,6 +809,9 @@ async function addSettingsUI() {
     $("#cg_abikw").val(s.abilitiesKeywords).on("input", function () {
         s.abilitiesKeywords = String($(this).val()); saveSettingsDebounced();
     });
+    $("#cg_aliaskw").val(s.aliasKeywords).on("input", function () {
+        s.aliasKeywords = String($(this).val()); saveSettingsDebounced();
+    });
     $("#cg_window").val(s.contextWindow).on("input", function () {
         const n = parseInt($(this).val(), 10);
         s.contextWindow = Number.isFinite(n) && n > 0 ? n : 10;
@@ -800,7 +829,7 @@ async function addSettingsUI() {
     numHandler("#cg_maxtotal", "maxTotalChars", 200, 2400);
 
     $("#cg_reset_kw").on("click", function () {
-        for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords"]) {
+        for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords"]) {
             s[k] = defaultSettings[k];
         }
         $("#cg_fields").val(s.fields);
@@ -808,6 +837,7 @@ async function addSettingsUI() {
         $("#cg_biokw").val(s.biographyKeywords);
         $("#cg_perkw").val(s.personalityKeywords);
         $("#cg_abikw").val(s.abilitiesKeywords);
+        $("#cg_aliaskw").val(s.aliasKeywords);
         saveSettingsDebounced();
         toastr?.info?.("Fields & keywords reset. Clear the cache to re-fetch with the new fields.");
     });
