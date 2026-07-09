@@ -536,6 +536,24 @@ function clip(str, max) {
     return str.slice(0, max).replace(/\s+\S*$/, "") + "…";
 }
 
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+/**
+ * Whole-word-ish match: "Cid" matches "Cid drew his sword" and "Cid's" but NOT
+ * "Cidolfus"; "Lucy" won't fire inside "reclusively". Hyphens/apostrophes/spaces
+ * count as boundaries so "Alya" still matches "Alya-chan". Falls back to substring
+ * for non-Latin names where boundaries are unreliable.
+ */
+function mentioned(name, lowerText) {
+    if (!name || !lowerText) return false;
+    if (/[^\x00-\x7F]/.test(name)) return lowerText.includes(name);
+    try {
+        return new RegExp(`(^|[^a-z0-9])${escapeRegex(name)}([^a-z0-9]|$)`, "i").test(lowerText);
+    } catch (e) {
+        return lowerText.includes(name);
+    }
+}
+
 function relevantCanonNote(sceneMsgs) {
     const s = settings();
     const msgs = sceneMsgs || [];
@@ -568,7 +586,7 @@ function relevantCanonNote(sceneMsgs) {
         if (ledger && !names.some(n => ledger.has(n))) continue;
         let lastIdx = -1;
         for (let i = lowerMsgs.length - 1; i >= 0; i--) {
-            if (names.some(n => lowerMsgs[i].includes(n))) { lastIdx = i; break; }
+            if (names.some(n => mentioned(n, lowerMsgs[i]))) { lastIdx = i; break; }
         }
         if (lastIdx >= 0) present.push({ entry, lastIdx });
     }
@@ -625,7 +643,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const lgNames = ledgerNames();
         if (lgNames) {
             const sceneLower = scene.join("\n").toLowerCase();
-            const onScreen = lgNames.filter(n => sceneLower.includes(n.toLowerCase()));
+            const onScreen = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
             if (onScreen.length) await groundNames(onScreen);
         }
 
