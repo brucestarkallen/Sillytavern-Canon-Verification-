@@ -528,9 +528,11 @@ async function ensureGrounded(name, trusted = false) {
 }
 
 async function groundNames(names, trusted = false) {
-    for (const n of names) {
-        await ensureGrounded(n, trusted);
-    }
+    // Resolve all new entities concurrently (each is cache-checked inside, so this only
+    // hits the wiki for ones we don't already have). One failing lookup can't sink the rest.
+    await Promise.all(
+        names.map(n => ensureGrounded(n, trusted).catch(e => debug(`ground "${n}" failed: ${e.message}`)))
+    );
 }
 
 // ---------------------------------------------------------------------------
