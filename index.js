@@ -64,6 +64,10 @@ const defaultSettings = {
     // to inject. ~10 matches a setup that summarizes everything older. Higher = a
     // character stays grounded longer after they stop being mentioned.
     contextWindow: 10,
+    // Hard limits so a big cast (e.g. High School DxD) can't balloon the prompt.
+    maxCharacters: 6,       // inject at most this many characters (the most recent)
+    maxCharsPerChar: 400,   // cap per character across all its categories
+    maxTotalChars: 2400,    // hard cap on the whole canon block; stop once reached
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
     // When on, grounds names found in the AI's replies too (not just yours), so
@@ -337,7 +341,7 @@ function cleanWikitext(wt) {
 }
 
 /** Extract infobox fields whose NAME contains any of the given keywords. */
-function extractInfoboxFields(wikitext, keywords, maxLen = 320) {
+function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
     if (!wikitext) return "";
     const kw = keywords.map(k => k.trim().toLowerCase()).filter(Boolean);
     const out = [];
@@ -360,7 +364,7 @@ function extractInfoboxFields(wikitext, keywords, maxLen = 320) {
 }
 
 /** Return the body of the first section whose title matches one of `titles`. */
-function extractSection(wikitext, titles, maxLen = 350) {
+function extractSection(wikitext, titles, maxLen = 260) {
     if (!wikitext) return "";
     // Split before any line that starts a header (== ... ==).
     const chunks = wikitext.split(/\n(?==={1,4}[^=])/);
@@ -378,7 +382,7 @@ function extractSection(wikitext, titles, maxLen = 350) {
 }
 
 /** Lead (intro) paragraph of the article, before the first section header. */
-function extractLead(wikitext, maxLen = 300) {
+function extractLead(wikitext, maxLen = 220) {
     if (!wikitext) return "";
     const lead = wikitext.split(/\n=={1,4}[^=]/)[0] || "";
     const body = cleanWikitext(lead);
@@ -496,39 +500,66 @@ async function groundNames(names) {
  * few visible messages does. Leaves the scene → stops injecting; returns → instant
  * re-inject from cache.
  */
-function sceneText(ctx, windowSize) {
+function sceneMessages(ctx, windowSize) {
     const chat = ctx.chat || [];
     const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[Canonical reference", "[Plot essential"];
     const visible = chat.filter(m =>
         !m.is_system && !markers.some(mk => (m.mes || "").includes(mk))
     );
-    return visible.slice(-Math.max(1, windowSize)).map(m => m.mes || "").join("\n");
+    return visible.slice(-Math.max(1, windowSize)).map(m => m.mes || "");
 }
 
-function relevantCanonNote(scanText) {
+function clip(str, max) {
+    if (str.length <= max) return str;
+    return str.slice(0, max).replace(/\s+\S*$/, "") + "…";
+}
+
+function relevantCanonNote(sceneMsgs) {
     const s = settings();
-    const text = (scanText || "").toLowerCase();
+    const msgs = sceneMsgs || [];
+    const lowerMsgs = msgs.map(m => m.toLowerCase());
     const labels = {
         physical: "Appearance",
-        personality: "Personality",
         relationship: "Relationships",
+        personality: "Personality",
         biography: "Background",
         abilities: "Powers & Abilities",
     };
-    const blocks = [];
+    // Order matters: lean, high-value facts first so they survive the per-character cap;
+    // verbose biography/abilities are trimmed first when space runs out.
+    const order = ["physical", "relationship", "personality", "biography", "abilities"];
+
+    // Find every cached character present in the scene and WHERE they were last mentioned.
+    const present = [];
     for (const key of Object.keys(s.cache)) {
         const entry = s.cache[key];
         if (!entry.found || !entry.sections) continue;
-        const names = [entry.name.toLowerCase(), key];
-        if (!names.some(n => n && text.includes(n))) continue;
-
-        const lines = [];
-        for (const cat of ["physical", "personality", "relationship", "biography", "abilities"]) {
-            if (s[cat] && entry.sections[cat]) {
-                lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
-            }
+        const names = [entry.name.toLowerCase(), key].filter(Boolean);
+        let lastIdx = -1;
+        for (let i = lowerMsgs.length - 1; i >= 0; i--) {
+            if (names.some(n => lowerMsgs[i].includes(n))) { lastIdx = i; break; }
         }
-        if (lines.length) blocks.push(`${entry.name}:\n${lines.join("\n")}`);
+        if (lastIdx >= 0) present.push({ entry, lastIdx });
+    }
+    // Most recently mentioned first — those are the characters actually in play now.
+    present.sort((a, b) => b.lastIdx - a.lastIdx);
+
+    const blocks = [];
+    let total = 0;
+    for (const { entry } of present) {
+        if (blocks.length >= s.maxCharacters) break;
+        const lines = [];
+        for (const cat of order) {
+            if (s[cat] && entry.sections[cat]) lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
+        }
+        if (!lines.length) continue;
+        let block = clip(`${entry.name}:\n${lines.join("\n")}`, s.maxCharsPerChar);
+        if (total + block.length > s.maxTotalChars) {
+            if (blocks.length === 0) block = clip(block, s.maxTotalChars); // always fit at least one
+            else break;
+        }
+        blocks.push(block);
+        total += block.length;
     }
     if (!blocks.length) return "";
     return (
@@ -558,9 +589,9 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 
         // Inject only for characters ACTUALLY in the current visible scene — not for
         // every name that lingers in the permanent summary (that would pile up forever
-        // and overwhelm the model). sceneText excludes hidden turns and memory blocks.
+        // and overwhelm the model). Recency-prioritized and hard-capped by size.
         const ctx = getContext();
-        const note = relevantCanonNote(sceneText(ctx, s.contextWindow));
+        const note = relevantCanonNote(sceneMessages(ctx, s.contextWindow));
 
         // Record exactly what we injected this turn so it can be shown in settings.
         lastInjection = note || "";
@@ -668,6 +699,13 @@ async function addSettingsUI() {
                 <input id="cg_abikw" class="text_pole" type="text">
                 <label>Scene window (visible messages that count as "now")</label>
                 <input id="cg_window" class="text_pole" type="number" min="1" max="100">
+                <small><b>Size limits</b> (stop the prompt ballooning with a big cast):</small>
+                <label>Max characters injected at once</label>
+                <input id="cg_maxchars" class="text_pole" type="number" min="1" max="30">
+                <label>Max characters (text length) per character</label>
+                <input id="cg_maxper" class="text_pole" type="number" min="80" max="2000" step="50">
+                <label>Max total length for the whole canon block</label>
+                <input id="cg_maxtotal" class="text_pole" type="number" min="200" max="20000" step="100">
                 <hr>
                 <small><b>Cache</b> — what's grounded (× removes one, so it re-fetches):</small>
                 <div id="cg_cache_list" class="cg-cache"></div>
@@ -722,6 +760,16 @@ async function addSettingsUI() {
         s.contextWindow = Number.isFinite(n) && n > 0 ? n : 10;
         saveSettingsDebounced();
     });
+    const numHandler = (id, key, min, def) => {
+        $(id).val(s[key]).on("input", function () {
+            const n = parseInt($(this).val(), 10);
+            s[key] = Number.isFinite(n) && n >= min ? n : def;
+            saveSettingsDebounced();
+        });
+    };
+    numHandler("#cg_maxchars", "maxCharacters", 1, 6);
+    numHandler("#cg_maxper", "maxCharsPerChar", 80, 400);
+    numHandler("#cg_maxtotal", "maxTotalChars", 200, 2400);
 
     // Keep the active field and the saved-wiki highlights in sync.
     $("#cg_wikis").off("input").on("input", function () {
@@ -761,7 +809,9 @@ function renderLastInjection() {
         return;
     }
     $el.text(lastInjection);
-    $("#cg_inject_time").text(lastInjectionAt ? `at ${new Date(lastInjectionAt).toLocaleTimeString()}` : "");
+    const approxTokens = Math.round(lastInjection.length / 4);
+    const when = lastInjectionAt ? new Date(lastInjectionAt).toLocaleTimeString() : "";
+    $("#cg_inject_time").text(`~${approxTokens} tokens${when ? " · " + when : ""}`);
 }
 
 // Toggle a saved subdomain in/out of the active field.
