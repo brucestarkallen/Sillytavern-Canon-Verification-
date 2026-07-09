@@ -762,14 +762,16 @@ async function parseSceneCharacters(sceneText) {
     const s = settings();
     const systemText =
         "This is a scene from a work of fiction that has published source material with a " +
-        "wiki. Your job: list the canon entities in this scene that are worth looking up in " +
-        "that wiki to keep them accurate — the named CHARACTERS present or acting, and also " +
-        "PLACES, ORGANIZATIONS, groups, or notable lore terms when they are central to what " +
-        "is happening. Use your own knowledge of the series to tell a real canon entity from " +
-        "ordinary description. Give each entity's canonical name (the one the wiki would use). " +
-        "Include a character even if now referred to only by a pronoun. Leave out generic " +
-        "words, everyday objects, and anything invented just for this scene. Respond with " +
-        "ONLY a JSON array of names as strings, most central first, or [] if none. No other text.";
+        "wiki. List the canon entities worth looking up in that wiki so the writer can portray " +
+        "them accurately. INCLUDE: (a) characters who are present or acting in the scene; " +
+        "(b) characters who are NAMED, referred to, remembered, or asked about even if NOT " +
+        "physically present — the writer still needs to know who they are to mention them " +
+        "correctly (e.g. someone the player asks 'have you seen X?'); (c) places, organizations, " +
+        "groups, or notable lore that are central to what is happening. Use your own knowledge " +
+        "of the series to tell a real canon entity from ordinary description. Give each entity's " +
+        "canonical name (the one the wiki would use). Leave out generic words, everyday objects, " +
+        "and anything invented just for this scene. Respond with ONLY a JSON array of names as " +
+        "strings, most central first, or [] if none. No other text.";
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
     const budgetMs = 15000, maxTokens = 200;
     const controller = new AbortController();
