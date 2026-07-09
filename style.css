@@ -1,0 +1,12 @@
+.canon-grounding-settings .inline-drawer-content label {
+    display: block;
+    margin-top: 8px;
+    font-size: 0.9em;
+    opacity: 0.85;
+}
+
+.canon-grounding-settings .inline-drawer-content small {
+    display: block;
+    margin-top: 8px;
+    opacity: 0.7;
+}
