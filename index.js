@@ -72,10 +72,12 @@ const defaultSettings = {
     // to inject. ~10 matches a setup that summarizes everything older. Higher = a
     // character stays grounded longer after they stop being mentioned.
     contextWindow: 10,
-    // Hard limits so a big cast (e.g. High School DxD) can't balloon the prompt.
-    maxCharacters: 6,       // inject at most this many characters (the most recent)
-    maxCharsPerChar: 400,   // cap per character across all its categories
-    maxTotalChars: 2400,    // hard cap on the whole canon block; stop once reached
+    // Hard limits so a big cast (e.g. High School DxD) can't balloon the prompt. Set a
+    // bit generously because the LLM parser only returns real, relevant entities (no
+    // regex junk), so there's room for present + referenced characters.
+    maxCharacters: 8,       // inject at most this many entities (most central first)
+    maxCharsPerChar: 400,   // cap per entity across all its categories
+    maxTotalChars: 3000,    // hard cap on the whole canon block; stop once reached
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
     // LLM parser (Arbiter-style): before generation, a fast model reads the current
@@ -116,6 +118,10 @@ function settings() {
     if (extension_settings[MODULE_NAME].fields === OLD_FIELDS) {
         extension_settings[MODULE_NAME].fields = defaultSettings.fields;
     }
+    // Bump the old default caps (6 / 2400) so referenced characters have room. Only if
+    // still at the old default (i.e. never customized).
+    if (extension_settings[MODULE_NAME].maxCharacters === 6) extension_settings[MODULE_NAME].maxCharacters = 8;
+    if (extension_settings[MODULE_NAME].maxTotalChars === 2400) extension_settings[MODULE_NAME].maxTotalChars = 3000;
     return extension_settings[MODULE_NAME];
 }
 
@@ -852,11 +858,23 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             //    recurring non-characters (Mitsugoshi) don't re-fire — it settles when stable.
             let shouldParse = s.parserEveryTurn;
             const quick = extractCandidateNames(sceneText);
+            const notHandled = (n) => {
+                const lc = n.toLowerCase();
+                if (cacheEntryFor(lc)) return false;                                   // grounded (name/alias)
+                const neg = s.cache[lc];
+                if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)) return false; // fresh miss
+                return true;
+            };
             if (!shouldParse) {
-                shouldParse = quick.some(n => {
-                    const lc = n.toLowerCase();
-                    return !parsedWords.has(lc) && !s.cache[lc];
-                });
+                // A capitalized word we've never shown the model and never grounded.
+                shouldParse = quick.some(n => notHandled(n) && !parsedWords.has(n.toLowerCase()));
+            }
+            if (!shouldParse) {
+                // Always (re)parse when the CURRENT user message names someone we haven't
+                // grounded — the player is bringing them up (e.g. "have you seen Mary?"), so
+                // fetch their canon even if that name was seen before.
+                const lastUserMsg = ([...chat].reverse().find(m => m.is_user) || {}).mes || "";
+                shouldParse = extractCandidateNames(lastUserMsg).some(notHandled);
             }
             if (shouldParse) {
                 const parsed = await parseSceneCharacters(sceneText);
