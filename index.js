@@ -42,6 +42,8 @@ const defaultSettings = {
     // How many recent messages to consider when deciding which cached entities
     // are currently relevant enough to inject.
     contextWindow: 6,
+    // When on, shows a toast for each grounding attempt (found facts / miss / error).
+    debug: false,
     // cache: { "lower name": { name, facts, aliases:[], wiki, found:bool, ts } }
     cache: {},
 };
@@ -57,6 +59,17 @@ function settings() {
         }
     }
     return extension_settings[MODULE_NAME];
+}
+
+// Emit a diagnostic line (console always; toast when debug is on) so we can SEE
+// what grounding actually did for each character instead of guessing.
+function debug(msg) {
+    console.log(`[CanonGrounding] ${msg}`);
+    try {
+        if (settings().debug && typeof toastr !== "undefined") {
+            toastr.info(msg, "Canon Grounding", { timeOut: 8000, extendedTimeOut: 4000 });
+        }
+    } catch (e) { /* toast is best-effort */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -220,16 +233,29 @@ const PROSE_STOP = new Set([
 function extractFromProse(text) {
     if (!text) return "";
     const snippet = text.slice(0, 4000);
-    const found = [];
+
+    const clean = (words) => {
+        let w = words.trim().split(/\s+/);
+        while (w.length && PROSE_STOP.has(w[0].toLowerCase())) w.shift();
+        if (w.length > 2) w = w.slice(-2);
+        return w.length ? w.join(" ") : null;
+    };
+
+    // Compound case first: "pastel pink hair and eyes" — one color covers both.
+    const compound = snippet.match(
+        /((?:[A-Za-z][A-Za-z-]+\s+){1,4})hair\s+and\s+eyes\b/i
+    );
+    if (compound) {
+        const c = clean(compound[1]);
+        if (c) return `hair: ${c}; eyes: ${c}`;
+    }
+
     const grab = (noun) => {
         const re = new RegExp(`((?:[A-Za-z][A-Za-z-]+\\s+){1,4})${noun}\\b`, "i");
         const m = snippet.match(re);
-        if (!m) return null;
-        let words = m[1].trim().split(/\s+/);
-        while (words.length && PROSE_STOP.has(words[0].toLowerCase())) words.shift();
-        if (words.length > 2) words = words.slice(-2); // keep the closest 2 descriptors
-        return words.length ? words.join(" ") : null;
+        return m ? clean(m[1]) : null;
     };
+    const found = [];
     const hair = grab("hair");
     const eyes = grab("eyes");
     if (hair) found.push(`hair: ${hair}`);
@@ -248,40 +274,43 @@ async function ensureGrounded(name) {
     const key = name.toLowerCase();
     const existing = s.cache[key];
     if (existing) {
-        // Already resolved, or recently failed — skip.
-        if (existing.found) return existing;
-        if (Date.now() - existing.ts < NEGATIVE_TTL) return existing;
+        if (existing.found) return existing;                       // already grounded
+        if (Date.now() - existing.ts < NEGATIVE_TTL) return existing; // genuine recent miss
     }
 
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
+    let hadError = false;      // network / HTTP / parse failure (transient — retry later)
+    let pageFoundNoFacts = false;
+
     for (const wiki of wikis) {
         try {
             const title = await findPageTitle(wiki, name);
-            if (!title) continue;
-            const wikitext = await fetchWikitext(wiki, title);
-            let facts = extractFacts(wikitext, s.fields);
-            if (!facts) {
-                // Infobox had nothing usable — try to read it out of the prose.
-                try {
-                    const extract = await fetchExtract(wiki, title);
-                    facts = extractFromProse(extract);
-                } catch (e) {
-                    console.warn(`[CanonGrounding] prose fallback failed for "${name}":`, e.message);
-                }
-            }
+            if (!title) continue; // no such page on this wiki — a real miss, not an error
+            let facts = extractFacts(await fetchWikitext(wiki, title), s.fields);
+            if (!facts) facts = extractFromProse(await fetchExtract(wiki, title));
             if (facts) {
                 s.cache[key] = { name: title, facts, aliases: [], wiki, found: true, ts: Date.now() };
                 saveSettingsDebounced();
+                debug(`✓ ${title} → ${facts}`);
                 return s.cache[key];
             }
+            pageFoundNoFacts = true;
+            debug(`⚠ found page "${title}" on ${wiki} but no hair/eye facts in infobox or prose`);
         } catch (err) {
-            console.warn(`[CanonGrounding] lookup failed for "${name}" on ${wiki}:`, err.message);
+            hadError = true;
+            debug(`✕ fetch error for "${name}" on ${wiki}: ${err.message}`);
         }
     }
-    // Record the miss so we don't hammer the API every turn.
-    s.cache[key] = { name, facts: "", aliases: [], wiki: null, found: false, ts: Date.now() };
-    saveSettingsDebounced();
-    return s.cache[key];
+
+    // Only persist a "not found" when we actually searched cleanly and the wiki
+    // has no page. Transient errors and extraction gaps are NOT locked in, so the
+    // next mention retries instead of being stuck for 24h.
+    if (!hadError && !pageFoundNoFacts) {
+        s.cache[key] = { name, facts: "", aliases: [], wiki: null, found: false, ts: Date.now() };
+        saveSettingsDebounced();
+        debug(`✕ no wiki page found for "${name}" on: ${s.wikis}`);
+    }
+    return s.cache[key] || { name, facts: "", found: false };
 }
 
 async function groundNames(names) {
@@ -385,6 +414,10 @@ async function addSettingsUI() {
                     <input id="cg_enabled" type="checkbox">
                     <span>Enabled</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="cg_debug" type="checkbox">
+                    <span>Debug (show a toast for each lookup)</span>
+                </label>
                 <label>Wiki subdomains (comma-separated)</label>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="eminence-in-shadow,dc">
                 <label>Physical fields to ground</label>
@@ -401,6 +434,9 @@ async function addSettingsUI() {
     const s = settings();
     $("#cg_enabled").prop("checked", s.enabled).on("input", function () {
         s.enabled = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_debug").prop("checked", s.debug).on("input", function () {
+        s.debug = $(this).prop("checked"); saveSettingsDebounced();
     });
     $("#cg_wikis").val(s.wikis).on("input", function () {
         s.wikis = String($(this).val()); saveSettingsDebounced();
