@@ -424,7 +424,7 @@ function extractAliases(wikitext, keywords) {
 
 const NEGATIVE_TTL = 1000 * 60 * 60 * 24; // don't re-search a "not found" for 24h
 
-async function ensureGrounded(name) {
+async function ensureGrounded(name, trusted = false) {
     const s = settings();
     const key = name.toLowerCase();
     const existing = s.cache[key];
@@ -444,16 +444,17 @@ async function ensureGrounded(name) {
 
             const wikitext = await fetchWikitext(wiki, title);
 
-            // Gate: is this actually a CHARACTER page? Series/media pages (Light Novel,
-            // Anime, franchise) have infobox fields like Author/Studio/Volumes, not
-            // Gender/Hair/Relatives — and no Personality/Relationships/Appearance section.
-            // Reject them so they never get grounded as a character.
+            // Gate: reject media/series pages (Light Novel, Anime) that aren't real entities.
+            // When the LLM chose this entity (trusted), that's all we check — it may be a
+            // place or organization (Mitsugoshi, Shadow Garden), which is valid lore. When
+            // untrusted (regex/ledger names), also require it to look like a CHARACTER page
+            // so stray words don't ground onto some unrelated article.
             const charSignal = extractInfoboxFields(wikitext,
                 ["gender", "age", "hair", "eye", "relatives", "species", "race", "affiliation",
                  "occupation", "height", "birthday", "birthdate", "status", "spouse", "family",
                  "blood", "voiced", "voice actor", "seiyu", "alias", "nickname"]);
             const charSection = extractSection(wikitext, ["personality", "relationships", "appearance"], 40);
-            if (!charSignal && !charSection) {
+            if (!trusted && !charSignal && !charSection) {
                 debug(`⚠ "${title}" isn't a character page (no character fields) — skipped`);
                 pageFoundNoFacts = true;
                 continue;
@@ -526,9 +527,9 @@ async function ensureGrounded(name) {
     return s.cache[key] || { name, sections: {}, found: false };
 }
 
-async function groundNames(names) {
+async function groundNames(names, trusted = false) {
     for (const n of names) {
-        await ensureGrounded(n);
+        await ensureGrounded(n, trusted);
     }
 }
 
@@ -720,12 +721,16 @@ async function parseSceneCharacters(sceneText) {
     const c = getContext();
     const s = settings();
     const systemText =
-        "You identify the fictional CHARACTERS (named people or beings) who are PRESENT " +
-        "or directly acting in a roleplay scene. Output ONLY a JSON array of their proper " +
-        "names as strings, most central first. Include a character even if later referred " +
-        "to only by a pronoun. EXCLUDE places, organizations, companies, objects, titles, " +
-        "and ordinary words. Output [] if there are none. No prose, no markdown.";
-    const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of character names present:`;
+        "This is a scene from a work of fiction that has published source material with a " +
+        "wiki. Your job: list the canon entities in this scene that are worth looking up in " +
+        "that wiki to keep them accurate — the named CHARACTERS present or acting, and also " +
+        "PLACES, ORGANIZATIONS, groups, or notable lore terms when they are central to what " +
+        "is happening. Use your own knowledge of the series to tell a real canon entity from " +
+        "ordinary description. Give each entity's canonical name (the one the wiki would use). " +
+        "Include a character even if now referred to only by a pronoun. Leave out generic " +
+        "words, everyday objects, and anything invented just for this scene. Respond with " +
+        "ONLY a JSON array of names as strings, most central first, or [] if none. No other text.";
+    const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
     const budgetMs = 15000, maxTokens = 200;
     const controller = new AbortController();
     const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, budgetMs);
@@ -790,7 +795,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
                 if (cast.length) {
                     debug(`LLM parser → ${cast.join(", ")}`);
-                    await groundNames(cast);
+                    await groundNames(cast, true); // trusted: the model chose these (may be lore/places)
                 }
             }
         } else if (lgNames) {
