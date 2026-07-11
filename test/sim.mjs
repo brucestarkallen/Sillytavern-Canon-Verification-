@@ -126,9 +126,21 @@ const run5 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 await sleep(20);
 T("alias-known name does not re-fire the parser", parseQueue.length === 3);
 await run5;
-T("no wiki refetch for alias-known name", fetchLog.length === before);
+// v0.3 pair dynamics legitimately fetch the "X/Relationships" SUBPAGE (once per
+// character, ever). That is a different call class from re-grounding an entity —
+// the invariant under test is that alias-known ENTITY lookups never re-hit the wiki.
+const entityFetches = fetchLog.slice(before).filter(u => !decodeURIComponent(u).includes("/Relationships"));
+T("no wiki refetch for alias-known name", entityFetches.length === 0);
+const relFetches = fetchLog.filter(u => decodeURIComponent(u).includes("/Relationships"));
+T("dynamics subpage never fetched twice for the same character", new Set(relFetches).size === relFetches.length);
 T("exactly one block for the character", (lastInjection().match(/Alisa Mikhailovna Kujou:/g) || []).length === 1);
 T("user-asked char force-included in cast injection", /hair: silver/.test(lastInjection()));
+
+console.log("[6] settled pair costs zero");
+const settled = fetchLog.length;
+globalThis.__ctx.chat.push(msg("Alisa smiled warmly at DecayA.", true));
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+T("settled pair: zero fetches of ANY kind on later turns", fetchLog.length === settled);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
