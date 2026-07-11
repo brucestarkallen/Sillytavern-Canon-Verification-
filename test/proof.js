@@ -71,6 +71,11 @@ eq("lowercase short question", api.extractCandidateNames("whats rose oriana hair
 eq("lowercase honorific normalized", api.extractCandidateNames("tell me about alya-chan today"), ["alya"]);
 eq("single lowercase name reachable (was impossible)", api.extractCandidateNames("whats alpha hair color"), ["alpha"]);
 T("plain narration no longer manufactures junk", api.extractCandidateNames("she screamed loudly and ran home").length === 0);
+T("bare greeting yields no candidate", api.extractCandidateNames("hello").length === 0);
+T("trailing verb after name yields no candidate", api.extractCandidateNames("DecayA nods.").length === 0);
+eq("bare two-token name still works", api.extractCandidateNames("cid kagenou"), ["cid kagenou"]);
+eq("sentence adverb stripped from phrase", api.extractCandidateNames("Suddenly Rose Oriana appeared."), ["Rose Oriana"]);
+eq("adverb-glued single name kept mid-phrase", api.extractCandidateNames("Meanwhile Cid sharpened his blade."), ["Cid"]);
 
 // ---------------------------------------------------------------- infobox / sections
 console.log("[wikitext extraction]");

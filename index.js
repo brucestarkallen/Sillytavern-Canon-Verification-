@@ -162,6 +162,19 @@ const STOPWORDS = new Set([
     "And", "But", "Or", "So", "If", "As", "At", "In", "On", "Of", "To", "For",
     "With", "Without", "Then", "There", "Here", "When", "Where", "What", "Who",
     "Why", "How", "OK", "Okay", "Yes", "No", "Mr", "Mrs", "Ms", "Dr",
+    // Narration sentence-starters and glue that routinely weld onto names in RP
+    // prose ("Suddenly Rose Oriana…", "Meanwhile Cid…") — stripped from phrase
+    // edges so the bare name is what gets gated and searched.
+    "Suddenly", "Meanwhile", "Later", "Finally", "Eventually", "Slowly", "Quietly",
+    "Instead", "Perhaps", "Maybe", "Almost", "Across", "Inside", "Outside",
+    "Behind", "Beyond", "Beneath", "Above", "Below", "Nearby", "Once", "Still",
+    "Even", "Just", "Only", "Now", "Soon", "Today", "Tonight", "Tomorrow",
+    "Yesterday", "Again", "Around", "Along", "Toward", "Towards", "Under", "Over",
+    "After", "Before", "During", "Between", "Both", "Each", "Every", "Some",
+    "Any", "Another", "Other", "Several", "Many", "Few", "More", "Most",
+    "Everyone", "Someone", "Anyone", "Nobody", "Something", "Nothing",
+    "Everything", "Somewhere", "Please", "Well", "Also", "Though", "Although",
+    "Because", "Since", "While", "Until", "Unless", "However", "Whatever",
 ]);
 
 // Filler/question/appearance words that should never be part of a name. Used to
@@ -256,9 +269,12 @@ function extractCandidateNames(text) {
     if (out.size === 0) {
         const tokens = clean.split(/\s+/).filter(Boolean);
         const bare = (t) => t.toLowerCase().replace(/[.,;:!?]+$/, "");
-        const askish = /\?/.test(clean)
-            || tokens.length <= 4
-            || tokens.some(t => LOWER_TRIGGERS.has(bare(t)));
+        // askStrong = the message is explicitly asking about someone (question word or
+        // "?"); askish additionally allows a bare short name ("cid kagenou"). Single-
+        // token candidates need askStrong — with only the short-message freebie, "hello"
+        // and trailing verbs ("…nods") became wiki lookups AND parser-gate re-fires.
+        const askStrong = /\?/.test(clean) || tokens.some(t => LOWER_TRIGGERS.has(bare(t)));
+        const askish = askStrong || tokens.length <= 4;
         if (tokens.length <= 20 && askish) {
             const lowerCandidates = [];
             let run = [];
@@ -269,7 +285,7 @@ function extractCandidateNames(text) {
                 // otherwise one-word names typed lowercase ("whats alpha hair") were
                 // unreachable, the exact case this fallback exists for.
                 if (run.length >= 2) lowerCandidates.push(run.slice(0, 2).join(" "));
-                else if (run.length === 1 && run[0].length >= 3) lowerCandidates.push(run[0]);
+                else if (askStrong && run.length === 1 && run[0].length >= 3) lowerCandidates.push(run[0]);
                 run = [];
             };
             for (const raw of tokens) {
