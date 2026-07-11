@@ -45,7 +45,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
          extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
          clip, cacheEntryFor, pruneStaleCast, isUnhandledName, parseNameArray,
-         relationFor, pickArcHit, relevantCanonNote,
+         relationFor, pickArcHit, relevantCanonNote, extractQuotes,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -231,6 +231,36 @@ sandbox.__settings.cache = {};
 T("arc-only note injects with empty cast", /STORY POSITION/.test(api.relevantCanonNote([], [])));
 sandbox.__settings.arcNote = null;
 T("nothing at all → empty note", api.relevantCanonNote([], []) === "");
+
+// ---------------------------------------------------------------- v0.4: voice quotes
+console.log("[extractQuotes]");
+const QSEC = `== Quotes ==\n* "I am [[Atomic (spell)|Atomic]]." — Lawless City\n* ''The truth hides in the shadows.''\n{{Quote|A mob character should act like a mob.|Cid|ch. 12}}\n* "I am Atomic." — repeated\n* "${"x".repeat(200)}"\n* "ok"`;
+const qs = api.extractQuotes(QSEC);
+T("bullet quote extracted, link cleaned, attribution tail cut", /"I am Atomic\."/.test(qs) && !/Lawless City/.test(qs) && !/spell/.test(qs));
+T("{{Quote|…}} template param lifted before cleaning", /mob character should act like a mob/.test(qs));
+T("duplicates deduped (case-insensitive)", qs.match(/I am Atomic/g).length === 1);
+T("monologue (>160) and fragment (<4) filtered", !/xxxxx/.test(qs) && !/"ok"/.test(qs));
+T("cap at 3 samples", api.extractQuotes(QSEC + '\n* "Extra line four here."\n* "Extra line five here."').split(" / ").length <= 3);
+T("empty section → empty", api.extractQuotes("") === "");
+
+console.log("[note: voice]");
+sandbox.__settings = {
+    cache: {
+        "alpha": { name: "Alpha", found: true, wiki: "w", aliases: [],
+                   sections: { personality: "Stoic, commanding", voice: '"Shadow Garden moves tonight." / "Sloppy."' },
+                   rel: { "cid kagenou": "Openly devoted." } },
+        "cid kagenou": { name: "Cid Kagenou", found: true, wiki: "w", aliases: ["Cid"], sections: { physical: "hair: black" }, rel: {} },
+    },
+    physical: true, personality: true, relationship: true, biography: false, abilities: false, trivia: true, voice: true,
+    relationDynamics: true, maxCharacters: 8, maxCharsPerChar: 700, maxTotalChars: 4500,
+    arcInject: false, arcNote: null, llmParser: true, contextWindow: 10,
+};
+const vnote = api.relevantCanonNote(["alpha spoke"], ["Alpha", "Cid Kagenou"]);
+T("voice line injected", /- Voice: "Shadow Garden moves tonight\."/.test(vnote));
+T("voice ordered after dynamics", vnote.indexOf("With Cid Kagenou:") < vnote.indexOf("- Voice:"));
+T("anti-parroting clause in header", /STYLE SAMPLES/.test(vnote) && /never repeat the sample lines/.test(vnote));
+sandbox.__settings.voice = false;
+T("voice toggle off → no voice line", !/- Voice:/.test(api.relevantCanonNote(["alpha spoke"], ["Alpha"])));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

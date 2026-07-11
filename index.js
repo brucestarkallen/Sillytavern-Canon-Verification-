@@ -45,6 +45,9 @@
  *     "the wiki says stoic → stoic with everyone" flattening.
  *   - Story position: an arc/chapter page can be grounded and pinned with a spoiler
  *     guard, so the model knows what has happened and never uses what hasn't.
+ *   - v0.4 Voice: up to 3 short verbatim quotes (Quotes section, or the X/Quotes
+ *     subpage fetched once ever) injected as style samples with anti-parroting
+ *     framing — the model hears HOW they talk, not just a description of it.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -95,6 +98,12 @@ const defaultSettings = {
     abilities: false,     // powers, skills, weapons
     trivia: true,         // "== Trivia ==" bullets — dense fan-level canon facts
     triviaKeywords: "trivia",
+    // Voice samples: short verbatim quotes from the wiki's Quotes section (or the
+    // X/Quotes subpage). A personality line DESCRIBES the voice; three real lines
+    // SHOW cadence, diction, and attitude — the strongest cheap anchor against
+    // cross-character voice convergence. Injected with anti-parroting framing.
+    voice: true,
+    quoteKeywords: "quotes,notable quotes,memorable quotes",
     // Per-PAIR relationship dynamics: when two grounded characters share the scene,
     // inject how A acts around B specifically ("With Cid: …"), from the Relationships
     // subsections of A's page (or the "A/Relationships" subpage). This is the fix for
@@ -604,6 +613,41 @@ function extractTrivia(wikitext, titles, maxBullets = 6, maxLen = 700) {
     return out.join("; ");
 }
 
+/**
+ * Voice samples from a Quotes section (or a whole /Quotes subpage body).
+ * Handles both Fandom layouts:
+ *   * "Line." — context bullets
+ *   {{Quote|Line.|speaker|context}} templates (first param is the line — lifted
+ *   BEFORE cleaning, because cleanWikitext deletes unknown templates wholesale).
+ * Short lines only: voice anchoring saturates fast, and a monologue teaches less
+ * per token than three punchy lines. Attribution tails ("— to Cid, ch. 12") are cut.
+ */
+function extractQuotes(sectionRaw, maxQuotes = 3, maxLen = 420) {
+    if (!sectionRaw) return "";
+    const found = [];
+    const tpl = /\{\{\s*(?:c?quote[dh]?|quotation|dialogue)\s*\|([^|{}]+)/gi;
+    let m;
+    while ((m = tpl.exec(sectionRaw)) !== null) found.push(m[1]);
+    for (const line of sectionRaw.split(/\n\*+\s*/).slice(1)) {
+        const first = line.split("\n")[0];
+        const q = first.match(/["“]([^"”]{4,})["”]/);
+        found.push(q ? q[1] : first);
+    }
+    const out = [];
+    let total = 0;
+    for (const raw of found) {
+        let q = cleanWikitext(raw).replace(/^["“'\s]+|["”'\s]+$/g, "");
+        q = q.split(/\s+[—–-]\s+/)[0].trim();          // drop "— to Cid, chapter 12" tails
+        if (q.length < 4 || q.length > 160) continue;  // voice samples, not monologues
+        if (out.some(o => o.toLowerCase() === q.toLowerCase())) continue;
+        if (total + q.length > maxLen) break;
+        out.push(q);
+        total += q.length;
+        if (out.length >= maxQuotes) break;
+    }
+    return out.map(q => `"${q}"`).join(" / ");
+}
+
 /** Lead (intro) paragraph of the article, before the first section header. */
 function extractLead(wikitext, maxLen = 220) {
     if (!wikitext) return "";
@@ -729,7 +773,19 @@ async function ensureGrounded(name, trusted = false) {
                 // wiki records the humanizing detail ("secretly practices X", "only smiles
                 // around Y") that keeps a character from reading as their job title.
                 trivia: extractTrivia(wikitext, s.triviaKeywords.split(",").map(t => t.trim()).filter(Boolean)),
+                // Voice: verbatim lines from the Quotes section — how they actually talk.
+                voice: extractQuotes(extractSectionRaw(wikitext, s.quoteKeywords.split(",").map(t => t.trim()).filter(Boolean), 6000)),
             };
+
+            // Many wikis keep quotes on a dedicated "X/Quotes" subpage instead of a
+            // section. One extra fetch, at ground time, only when the main page had
+            // none — cached forever on the entry like everything else.
+            if (s.voice && !sections.voice) {
+                try {
+                    const qp = await fetchWikitext(wiki, `${title}/Quotes`);
+                    if (qp) sections.voice = extractQuotes(qp);
+                } catch (e) { /* best-effort */ }
+            }
 
             const anything = Object.values(sections).some(Boolean);
             if (anything) {
@@ -1050,6 +1106,7 @@ function relevantCanonNote(sceneMsgs, castNames) {
         physical: "Appearance",
         relationship: "Relationships",
         personality: "Personality",
+        voice: "Voice",
         biography: "Background",
         abilities: "Powers & Abilities",
         trivia: "Trivia",
@@ -1057,8 +1114,9 @@ function relevantCanonNote(sceneMsgs, castNames) {
     // Order matters: lean, high-value facts first so they survive the per-character cap;
     // verbose biography/abilities are trimmed first when space runs out. Trivia rides
     // last — flavor, not identity — but per-pair dynamics are spliced in right after
-    // Personality (they're the anti-flattening payload, worth protecting).
-    const order = ["physical", "relationship", "personality", "biography", "abilities", "trivia"];
+    // Personality (they're the anti-flattening payload, worth protecting), and Voice
+    // samples follow them: baseline → dynamic → how it actually sounds.
+    const order = ["physical", "relationship", "personality", "voice", "biography", "abilities", "trivia"];
 
     const present = [];  // { entry, matchedName }
     if (castNames && castNames.length) {
@@ -1149,8 +1207,11 @@ function relevantCanonNote(sceneMsgs, castNames) {
         "not a script. Real people modulate with company, mood, privacy, and stakes — a " +
         "commander who is stoic on duty can be warm, petty, or openly devoted in private. " +
         "When a 'With <name>' line exists and that person is in the scene, THAT dynamic " +
-        "overrides the baseline. Never flatten a character to their trait words; show the " +
-        "traits through fresh, situation-specific behavior, contradictions included.]\n" +
+        "overrides the baseline. Voice lines are STYLE SAMPLES — match their cadence, " +
+        "vocabulary, and attitude in fresh dialogue; never repeat the sample lines " +
+        "themselves unless the moment canonically calls for it. Never flatten a " +
+        "character to their trait words; show the traits through fresh, " +
+        "situation-specific behavior, contradictions included.]\n" +
         arcBlock + blocks.join("\n")
     );
 }
@@ -1513,6 +1574,11 @@ async function addSettingsUI() {
                     <span>Trivia</span>
                 </label>
                 <small class="cg-hint">"== Trivia ==" bullets — dense fan-level canon (quirks, habits, hidden facts) that humanizes characters beyond the formal sections.</small>
+                <label class="checkbox_label">
+                    <input id="cg_voice" type="checkbox">
+                    <span>Voice (canon quotes)</span>
+                </label>
+                <small class="cg-hint">Up to 3 short verbatim lines from the wiki's Quotes section (or X/Quotes subpage) — the model hears HOW they talk, not just a description of it. Framed as style samples so it matches the cadence instead of parroting the lines.</small>
                 <hr>
                 <small><b>Story position</b> — pin an arc/chapter so the model knows exactly where in canon you are (and never spoils past it):</small>
                 <div style="display:flex; gap:4px; align-items:center;">
@@ -1583,6 +1649,8 @@ async function addSettingsUI() {
                 <input id="cg_perkw" class="text_pole" type="text">
                 <label>Powers &amp; abilities keywords</label>
                 <input id="cg_abikw" class="text_pole" type="text">
+                <label>Quote section keywords</label>
+                <input id="cg_quotekw" class="text_pole" type="text">
                 <small class="cg-hint">Words that tell the extension which infobox fields and section titles feed each category above.</small>
                 <label>Alias / nickname keywords (so "Alya" finds "Alisa")</label>
                 <input id="cg_aliaskw" class="text_pole" type="text">
@@ -1631,7 +1699,7 @@ async function addSettingsUI() {
     $("#cg_enabled").prop("checked", s.enabled).on("input", function () {
         s.enabled = $(this).prop("checked"); saveSettingsDebounced();
     });
-    for (const cat of ["physical", "personality", "relationship", "biography", "abilities", "trivia"]) {
+    for (const cat of ["physical", "personality", "relationship", "biography", "abilities", "trivia", "voice"]) {
         $(`#cg_${cat}`).prop("checked", s[cat]).on("input", function () {
             s[cat] = $(this).prop("checked"); saveSettingsDebounced();
         });
@@ -1701,6 +1769,9 @@ async function addSettingsUI() {
     $("#cg_perkw").val(s.personalityKeywords).on("input", function () {
         s.personalityKeywords = String($(this).val()); saveSettingsDebounced();
     });
+    $("#cg_quotekw").val(s.quoteKeywords).on("input", function () {
+        s.quoteKeywords = $(this).val(); saveSettingsDebounced();
+    });
     $("#cg_abikw").val(s.abilitiesKeywords).on("input", function () {
         s.abilitiesKeywords = String($(this).val()); saveSettingsDebounced();
     });
@@ -1724,7 +1795,7 @@ async function addSettingsUI() {
     numHandler("#cg_maxtotal", "maxTotalChars", 200, 4500);
 
     $("#cg_reset_kw").on("click", function () {
-        for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords"]) {
+        for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords", "quoteKeywords"]) {
             s[k] = defaultSettings[k];
         }
         $("#cg_fields").val(s.fields);
@@ -1733,6 +1804,7 @@ async function addSettingsUI() {
         $("#cg_perkw").val(s.personalityKeywords);
         $("#cg_abikw").val(s.abilitiesKeywords);
         $("#cg_aliaskw").val(s.aliasKeywords);
+        $("#cg_quotekw").val(s.quoteKeywords);
         saveSettingsDebounced();
         toastr?.info?.("Fields & keywords reset. Clear the cache to re-fetch with the new fields.");
     });

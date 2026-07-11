@@ -56,6 +56,24 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.4.0 (voice)
+
+Proven by `test/proof.js` (85 assertions) + `test/sim.mjs` (21), all passing.
+
+1. **Voice samples.** Up to 3 short verbatim quotes from the wiki's `== Quotes ==`
+   section — or the dedicated `X/Quotes` subpage, fetched once ever when the main
+   page has none — inject as `Voice: "…" / "…"` right after Personality/dynamics.
+   A personality line *describes* the voice; real lines *show* cadence, diction,
+   and attitude — few-shot voice anchoring, the strongest cheap counter to
+   cross-character voice convergence. `{{Quote|…}}` templates are lifted before
+   markup cleaning (which would otherwise delete them), attribution tails
+   ("— to Cid, ch. 12") are cut, monologues (>160 chars) and fragments are
+   filtered, samples dedupe case-insensitively, 420-char budget.
+2. **Anti-parroting framing.** The note header marks them as STYLE SAMPLES: match
+   the cadence and vocabulary in fresh dialogue; never repeat the sample lines
+   themselves unless the moment canonically calls for it.
+3. On by default (`voice`), with its own keyword list (`quoteKeywords`) in settings.
+
 ## Changelog — v0.3.0 (lore depth without rigidity)
 
 Proven by `test/proof.js` (75 assertions, all passing).
