@@ -51,6 +51,11 @@
  *   - v0.5 KNOWLEDGE SCOPE: canon facts are narrator knowledge, not character
  *     knowledge — hidden identities stay hidden. Story position is per-chat
  *     (chat metadata); characters/arcs from one story can't bleed into another.
+ *   - v0.6: Identity always injects (the "who she IS" line); LLM-curated
+ *     dossiers ✦ replace regex fragments with model judgment (built once, in
+ *     the background, cached forever; secrets rendered under the KNOWLEDGE
+ *     SCOPE guard); pinned canon — global text, per-chat text, and
+ *     always-present characters — is user-authored law above everything.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -68,6 +73,7 @@ let lastCast = [];          // entities the parser last judged present (reused b
 let lastCastLen = 0;        // visible-chat length when lastCast was last confirmed (drives decay)
 let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
 let renderArcStatus = null;  // set by the settings UI; called on CHAT_CHANGED
+let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
@@ -119,6 +125,13 @@ const defaultSettings = {
     arcTitle: "",
     arcNote: null,        // { query, title, wiki, summary, ts }
     arcInject: true,
+    // LLM-curated dossiers: the model reads each grounded page once (background,
+    // cached forever) and writes the injection itself — identity, load-bearing
+    // facts, secrets-as-secrets, voice, per-person dynamics. Regex sections stay
+    // as the immediate/fallback path.
+    llmDossier: true,
+    // Pinned canon: user-authored text injected in EVERY chat, always.
+    pinnedGlobal: "",
     // How many recent VISIBLE messages count as "the current scene" for deciding who
     // to inject. ~10 matches a setup that summarizes everything older. Higher = a
     // character stays grounded longer after they stop being mentioned.
@@ -764,6 +777,12 @@ async function ensureGrounded(name, trusted = false) {
             const join = (...parts) => [...new Set(parts.filter(Boolean))].join(" — ");
 
             const sections = {
+                // Identity is the single highest-value string on any wiki page — the
+                // "X is the second princess of …" lead sentence. It was gated behind
+                // the off-by-default biography category, which is exactly how a model
+                // ends up knowing a character's hair color but not WHO SHE IS.
+                // Always extracted, always injected (≤260 chars).
+                identity: extractLead(wikitext, 260),
                 physical,
                 personality: join(
                     extractInfoboxFields(wikitext, perKw),
@@ -773,10 +792,9 @@ async function ensureGrounded(name, trusted = false) {
                     extractInfoboxFields(wikitext, relKw),
                     extractSection(wikitext, relKw, 500)
                 ),
-                // Biography always leads with the intro paragraph (the "X is a …" line
-                // that has no header), then adds infobox bio fields and a history section.
+                // Biography = infobox bio fields + history section. The lead moved to
+                // the always-on identity category above (no duplication when both show).
                 biography: join(
-                    extractLead(wikitext),
                     extractInfoboxFields(wikitext, bioKw),
                     extractSection(wikitext, bioKw, 400)
                 ),
@@ -815,6 +833,9 @@ async function ensureGrounded(name, trusted = false) {
                 // at note time for exactly the pair that's on screen.
                 const relRaw = extractSectionRaw(wikitext, ["relationships", "relationship"], 4000);
                 s.cache[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, found: true, ts: Date.now() };
+                // LLM curation runs in the BACKGROUND — this turn ships the regex
+                // sections immediately, the dossier upgrades every turn after.
+                if (s.llmDossier && (charSignal || charSection)) scheduleDossier(key, title, wikitext, relRaw);
                 saveSettingsDebounced();
                 const got = Object.entries(sections).filter(([, v]) => v).map(([k]) => k).join(", ");
                 debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${physical || "(no appearance)"} [have: ${got}]`);
@@ -967,6 +988,24 @@ function chatArc() {
     } catch (e) { /* no context yet */ }
     return settings().arcNote;
 }
+function chatPin() {
+    try { return getContext().chatMetadata?.canon_grounding_pin || ""; } catch (e) { return ""; }
+}
+function chatPinNames() {
+    try {
+        const raw = getContext().chatMetadata?.canon_grounding_pin_names || "";
+        return String(raw).split(",").map(n => n.trim()).filter(Boolean);
+    } catch (e) { return []; }
+}
+function setChatPin(field, value) {
+    try {
+        const ctx = getContext();
+        if (!ctx.chatMetadata) return;
+        ctx.chatMetadata[field] = value;
+        if (typeof ctx.saveMetadata === "function") ctx.saveMetadata();
+    } catch (e) { /* no chat loaded */ }
+}
+
 function setChatArc(note) {
     try {
         const ctx = getContext();
@@ -1033,7 +1072,11 @@ function ledgerNames() {
 
 function clip(str, max) {
     if (str.length <= max) return str;
-    return str.slice(0, max).replace(/\s+\S*$/, "") + "…";
+    let base = str.slice(0, max).replace(/\s+\S*$/, "");
+    // A single boundary-free token trims nothing — make room for the ellipsis so the
+    // contract holds: output length NEVER exceeds max.
+    if (base.length >= max) base = base.slice(0, max - 1);
+    return base + "…";
 }
 
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
@@ -1156,10 +1199,11 @@ function isUnhandledName(n) {
  *  - Otherwise fall back to scanning the visible scene for grounded names (regex mode).
  * Hard-capped by count / per-entity / total length either way.
  */
-function relevantCanonNote(sceneMsgs, castNames, arc = undefined) {
+function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const s = settings();
     const msgs = sceneMsgs || [];
     const lowerMsgs = msgs.map(m => m.toLowerCase());
+    const pinNames = (extras.pinNames || []).filter(Boolean);
     const labels = {
         physical: "Appearance",
         relationship: "Relationships",
@@ -1177,13 +1221,21 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined) {
     const order = ["physical", "relationship", "personality", "voice", "biography", "abilities", "trivia"];
 
     const present = [];  // { entry, matchedName }
+    const usedKeysGlobal = new Set();
+    // Pinned entities ride FIRST, always — no cast, no mention, no scene required.
+    for (const pn of pinNames) {
+        const found = cacheEntryFor(pn.toLowerCase());
+        if (found && !usedKeysGlobal.has(found.key)) {
+            usedKeysGlobal.add(found.key);
+            present.push({ entry: found.entry, matchedName: pn, pinned: true });
+        }
+    }
     if (castNames && castNames.length) {
         // Cast-driven: inject the entities identified as present, in centrality order.
-        const usedKeys = new Set();
         for (const cn of castNames) {
             const found = cacheEntryFor(cn.toLowerCase());
-            if (found && !usedKeys.has(found.key)) {
-                usedKeys.add(found.key);
+            if (found && !usedKeysGlobal.has(found.key)) {
+                usedKeysGlobal.add(found.key);
                 present.push({ entry: found.entry, matchedName: cn });
             }
         }
@@ -1203,32 +1255,72 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined) {
                 const hit = names.find(n => mentioned(n, lowerMsgs[i]));
                 if (hit) { lastIdx = i; matchedName = hit; break; }
             }
-            if (lastIdx >= 0) scored.push({ entry, lastIdx, matchedName });
+            if (lastIdx >= 0) scored.push({ entry, lastIdx, matchedName, key });
         }
         scored.sort((a, b) => b.lastIdx - a.lastIdx);  // most recently mentioned first
-        for (const sc of scored) present.push({ entry: sc.entry, matchedName: sc.matchedName });
+        for (const sc of scored) {
+            if (usedKeysGlobal.has(sc.key)) continue;
+            usedKeysGlobal.add(sc.key);
+            present.push({ entry: sc.entry, matchedName: sc.matchedName });
+        }
     }
 
     const blocks = [];
     const reasons = [];
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
-    for (const { entry, matchedName } of present) {
+    for (const { entry, matchedName, pinned } of present) {
         if (blocks.length >= s.maxCharacters) break;
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
         const lines = [];
-        for (const cat of order) {
-            if (s[cat] && entry.sections[cat]) lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
-            // Per-pair dynamics ride directly under Personality: "the baseline says
-            // stoic, but with THIS person on screen, canon says she is like THIS."
-            if (cat === "personality" && s.relationDynamics && entry.rel) {
-                let dyn = 0;
+        const dynLines = () => {
+            // Per-pair dynamics: "the baseline says stoic, but with THIS person on
+            // screen, canon says she is like THIS." Wiki-sliced pairs first (exact),
+            // then dossier dynamics for co-present others the slicer had nothing on.
+            const out = [];
+            if (!s.relationDynamics) return out;
+            const covered = new Set();
+            for (const { entry: other } of present) {
+                if (out.length >= 3 || other === entry) continue;
+                const okey = (other.name || "").toLowerCase();
+                const snip = entry.rel && entry.rel[okey];
+                if (snip) { out.push(`  - With ${other.name}: ${snip}`); covered.add(okey); }
+            }
+            if (entry.dossier && entry.dossier.dynamics) {
                 for (const { entry: other } of present) {
-                    if (dyn >= 3 || other === entry) continue;
-                    const snip = entry.rel[(other.name || "").toLowerCase()];
-                    if (snip) { lines.push(`  - With ${other.name}: ${snip}`); dyn++; }
+                    if (out.length >= 3 || other === entry) continue;
+                    const okey = (other.name || "").toLowerCase();
+                    if (covered.has(okey)) continue;
+                    const hit = Object.entries(entry.dossier.dynamics)
+                        .find(([who]) => {
+                            const w = who.toLowerCase();
+                            return w === okey || okey.includes(w) || w.includes(okey)
+                                || (other.aliases || []).some(a => a.toLowerCase() === w);
+                        });
+                    if (hit) out.push(`  - With ${other.name}: ${hit[1]}`);
                 }
+            }
+            return out;
+        };
+        if (entry.dossier) {
+            // LLM-curated path: the model read the page and chose what matters.
+            const d = entry.dossier;
+            const identity = d.identity || entry.sections.identity;
+            if (identity) lines.push(`  - Identity: ${identity}`);
+            if (s.physical && entry.sections.physical) lines.push(`  - Appearance: ${entry.sections.physical}`);
+            if (d.facts.length) lines.push(`  - Facts: ${d.facts.join("; ")}`);
+            lines.push(...dynLines());
+            const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
+            if (voice) lines.push(`  - Voice: ${voice}`);
+            if (d.secrets.length) lines.push(`  - Secret (unrevealed in-story — guard per KNOWLEDGE SCOPE): ${d.secrets.join("; ")}`);
+        } else {
+            // Regex-section fallback. Identity is ALWAYS on — a model that knows the
+            // hair color but not WHO SHE IS was the original sin here.
+            if (entry.sections.identity) lines.push(`  - Identity: ${entry.sections.identity}`);
+            for (const cat of order) {
+                if (s[cat] && entry.sections[cat]) lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
+                if (cat === "personality") lines.push(...dynLines());
             }
         }
         if (!lines.length) continue;
@@ -1240,7 +1332,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined) {
         blocks.push(block);
         seenEntities.add(nameKey);
         total += block.length;
-        reasons.push(`${entry.name} ← ${matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene"}`);
+        reasons.push(`${entry.name} ← ${pinned ? "pinned" : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${entry.dossier ? " ✦" : ""}`);
     }
     lastMatchReasons = reasons;
 
@@ -1256,7 +1348,14 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined) {
         reasons.push(`story position ← ${arcNote.title}`);
     }
 
-    if (!blocks.length && !arcBlock) return "";
+    let pinBlock = "";
+    const pinTexts = [extras.globalPin, extras.chatPin].map(t => (t || "").trim()).filter(Boolean);
+    if (pinTexts.length) {
+        pinBlock = `PINNED CANON (user-authored — absolute, always in effect):\n${pinTexts.join("\n")}\n`;
+        reasons.push("pinned canon text");
+    }
+
+    if (!blocks.length && !arcBlock && !pinBlock) return "";
     return (
         "[CANON REFERENCE — retrieved from the official wiki for this series.\n" +
         "FACTS (appearance, relations, history, events) are authoritative: they override " +
@@ -1277,7 +1376,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined) {
         "themselves unless the moment canonically calls for it. Never flatten a " +
         "character to their trait words; show the traits through fresh, " +
         "situation-specific behavior, contradictions included.]\n" +
-        arcBlock + blocks.join("\n")
+        pinBlock + arcBlock + blocks.join("\n")
     );
 }
 
@@ -1300,6 +1399,92 @@ function getProfiles() {
  * Returns NULL when no array could be recovered (garbled/refused output), so the
  * caller keeps the previous cast instead of treating failure as "nobody present".
  */
+/**
+ * Defensive parse of the dossier JSON. Strips code fences, tolerates chatter around
+ * the object, clips every field to budget, coerces near-miss shapes. Returns null
+ * when nothing usable came back (transport failure, refusal, garbage) — the regex
+ * sections stay in charge, same null-vs-empty discipline as the cast parser.
+ */
+function parseDossier(text) {
+    if (!text) return null;
+    let t = String(text).replace(/```(?:json)?/gi, "").trim();
+    const a = t.indexOf("{"), b = t.lastIndexOf("}");
+    if (a === -1 || b <= a) return null;
+    let obj;
+    try { obj = JSON.parse(t.slice(a, b + 1)); } catch (e) { return null; }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    const str = (v, n) => (typeof v === "string" ? clip(v.trim(), n) : "");
+    const arr = (v, count, n) => (Array.isArray(v) ? v : (typeof v === "string" && v ? [v] : []))
+        .map(x => str(x, n)).filter(Boolean).slice(0, count);
+    const d = {
+        identity: str(obj.identity, 300),
+        facts: arr(obj.facts, 6, 200),
+        secrets: arr(obj.secrets, 4, 200),
+        voice: arr(obj.voice, 3, 160),
+        dynamics: {},
+    };
+    if (obj.dynamics && typeof obj.dynamics === "object" && !Array.isArray(obj.dynamics)) {
+        for (const [k, v] of Object.entries(obj.dynamics).slice(0, 6)) {
+            const line = str(v, 300);
+            if (k && line) d.dynamics[String(k).trim()] = line;
+        }
+    }
+    if (!d.identity && !d.facts.length && !d.secrets.length && !d.voice.length && !Object.keys(d.dynamics).length) return null;
+    return d;
+}
+
+/**
+ * LLM-curated dossier: instead of injecting regex-extracted section fragments, the
+ * model READS the page and writes the injection — identity, load-bearing facts,
+ * secrets stated as secrets (paired with the KNOWLEDGE SCOPE guard), voice, and
+ * per-person dynamics. Built once per entity, in the background, cached forever.
+ * The turn that grounds the entity ships regex sections immediately; the dossier
+ * upgrades the entry for every turn after. Failure leaves regex sections in charge
+ * and retries after the negative TTL.
+ */
+async function buildDossier(name, wikitext, relRaw) {
+    const digest = [
+        `PAGE: ${name}`,
+        `LEAD: ${extractLead(wikitext, 700)}`,
+        `PERSONALITY: ${extractSection(wikitext, ["personality"], 900)}`,
+        `RELATIONSHIPS: ${clip(cleanWikitext(relRaw || extractSectionRaw(wikitext, ["relationships", "relationship"], 3500)), 1600)}`,
+        `HISTORY: ${extractSection(wikitext, ["history", "biography", "background", "plot", "synopsis"], 1200)}`,
+        `TRIVIA: ${extractTrivia(wikitext, ["trivia"], 8, 900)}`,
+        `QUOTES: ${extractQuotes(extractSectionRaw(wikitext, ["quotes", "notable quotes"], 4000), 5, 700)}`,
+    ].filter(l => !/^[A-Z]+: ?$/.test(l)).join("\n");
+    const systemText =
+        "You curate a compact canon dossier for a roleplay NARRATOR from wiki material. " +
+        "Extract only what matters for portraying this character accurately in scenes. " +
+        "Return JSON with exactly these keys: " +
+        '{"identity": one sentence — who they are (title, role, affiliation); ' +
+        '"facts": up to 6 short story-relevant facts a narrator must not get wrong; ' +
+        '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
+        '"voice": up to 3 short verbatim quotes if any appear; ' +
+        '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM}. ' +
+        "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
+        "Respond with ONLY the JSON object, no other text.";
+    const out = await llmCall(systemText, digest, { maxTokens: 600, budgetMs: 30000 });
+    return parseDossier(out);
+}
+
+/** Fire-and-forget dossier build with an in-flight/retry guard on the cache entry. */
+function scheduleDossier(key, name, wikitext, relRaw) {
+    const s = settings();
+    const entry = s.cache[key];
+    if (!entry || entry.dossier) return;
+    if (entry.dossierTs && Date.now() - entry.dossierTs < NEGATIVE_TTL) return;  // in flight / recent failure
+    entry.dossierTs = Date.now();
+    buildDossier(name, wikitext, relRaw).then(d => {
+        const e = settings().cache[key];
+        if (!e) return;
+        if (d) {
+            e.dossier = d;
+            debug(`✦ dossier ready: ${name}`);
+        }
+        saveSettingsDebounced();
+    }).catch(() => { /* retry after TTL */ });
+}
+
 function parseNameArray(text) {
     if (!text) return null;
     const cleaned = String(text).replace(/```(?:json)?/gi, "");
@@ -1326,6 +1511,45 @@ function parseNameArray(text) {
  * present, which may legitimately clear a stale cast); NULL on timeout/failure
  * (caller keeps the previous cast — failure must never be read as "nobody here").
  */
+/**
+ * One LLM call over whatever backend is configured: the Connection Manager profile
+ * when set, else generateRaw. Returns the raw text, or null on timeout/failure/empty —
+ * callers keep the parser's null-vs-empty discipline. Raced-out promises are always
+ * given a rejection handler (Android webviews surface unhandled rejections).
+ */
+async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 15000 } = {}) {
+    const c = getContext();
+    const s = settings();
+    const controller = new AbortController();
+    const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, budgetMs);
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const extract = (res) =>
+        typeof res === "string" ? res.trim()
+        : (res && typeof res === "object" ? String(res.content ?? res.text ?? "").trim() : "");
+    try {
+        let out = "";
+        const svc = c.ConnectionManagerRequestService;
+        if (s.llmProfileId && svc && typeof svc.sendRequest === "function") {
+            const messages = [{ role: "system", content: systemText }, { role: "user", content: userText }];
+            const req = svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true });
+            if (req && typeof req.catch === "function") req.catch(() => {});
+            const res = await Promise.race([req, sleep(budgetMs + 250).then(() => null)]);
+            out = extract(res);
+        } else if (typeof c.generateRaw === "function") {
+            const req = c.generateRaw({ prompt: userText, systemPrompt: systemText, responseLength: maxTokens });
+            if (req && typeof req.catch === "function") req.catch(() => {});
+            const res = await Promise.race([req, sleep(budgetMs).then(() => null)]);
+            out = extract(res);
+        }
+        return out || null;
+    } catch (e) {
+        debug(`LLM call failed: ${e.message}`);
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function parseSceneCharacters(sceneText) {
     const c = getContext();
     const s = settings();
@@ -1342,39 +1566,9 @@ async function parseSceneCharacters(sceneText) {
         "and anything invented just for this scene. Respond with ONLY a JSON array of names as " +
         "strings, most central first, or [] if none. No other text.";
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
-    const budgetMs = 15000, maxTokens = 200;
-    const controller = new AbortController();
-    const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, budgetMs);
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-    const extract = (res) =>
-        typeof res === "string" ? res.trim()
-        : (res && typeof res === "object" ? String(res.content ?? res.text ?? "").trim() : "");
-    try {
-        let out = "";
-        const svc = c.ConnectionManagerRequestService;
-        if (s.llmProfileId && svc && typeof svc.sendRequest === "function") {
-            const messages = [{ role: "system", content: systemText }, { role: "user", content: userText }];
-            // The raced-out promise must not surface as an unhandled rejection when
-            // the timeout wins and the abort later rejects it (console noise, and
-            // Android webviews can surface those as visible errors).
-            const req = svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true });
-            if (req && typeof req.catch === "function") req.catch(() => {});
-            const res = await Promise.race([req, sleep(budgetMs + 250).then(() => null)]);
-            out = extract(res);
-        } else if (typeof c.generateRaw === "function") {
-            const req = c.generateRaw({ prompt: userText, systemPrompt: systemText, responseLength: maxTokens });
-            if (req && typeof req.catch === "function") req.catch(() => {});
-            const res = await Promise.race([req, sleep(budgetMs).then(() => null)]);
-            out = extract(res);
-        }
-        if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
-        return parseNameArray(out);   // [] only when the model explicitly answered []
-    } catch (e) {
-        debug(`LLM parser failed: ${e.message}`);
-        return null;
-    } finally {
-        clearTimeout(timer);
-    }
+    const out = await llmCall(systemText, userText, { maxTokens: 200, budgetMs: 15000 });
+    if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
+    return parseNameArray(out);   // [] only when the model explicitly answered []
 }
 
 /**
@@ -1494,11 +1688,20 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
         }
 
+        // Pinned entities: user-decreed always-present. Ground them (cache absorbs
+        // repeats), and let them participate in pair dynamics with the live cast.
+        const pinNames = chatPinNames();
+        if (pinNames.length) {
+            await groundNames(pinNames, true);
+            if (myEpoch !== chatEpoch) return;
+        }
+
         // Per-pair dynamics: with the cast settled, resolve "how A is around B" for every
         // grounded pair on screen (cached forever per pair; subpage fetches budgeted).
-        if (cast && cast.length > 1) {
+        const pairPool = [...(cast || []), ...pinNames];
+        if (pairPool.length > 1) {
             const uniq = new Map();
-            for (const n of cast) {
+            for (const n of pairPool) {
                 const hit = cacheEntryFor(n.toLowerCase());
                 if (hit) uniq.set(hit.key, hit.entry);
             }
@@ -1511,7 +1714,11 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
         // Scene text hasn't changed since the top of the run — reuse it (the old code
         // recomputed sceneMessages a second time for nothing).
-        const note = relevantCanonNote(scene, cast, chatArc());
+        const note = relevantCanonNote(scene, cast, chatArc(), {
+            pinNames,
+            chatPin: chatPin(),
+            globalPin: settings().pinnedGlobal,
+        });
         lastSource = (cast && cast.length)
             ? (s.llmParser ? `LLM parser cast (${cast.length})` : `ledger cast (${cast.length})`)
             : "scene scan";
@@ -1625,6 +1832,11 @@ async function addSettingsUI() {
                 </label>
                 <small class="cg-hint">When two grounded characters share a scene, inject how THIS one acts around THAT one, from the wiki's Relationships subsections (or the X/Relationships subpage). The fix for "stoic on the wiki → stoic with everyone".</small>
                 <label class="checkbox_label">
+                    <input id="cg_dossier" type="checkbox">
+                    <span>LLM-curated dossiers ✦</span>
+                </label>
+                <small class="cg-hint">Your parser model reads each grounded page ONCE (in the background) and writes the injection itself: identity, load-bearing facts, secrets marked as secrets, voice, per-person dynamics. Replaces regex-extracted fragments with judgment. Entities upgraded get a ✦ in "Why these".</small>
+                <label class="checkbox_label">
                     <input id="cg_biography" type="checkbox">
                     <span>Biography (role, background)</span>
                 </label>
@@ -1657,6 +1869,15 @@ async function addSettingsUI() {
                     <span>Inject story position</span>
                 </label>
                 <small class="cg-hint">Adds the arc summary + a spoiler guard ("later events are unknown to every character") on top of the canon note.</small>
+                <hr>
+                <small><b>Pinned canon</b> — your words, always injected, above everything:</small>
+                <label>Every chat (global)</label>
+                <textarea id="cg_pin_global" class="text_pole" rows="2" placeholder="Facts/rules you want in every story, forever."></textarea>
+                <label>This chat only</label>
+                <textarea id="cg_pin_chat" class="text_pole" rows="2" placeholder="Facts/rules for this story only."></textarea>
+                <label>Always-present characters (this chat)</label>
+                <input id="cg_pin_names" class="text_pole" type="text" placeholder="e.g. Rose Oriana, Alpha">
+                <small class="cg-hint">Comma-separated names, grounded and injected EVERY turn regardless of who the parser thinks is on screen. The hammer for "the AI doesn't know X".</small>
                 <hr>
                 <small><b>How characters are found</b>:</small>
                 <label class="checkbox_label">
@@ -1772,6 +1993,20 @@ async function addSettingsUI() {
     $("#cg_dynamics").prop("checked", s.relationDynamics).on("input", function () {
         s.relationDynamics = $(this).prop("checked"); saveSettingsDebounced();
     });
+    $("#cg_dossier").prop("checked", s.llmDossier).on("input", function () {
+        s.llmDossier = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_pin_global").val(s.pinnedGlobal).on("input", function () {
+        s.pinnedGlobal = $(this).val(); saveSettingsDebounced();
+    });
+    const renderChatPins = () => {
+        $("#cg_pin_chat").val(chatPin());
+        try { $("#cg_pin_names").val(getContext().chatMetadata?.canon_grounding_pin_names || ""); } catch (e) {}
+    };
+    renderChatPins();
+    renderChatScoped = () => { renderChatPins(); };
+    $("#cg_pin_chat").on("input", function () { setChatPin("canon_grounding_pin", $(this).val()); });
+    $("#cg_pin_names").on("input", function () { setChatPin("canon_grounding_pin_names", $(this).val()); });
     // Story position (arc/chapter grounding).
     const renderArc = () => {
         const a = chatArc();
@@ -2058,6 +2293,7 @@ jQuery(async () => {
             try { setInjection(""); } catch (e) { /* not critical */ }
             renderLastInjection();
             try { if (renderArcStatus) renderArcStatus(); } catch (e) { /* UI optional */ }
+            try { if (renderChatScoped) renderChatScoped(); } catch (e) { /* UI optional */ }
         });
     }
     console.log("[CanonGrounding] loaded.");

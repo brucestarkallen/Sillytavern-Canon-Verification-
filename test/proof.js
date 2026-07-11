@@ -27,6 +27,7 @@ const pieces = [
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
     grab("function clip(", "/**\n * Build the canon note."),
     grab("function parseNameArray", "/**\n * Arbiter-style"),
+    grab("function parseDossier", "/**\n * LLM-curated dossier"),
     grab("/** Prefer story-structure titles", "// ------"),
     grab("function relevantCanonNote", "// ------"),
 ];
@@ -45,7 +46,8 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
          extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
          clip, cacheEntryFor, pruneStaleCast, isUnhandledName, parseNameArray,
-         relationFor, pickArcHit, relevantCanonNote, extractQuotes,
+         relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier,
+         getReasons: () => lastMatchReasons,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -287,6 +289,53 @@ T("trivia bullet keeps text, drops file link", /design changed in volume 3\./.te
 sandbox.__settings.cache = { "alpha": { name: "Alpha", found: true, wiki: "w", aliases: [], sections: { physical: "hair: blonde" }, rel: {} } };
 const knote = api.relevantCanonNote(["alpha"], ["Alpha"]);
 T("knowledge-scope clause present (hidden-identity guard)", /KNOWLEDGE SCOPE/.test(knote) && /Hidden identities/.test(knote) && /never let a character/.test(knote));
+
+// ---------------------------------------------------------------- v0.6: dossier + pins
+console.log("[parseDossier]");
+T("fenced JSON with chatter parsed", api.parseDossier('Sure! ```json\n{"identity":"Second princess of Oriana.","facts":["Student council president."],"secrets":[],"voice":[],"dynamics":{}}\n``` hope that helps').identity === "Second princess of Oriana.");
+T("garbage → null", api.parseDossier("I cannot help with that.") === null);
+T("array root → null", api.parseDossier('["not","a","dossier"]') === null);
+T("empty-everything → null", api.parseDossier('{"identity":"","facts":[],"secrets":[],"voice":[],"dynamics":{}}') === null);
+T("string fact coerced to array", api.parseDossier('{"identity":"x is y","facts":"Single fact."}').facts[0] === "Single fact.");
+T("long fact clipped ≤200", api.parseDossier(`{"identity":"x","facts":["${"a".repeat(400)}"]}`).facts[0].length <= 200);
+T("dynamics capped at 6", Object.keys(api.parseDossier(`{"identity":"x","dynamics":{${Array.from({length:9},(_,i)=>`"P${i}":"line ${i}"`).join(",")}}}`).dynamics).length === 6);
+
+console.log("[note: dossier + identity + pins]");
+sandbox.__settings = {
+    cache: {
+        "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: ["Rose"],
+                  sections: { identity: "Rose Oriana is the second princess of the Oriana Kingdom.", physical: "hair: blond", personality: "Dignified.", trivia: "Loves swords." },
+                  rel: {},
+                  dossier: { identity: "Second princess of Oriana; student council president at Midgar Academy.",
+                             facts: ["Wields the Oriana sword style.", "Engaged under political pressure to Perv Asshat."],
+                             secrets: ["Becomes Shadow Garden's 666 after fleeing the kingdom."],
+                             voice: ["I will protect my kingdom myself."],
+                             dynamics: { "Cid Kagenou": "Sees him as an unremarkable classmate — and later, her savior." } } },
+        "cid kagenou": { name: "Cid Kagenou", found: true, wiki: "w", aliases: ["Cid"], sections: { identity: "Cid Kagenou is a student at Midgar Academy.", physical: "hair: black" }, rel: {} },
+    },
+    physical: true, personality: true, relationship: true, biography: false, abilities: false, trivia: true, voice: true,
+    relationDynamics: true, maxCharacters: 8, maxCharsPerChar: 900, maxTotalChars: 4500,
+    arcInject: false, arcNote: null, llmParser: true, contextWindow: 10, llmDossier: true, pinnedGlobal: "",
+};
+const dnote = api.relevantCanonNote(["rose oriana drew her sword at cid kagenou"], ["Rose Oriana", "Cid Kagenou"]);
+T("dossier identity leads the block", /- Identity: Second princess of Oriana; student council president/.test(dnote));
+T("dossier facts joined", /- Facts: Wields the Oriana sword style\.; Engaged under political pressure/.test(dnote));
+T("dossier dynamics used when no wiki pair slice", /- With Cid Kagenou: Sees him as an unremarkable classmate/.test(dnote));
+T("secret line labeled for the KNOWLEDGE SCOPE guard", /- Secret \(unrevealed in-story — guard per KNOWLEDGE SCOPE\): Becomes Shadow Garden's 666/.test(dnote));
+T("dossier suppresses regex personality/trivia fragments", !/- Personality: Dignified\./.test(dnote) && !/- Trivia: Loves swords\./.test(dnote));
+T("dossier voice preferred", /- Voice: "I will protect my kingdom myself\."/.test(dnote));
+api.relevantCanonNote(["rose oriana"], ["Rose Oriana"]);
+T("reason marks curated entity with ✦", api.getReasons().some(r => /Rose Oriana/.test(r) && /✦/.test(r)));
+sandbox.__settings.cache["rose"].rel["cid kagenou"] = "Wiki-sliced: cannot meet his eyes since the festival.";
+T("wiki pair slice outranks dossier dynamics", /- With Cid Kagenou: Wiki-sliced: cannot meet his eyes/.test(api.relevantCanonNote(["rose"], ["Rose Oriana", "Cid Kagenou"])));
+delete sandbox.__settings.cache["rose"].dossier;
+const lnote = api.relevantCanonNote(["rose oriana"], ["Rose Oriana"]);
+T("legacy path: identity ALWAYS injected (biography off)", /- Identity: Rose Oriana is the second princess of the Oriana Kingdom\./.test(lnote));
+T("identity line precedes appearance", lnote.indexOf("- Identity:") < lnote.indexOf("- Appearance:"));
+const pnote = api.relevantCanonNote([], [], null, { globalPin: "Never kill named characters without my OK.", chatPin: "Rose's engagement is already broken in this timeline.", pinNames: ["Rose"] });
+T("pinned canon text block above entity blocks", /PINNED CANON \(user-authored — absolute, always in effect\):\nNever kill named characters without my OK\.\nRose's engagement is already broken in this timeline\./.test(pnote) && pnote.indexOf("PINNED CANON") < pnote.indexOf("Rose Oriana:"));
+T("pinned entity forced with empty cast and empty scene", /Rose Oriana:/.test(pnote) && /- Identity: Rose Oriana is the second princess/.test(pnote));
+T("pin + cast dedupe: one block", (api.relevantCanonNote(["rose oriana"], ["Rose Oriana"], null, { pinNames: ["Rose"] }).match(/Rose Oriana:/g) || []).length === 1);
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

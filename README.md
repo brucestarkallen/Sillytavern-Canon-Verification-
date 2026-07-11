@@ -56,6 +56,36 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.6.0 (curation: the model writes the injection)
+
+Proven by `test/proof.js` (118 assertions) + `test/sim.mjs` (21), all passing.
+
+1. **Identity is ALWAYS injected.** The "X is the second princess of …" lead
+   sentence was gated behind the off-by-default biography category — the model
+   knew Rose Oriana's hair color but not WHO SHE IS. Identity is now its own
+   always-on category (≤260 chars), first line of every block; biography keeps
+   only infobox bio + history (no duplication).
+2. **LLM-curated dossiers ✦.** Your parser model reads each grounded page ONCE
+   (background — the grounding turn ships regex sections instantly, the dossier
+   upgrades every turn after; cached forever, retry after TTL on failure) and
+   writes the injection itself: identity, up to 6 load-bearing facts, secrets
+   stated AS secrets (rendered with the KNOWLEDGE SCOPE guard label), voice
+   quotes, and per-person dynamics. Junk dies at the source: regex fragments
+   are replaced by judgment wherever a dossier exists, and remain the fallback
+   wherever it doesn't. Wiki-sliced pair dynamics still outrank dossier
+   dynamics (exact beats summarized). Curated entities show ✦ in "Why these".
+3. **Pinned canon.** Three persistent user-authored controls: a GLOBAL pin
+   (your words, injected in every chat, forever), a THIS-CHAT pin, and
+   ALWAYS-PRESENT characters (comma list, per chat) that are grounded and
+   injected every turn regardless of what the parser thinks is on screen —
+   the hammer for "the AI doesn't know X". Pinned text rides above the arc and
+   all entity blocks as "PINNED CANON (user-authored — absolute)".
+4. `clip()` could exceed its max by one on boundary-free strings — every hard
+   cap in the extension is now actually hard.
+5. Parser transport factored into one `llmCall` helper (Connection Manager
+   profile → generateRaw fallback, abort + race, rejection-safe) shared by the
+   cast parser and the dossier builder.
+
 ## Changelog — v0.5.0 (deep audit II: 9 fixes, hidden-identity guard, per-chat story position)
 
 Proven by `test/proof.js` (98 assertions) + `test/sim.mjs` (21), all passing.
