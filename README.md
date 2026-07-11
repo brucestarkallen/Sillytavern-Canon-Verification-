@@ -56,6 +56,29 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.7.0 (fandom-master pass: scene focus, accuracy, clean UI)
+
+Proven by `test/proof.js` (131 assertions) + `test/sim.mjs` (21), all passing.
+
+1. **Scene focus — "Now:" lines.** The cast parser already reads every scene; its
+   output now carries, per entity, *what about them is in play RIGHT NOW* ("her
+   engagement is being challenged", "his secret identity is at risk") — injected
+   directly under Identity. Zero extra LLM calls: same parse, richer contract
+   (objects or plain strings both accepted; snapshot replaced per parse, reset on
+   chat switch). This is what turns a static dossier into a story that tracks.
+2. **Disambiguation pages are wrong-info and are now skipped** — "{{Disambig}}" /
+   "may refer to:" pages fall through to the next wiki instead of injecting a
+   link-list as canon.
+3. **Dossier grounding clause**: the curator may use ONLY facts stated in the
+   provided material — no gap-filling from model memory.
+4. **Identity cuts at a sentence boundary** (≤300) — "…of the Oriana Kingdom."
+   never "…of the Ori…".
+5. **Bloat trim**: dossier facts that merely repeat the identity line are dropped.
+6. **UI rebuilt** into six collapsible groups — 🌐 Wiki source and 🧭 Story &
+   pinned canon open on top (the two you touch mid-story), 📚 What to inject,
+   🧠 Character detection, 🔧 Keywords & limits, 🩺 Cache & diagnostics folded
+   below. Every control id preserved; styled, mobile-friendly summaries.
+
 ## Changelog — v0.6.0 (curation: the model writes the injection)
 
 Proven by `test/proof.js` (118 assertions) + `test/sim.mjs` (21), all passing.

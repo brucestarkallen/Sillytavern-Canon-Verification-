@@ -98,3 +98,34 @@
     margin-top: -2px;
     margin-left: 24px;
 }
+
+/* v0.7 — grouped settings drawer */
+.canon-grounding-settings .cg-group {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.12));
+    border-radius: 8px;
+    margin: 8px 0;
+    background: rgba(0,0,0,.08);
+}
+.canon-grounding-settings .cg-group > summary {
+    cursor: pointer;
+    padding: 7px 10px;
+    font-weight: 600;
+    list-style: none;
+    user-select: none;
+    opacity: .95;
+}
+.canon-grounding-settings .cg-group > summary::-webkit-details-marker { display: none; }
+.canon-grounding-settings .cg-group > summary::after {
+    content: "▸";
+    float: right;
+    opacity: .55;
+    transition: transform .15s ease;
+}
+.canon-grounding-settings .cg-group[open] > summary::after { transform: rotate(90deg); }
+.canon-grounding-settings .cg-group[open] > summary {
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,.12));
+}
+.canon-grounding-settings .cg-group-body { padding: 8px 10px 10px; }
+.canon-grounding-settings .cg-group-body > hr { opacity: .35; margin: 10px 0; }
+.canon-grounding-settings .cg-hint { display: block; margin: 1px 0 8px; opacity: .7; }
+.canon-grounding-settings .checkbox_label { margin-top: 2px; }

@@ -19,6 +19,7 @@ function grab(marker, endMarker) {
 const pieces = [
     "function ledgerNames() { return null; }  // stub: scan-mode ledger filter (not under test)",
     "let lastMatchReasons = [];               // stub: module-scope diagnostic the note builder writes",
+    "let castFocus = {};                      // stub: scene-focus map written by the parser",
     grab("const STOPWORDS", "function extractCandidateNames"),
     grab("function extractCandidateNames", "// ------"),
     grab("function isMediaTitle", "async function findPageTitle"),
@@ -26,8 +27,9 @@ const pieces = [
     grab("function cleanWikitext", "// ------"),
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
     grab("function clip(", "/**\n * Build the canon note."),
-    grab("function parseNameArray", "/**\n * Arbiter-style"),
+    grab("/**\n * Parse the cast parser", "/**\n * Arbiter-style"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
+    grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
     grab("function relevantCanonNote", "// ------"),
 ];
@@ -48,6 +50,8 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          clip, cacheEntryFor, pruneStaleCast, isUnhandledName, parseNameArray,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier,
          getReasons: () => lastMatchReasons,
+         setFocus: (m) => { castFocus = m; },
+         parseCast, isDisambiguation, identityLine,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -336,6 +340,35 @@ const pnote = api.relevantCanonNote([], [], null, { globalPin: "Never kill named
 T("pinned canon text block above entity blocks", /PINNED CANON \(user-authored — absolute, always in effect\):\nNever kill named characters without my OK\.\nRose's engagement is already broken in this timeline\./.test(pnote) && pnote.indexOf("PINNED CANON") < pnote.indexOf("Rose Oriana:"));
 T("pinned entity forced with empty cast and empty scene", /Rose Oriana:/.test(pnote) && /- Identity: Rose Oriana is the second princess/.test(pnote));
 T("pin + cast dedupe: one block", (api.relevantCanonNote(["rose oriana"], ["Rose Oriana"], null, { pinNames: ["Rose"] }).match(/Rose Oriana:/g) || []).length === 1);
+
+// ---------------------------------------------------------------- v0.7: scene focus + accuracy
+console.log("[v0.7 smartness]");
+const pc = api.parseCast('```json\n[{"name":"Rose Oriana","now":"her engagement is being challenged"},"Cid Kagenou",{"name":"Rose Oriana","now":"dupe"}]\n```');
+T("parseCast: objects + strings mixed, deduped by name", pc.length === 2 && pc[0].now === "her engagement is being challenged" && pc[1].name === "Cid Kagenou" && pc[1].now === "");
+T("parseCast: [] stays explicit-empty", Array.isArray(api.parseCast("[]")) && api.parseCast("[]").length === 0);
+T("parseCast: garbage → null", api.parseCast("no entities to speak of") === null);
+T("parseNameArray compat view", JSON.stringify(api.parseNameArray('[{"name":"Alpha","now":"x"},"Beta"]')) === '["Alpha","Beta"]');
+T("disambig template detected", api.isDisambiguation("{{Disambiguation}}\nRose may refer to several characters."));
+T("'may refer to' lead detected", api.isDisambiguation("'''Rose''' may refer to:\n* [[Rose Oriana]]\n* [[Rose (episode)]]"));
+T("normal page not flagged", !api.isDisambiguation("'''Rose Oriana''' is the second princess of the Oriana Kingdom. She may also be seen at the academy."));
+const LONGLEAD = "'''Alexia Midgar''' is the second princess of the Midgar Kingdom and a student at the academy where she first met Cid. " + "She ".repeat(80);
+T("identityLine cuts at a sentence boundary", api.identityLine(LONGLEAD).endsWith("met Cid."));
+sandbox.__settings.cache = {
+    "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: ["Rose"],
+              sections: { identity: "Rose Oriana is the second princess of the Oriana Kingdom." }, rel: {},
+              dossier: { identity: "Second princess of the Oriana Kingdom.",
+                         facts: ["Second princess of the Oriana Kingdom", "Wields the Oriana sword style."],
+                         secrets: [], voice: [], dynamics: {} } },
+};
+api.setFocus({ "rose oriana": "her engagement is being challenged publicly" });
+const fnote = api.relevantCanonNote(["rose"], ["Rose Oriana"]);
+T("Now line injected from scene focus", /- Now: her engagement is being challenged publicly/.test(fnote));
+T("Now sits directly under Identity", fnote.indexOf("- Identity:") < fnote.indexOf("- Now:") && fnote.indexOf("- Now:") < fnote.indexOf("- Facts:"));
+T("fact duplicated by identity dropped, distinct fact kept", !/- Facts: Second princess/.test(fnote) && /- Facts: Wields the Oriana sword style\./.test(fnote));
+api.setFocus({ "rose": "alias-keyed focus works" });
+T("focus reachable via alias key", /- Now: alias-keyed focus works/.test(api.relevantCanonNote(["rose"], ["Rose Oriana"])));
+api.setFocus({});
+T("no focus → no Now line", !/- Now:/.test(api.relevantCanonNote(["rose"], ["Rose Oriana"])));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

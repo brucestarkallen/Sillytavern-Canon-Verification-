@@ -56,6 +56,10 @@
  *     the background, cached forever; secrets rendered under the KNOWLEDGE
  *     SCOPE guard); pinned canon — global text, per-chat text, and
  *     always-present characters — is user-authored law above everything.
+ *   - v0.7: the parser's same call now returns per-entity "now" focus (what's in
+ *     play THIS scene) injected under Identity; disambiguation pages skipped;
+ *     dossier restricted to provided material; identity sentence-clipped;
+ *     settings drawer regrouped into collapsible sections.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -70,6 +74,7 @@ let lastMatchReasons = [];  // why each injected character was considered "prese
 let parsedWords = new Set(); // lowercased candidate words already shown to the LLM parser
 let cgInFlight = false;      // guard: don't run two interceptor passes at once
 let lastCast = [];          // entities the parser last judged present (reused between gated runs)
+let castFocus = {};          // name-lc → "what about them is in play NOW" (latest parse)
 let lastCastLen = 0;        // visible-chat length when lastCast was last confirmed (drives decay)
 let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
 let renderArcStatus = null;  // set by the settings UI; called on CHAT_CHANGED
@@ -677,6 +682,27 @@ function extractQuotes(sectionRaw, maxQuotes = 3, maxLen = 420) {
 }
 
 /** Lead (intro) paragraph of the article, before the first section header. */
+/**
+ * The identity line: the lead, cut at a SENTENCE boundary (≤300) instead of
+ * mid-clause — "…is the second princess of the Oriana Kingdom." not "…of the Ori…".
+ */
+function identityLine(wikitext) {
+    const lead = extractLead(wikitext, 340);
+    if (!lead) return "";
+    if (lead.length <= 300) return lead;
+    const cut = lead.slice(0, 300);
+    const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "),
+                          cut.endsWith(".") ? cut.length - 1 : -1);
+    return stop >= 80 ? cut.slice(0, stop + 1) : clip(lead, 300);
+}
+
+/** A disambiguation page injected as canon is pure wrong-info — detect and skip. */
+function isDisambiguation(wikitext) {
+    if (!wikitext) return false;
+    if (/\{\{\s*(?:disambig|disambiguation|dab|hndis|geodis)[^}]*\}\}/i.test(wikitext.slice(0, 2000))) return true;
+    return /\bmay (?:also )?refer to\s*:/i.test(extractLead(wikitext, 200));
+}
+
 function extractLead(wikitext, maxLen = 220) {
     if (!wikitext) return "";
     const lead = wikitext.split(/\n=={1,4}[^=]/)[0] || "";
@@ -782,7 +808,7 @@ async function ensureGrounded(name, trusted = false) {
                 // the off-by-default biography category, which is exactly how a model
                 // ends up knowing a character's hair color but not WHO SHE IS.
                 // Always extracted, always injected (≤260 chars).
-                identity: extractLead(wikitext, 260),
+                identity: identityLine(wikitext),
                 physical,
                 personality: join(
                     extractInfoboxFields(wikitext, perKw),
@@ -1303,13 +1329,21 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             }
             return out;
         };
+        const focusLine = () => {
+            const keys = [nameKey, (matchedName || "").toLowerCase(), ...(entry.aliases || []).map(a => a.toLowerCase())];
+            for (const k of keys) if (k && castFocus[k]) return `  - Now: ${castFocus[k]}`;
+            return "";
+        };
         if (entry.dossier) {
             // LLM-curated path: the model read the page and chose what matters.
             const d = entry.dossier;
             const identity = d.identity || entry.sections.identity;
             if (identity) lines.push(`  - Identity: ${identity}`);
+            const nf = focusLine(); if (nf) lines.push(nf);
             if (s.physical && entry.sections.physical) lines.push(`  - Appearance: ${entry.sections.physical}`);
-            if (d.facts.length) lines.push(`  - Facts: ${d.facts.join("; ")}`);
+            const idLc = (identity || "").toLowerCase();
+            const facts = d.facts.filter(f => !idLc.includes(f.toLowerCase().replace(/[.?!]$/, "")));
+            if (facts.length) lines.push(`  - Facts: ${facts.join("; ")}`);
             lines.push(...dynLines());
             const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
             if (voice) lines.push(`  - Voice: ${voice}`);
@@ -1318,6 +1352,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             // Regex-section fallback. Identity is ALWAYS on — a model that knows the
             // hair color but not WHO SHE IS was the original sin here.
             if (entry.sections.identity) lines.push(`  - Identity: ${entry.sections.identity}`);
+            const nf = focusLine(); if (nf) lines.push(nf);
             for (const cat of order) {
                 if (s[cat] && entry.sections[cat]) lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
                 if (cat === "personality") lines.push(...dynLines());
@@ -1461,6 +1496,7 @@ async function buildDossier(name, wikitext, relRaw) {
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
         '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM}. ' +
+        "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
         "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
         "Respond with ONLY the JSON object, no other text.";
     const out = await llmCall(systemText, digest, { maxTokens: 600, budgetMs: 30000 });
@@ -1485,23 +1521,44 @@ function scheduleDossier(key, name, wikitext, relRaw) {
     }).catch(() => { /* retry after TTL */ });
 }
 
-function parseNameArray(text) {
+/**
+ * Parse the cast parser's output: a JSON array whose elements are either name
+ * strings or {"name": …, "now": "≤12 words on what about them is in play in THIS
+ * scene"}. Returns [{name, now}] (deduped by name), [] for an explicit empty
+ * answer, null for garbage/failure — the null-vs-empty discipline everything
+ * downstream depends on.
+ */
+function parseCast(text) {
     if (!text) return null;
     const cleaned = String(text).replace(/```(?:json)?/gi, "");
     const start = cleaned.indexOf("[");
     const end = cleaned.lastIndexOf("]");
-    if (start >= 0 && end > start) {
-        try {
-            const arr = JSON.parse(cleaned.slice(start, end + 1));
-            if (Array.isArray(arr)) {
-                return [...new Set(arr
-                    .filter(x => typeof x === "string")
-                    .map(x => x.trim())
-                    .filter(x => x.length >= 2 && x.length <= 50 && /[A-Za-z]/.test(x)))];
-            }
-        } catch (e) { /* fall through */ }
+    if (start < 0 || end <= start) return null;
+    let arr;
+    try { arr = JSON.parse(cleaned.slice(start, end + 1)); } catch (e) { return null; }
+    if (!Array.isArray(arr)) return null;
+    const out = [];
+    const seen = new Set();
+    for (const x of arr) {
+        let name = "", now = "";
+        if (typeof x === "string") name = x.trim();
+        else if (x && typeof x === "object" && typeof x.name === "string") {
+            name = x.name.trim();
+            if (typeof x.now === "string") now = clip(x.now.trim(), 110);
+        }
+        if (name.length < 2 || name.length > 50 || !/[A-Za-z]/.test(name)) continue;
+        const k = name.toLowerCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push({ name, now });
     }
-    return null;
+    return out;
+}
+
+/** Names-only view of parseCast — same null / [] / list semantics. */
+function parseNameArray(text) {
+    const cast = parseCast(text);
+    return cast === null ? null : cast.map(c => c.name);
 }
 
 /**
@@ -1563,12 +1620,14 @@ async function parseSceneCharacters(sceneText) {
         "groups, or notable lore that are central to what is happening. Use your own knowledge " +
         "of the series to tell a real canon entity from ordinary description. Give each entity's " +
         "canonical name (the one the wiki would use). Leave out generic words, everyday objects, " +
-        "and anything invented just for this scene. Respond with ONLY a JSON array of names as " +
-        "strings, most central first, or [] if none. No other text.";
+        "and anything invented just for this scene. Respond with ONLY a JSON array, most central " +
+        "first, or [] if none. Each element is {\"name\": \"Canonical Name\", \"now\": \"under 12 " +
+        "words: what about them is in play in THIS scene (a duel, an engagement, a secret at " +
+        "risk…)\"} — plain name strings are also accepted. No other text.";
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
-    const out = await llmCall(systemText, userText, { maxTokens: 200, budgetMs: 15000 });
+    const out = await llmCall(systemText, userText, { maxTokens: 300, budgetMs: 15000 });
     if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
-    return parseNameArray(out);   // [] only when the model explicitly answered []
+    return parseCast(out);        // [] only when the model explicitly answered []
 }
 
 /**
@@ -1638,11 +1697,14 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 if (mySerial === parseSerial) {      // a newer parse hasn't superseded this one
                     for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
                     if (parsed) {                    // null = call failed → keep the previous cast
-                        debug(parsed.length ? `LLM parser → ${parsed.join(", ")}` : "LLM parser → (no canon entities present)");
-                        lastCast = parsed;           // [] here is REAL info: clears a stale cast
+                        const names = parsed.map(p => p.name);
+                        debug(names.length ? `LLM parser → ${names.join(", ")}` : "LLM parser → (no canon entities present)");
+                        lastCast = names;            // [] here is REAL info: clears a stale cast
                         lastCastLen = visibleLen;
-                        if (parsed.length) {
-                            await groundNames(parsed, true);   // trusted: model chose these (may be lore)
+                        castFocus = {};              // focus is a snapshot of THIS parse
+                        for (const p of parsed) if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                        if (names.length) {
+                            await groundNames(names, true);   // trusted: model chose these (may be lore)
                             if (myEpoch !== chatEpoch) return;
                         }
                     }
@@ -1779,9 +1841,12 @@ async function onMessageReceived() {
         if (mySerial !== parseSerial) return;   // a newer parse (interceptor/rescan) already superseded us
         for (const n of quick) parsedWords.add(n.toLowerCase());
         if (parsed) {                            // null = failure → keep previous cast
-            lastCast = parsed;
+            const names = parsed.map(p => p.name);
+            lastCast = names;
             lastCastLen = visibleLen;
-            if (parsed.length) await groundNames(parsed, true);
+            castFocus = {};
+            for (const p of parsed) if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+            if (names.length) await groundNames(names, true);
         }
         return;
     }
@@ -1809,7 +1874,50 @@ async function addSettingsUI() {
                     <span>Enabled</span>
                 </label>
                 <small class="cg-hint">Master switch. Off = no grounding and nothing injected.</small>
+                <details class="cg-group" open>
+                <summary>🌐 Wiki source</summary>
+                <div class="cg-group-body">
+                <small><b>Wiki</b> — where facts come from:</small>
+                <label>Wiki subdomains (comma-separated) — active for this story</label>
+                <small class="cg-hint">The part before .fandom.com for your story's wiki (e.g. the-eminence-in-shadow). Add several, comma-separated, for a crossover.</small>
+                <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
+                <div style="margin-top:4px;">
+                    <input id="cg_save_wiki" class="menu_button" type="button" value="+ Save active to library">
+                </div>
+                <small class="cg-hint">Saves the current subdomain(s) as tap-to-use chips so you never retype them.</small>
+                <small>Saved wikis (tap to toggle in active, × to remove):</small>
+                <div id="cg_saved_wikis" class="cg-chips"></div>
+                </div>
+                </details>
+                <details class="cg-group" open>
+                <summary>🧭 Story position &amp; pinned canon</summary>
+                <div class="cg-group-body">
+                <small><b>Story position</b> — pin an arc/chapter so the model knows exactly where in canon you are (and never spoils past it):</small>
+                <div style="display:flex; gap:4px; align-items:center;">
+                    <input id="cg_arc" class="text_pole" type="text" placeholder="e.g. Lawless City Arc, Chapter 45" style="flex:1;">
+                    <div id="cg_arc_go" class="menu_button" title="Search the wiki and ground this arc/chapter">🔎</div>
+                    <div id="cg_arc_clear" class="menu_button" title="Clear story position">✕</div>
+                </div>
+                <small id="cg_arc_status" class="cg-hint">—</small>
+                <label class="checkbox_label">
+                    <input id="cg_arc_inject" type="checkbox">
+                    <span>Inject story position</span>
+                </label>
+                <small class="cg-hint">Adds the arc summary + a spoiler guard ("later events are unknown to every character") on top of the canon note.</small>
                 <hr>
+                <small><b>Pinned canon</b> — your words, always injected, above everything:</small>
+                <label>Every chat (global)</label>
+                <textarea id="cg_pin_global" class="text_pole" rows="2" placeholder="Facts/rules you want in every story, forever."></textarea>
+                <label>This chat only</label>
+                <textarea id="cg_pin_chat" class="text_pole" rows="2" placeholder="Facts/rules for this story only."></textarea>
+                <label>Always-present characters (this chat)</label>
+                <input id="cg_pin_names" class="text_pole" type="text" placeholder="e.g. Rose Oriana, Alpha">
+                <small class="cg-hint">Comma-separated names, grounded and injected EVERY turn regardless of who the parser thinks is on screen. The hammer for "the AI doesn't know X".</small>
+                </div>
+                </details>
+                <details class="cg-group">
+                <summary>📚 What to inject</summary>
+                <div class="cg-group-body">
                 <small><b>What to ground</b> — which kinds of canon facts to inject:</small>
                 <label class="checkbox_label">
                     <input id="cg_physical" type="checkbox">
@@ -1856,29 +1964,11 @@ async function addSettingsUI() {
                     <span>Voice (canon quotes)</span>
                 </label>
                 <small class="cg-hint">Up to 3 short verbatim lines from the wiki's Quotes section (or X/Quotes subpage) — the model hears HOW they talk, not just a description of it. Framed as style samples so it matches the cadence instead of parroting the lines.</small>
-                <hr>
-                <small><b>Story position</b> — pin an arc/chapter so the model knows exactly where in canon you are (and never spoils past it):</small>
-                <div style="display:flex; gap:4px; align-items:center;">
-                    <input id="cg_arc" class="text_pole" type="text" placeholder="e.g. Lawless City Arc, Chapter 45" style="flex:1;">
-                    <div id="cg_arc_go" class="menu_button" title="Search the wiki and ground this arc/chapter">🔎</div>
-                    <div id="cg_arc_clear" class="menu_button" title="Clear story position">✕</div>
                 </div>
-                <small id="cg_arc_status" class="cg-hint">—</small>
-                <label class="checkbox_label">
-                    <input id="cg_arc_inject" type="checkbox">
-                    <span>Inject story position</span>
-                </label>
-                <small class="cg-hint">Adds the arc summary + a spoiler guard ("later events are unknown to every character") on top of the canon note.</small>
-                <hr>
-                <small><b>Pinned canon</b> — your words, always injected, above everything:</small>
-                <label>Every chat (global)</label>
-                <textarea id="cg_pin_global" class="text_pole" rows="2" placeholder="Facts/rules you want in every story, forever."></textarea>
-                <label>This chat only</label>
-                <textarea id="cg_pin_chat" class="text_pole" rows="2" placeholder="Facts/rules for this story only."></textarea>
-                <label>Always-present characters (this chat)</label>
-                <input id="cg_pin_names" class="text_pole" type="text" placeholder="e.g. Rose Oriana, Alpha">
-                <small class="cg-hint">Comma-separated names, grounded and injected EVERY turn regardless of who the parser thinks is on screen. The hammer for "the AI doesn't know X".</small>
-                <hr>
+                </details>
+                <details class="cg-group">
+                <summary>🧠 Character detection</summary>
+                <div class="cg-group-body">
                 <small><b>How characters are found</b>:</small>
                 <label class="checkbox_label">
                     <input id="cg_llm" type="checkbox">
@@ -1911,18 +2001,11 @@ async function addSettingsUI() {
                     <span>Debug toasts</span>
                 </label>
                 <small class="cg-hint">Pop-up for every lookup (found / miss / error) and the parser's picks. Turn on to see what's happening; off for normal play.</small>
-                <hr>
-                <small><b>Wiki</b> — where facts come from:</small>
-                <label>Wiki subdomains (comma-separated) — active for this story</label>
-                <small class="cg-hint">The part before .fandom.com for your story's wiki (e.g. the-eminence-in-shadow). Add several, comma-separated, for a crossover.</small>
-                <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
-                <div style="margin-top:4px;">
-                    <input id="cg_save_wiki" class="menu_button" type="button" value="+ Save active to library">
                 </div>
-                <small class="cg-hint">Saves the current subdomain(s) as tap-to-use chips so you never retype them.</small>
-                <small>Saved wikis (tap to toggle in active, × to remove):</small>
-                <div id="cg_saved_wikis" class="cg-chips"></div>
-                <hr>
+                </details>
+                <details class="cg-group">
+                <summary>🔧 Keywords &amp; limits</summary>
+                <div class="cg-group-body">
                 <small><b>Advanced</b> — where each category lives in the wiki. Defaults cover most wikis; edit only if a category comes up empty.</small>
                 <label>Physical fields (infobox)</label>
                 <input id="cg_fields" class="text_pole" type="text">
@@ -1959,7 +2042,11 @@ async function addSettingsUI() {
                     <input id="cg_reset_kw" class="menu_button" type="button" value="Reset fields &amp; keywords to defaults">
                 </div>
                 <small class="cg-hint">Restores the field/keyword boxes above to defaults. Clear the cache afterwards so entries re-fetch.</small>
-                <hr>
+                </div>
+                </details>
+                <details class="cg-group">
+                <summary>🩺 Cache &amp; diagnostics</summary>
+                <div class="cg-group-body">
                 <small><b>Cache</b> — everything grounded so far:</small>
                 <div id="cg_cache_list" class="cg-cache"></div>
                 <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry.</small>
@@ -1976,6 +2063,8 @@ async function addSettingsUI() {
                 <small><b>Why each was injected</b>:</small>
                 <div id="cg_why" class="cg-why"></div>
                 <small class="cg-hint">For each injected character, which of their names matched and where — if something wrong shows up, this tells you why.</small>
+                </div>
+                </details>
             </div>
         </div>
     </div>`;
@@ -2154,12 +2243,15 @@ async function addSettingsUI() {
                 if (parsed === null) {
                     toastr?.warning?.("Parser call failed or timed out — nothing changed.");
                 } else if (mySerial === parseSerial) {
-                    lastCast = parsed;
+                    const names = parsed.map(p => p.name);
+                    lastCast = names;
                     lastCastLen = (ctx.chat || []).filter(m => !m.is_system).length;
-                    if (parsed.length) {
-                        await groundNames(parsed, true);
+                    castFocus = {};
+                    for (const p of parsed) if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                    if (names.length) {
+                        await groundNames(names, true);
                         if (myEpoch !== chatEpoch) return;
-                        toastr?.success?.(`Grounded: ${parsed.join(", ")}`);
+                        toastr?.success?.(`Grounded: ${names.join(", ")}`);
                     } else {
                         toastr?.info?.("Parser says no canon entities are in this scene.");
                     }
@@ -2285,6 +2377,7 @@ jQuery(async () => {
             chatEpoch++;
             parsedWords = new Set();
             lastCast = [];
+            castFocus = {};
             lastCastLen = 0;
             lastInjection = "";
             lastInjectionAt = 0;
