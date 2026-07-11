@@ -17,6 +17,8 @@ function grab(marker, endMarker) {
     return src.slice(i, j);
 }
 const pieces = [
+    "function ledgerNames() { return null; }  // stub: scan-mode ledger filter (not under test)",
+    "let lastMatchReasons = [];               // stub: module-scope diagnostic the note builder writes",
     grab("const STOPWORDS", "function extractCandidateNames"),
     grab("function extractCandidateNames", "// ------"),
     grab("function isMediaTitle", "async function findPageTitle"),
@@ -25,6 +27,8 @@ const pieces = [
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
     grab("function clip(", "/**\n * Build the canon note."),
     grab("function parseNameArray", "/**\n * Arbiter-style"),
+    grab("/** Prefer story-structure titles", "// ------"),
+    grab("function relevantCanonNote", "// ------"),
 ];
 
 // stubs for the module-scope things the sliced code touches
@@ -38,9 +42,10 @@ const sandbox = {
 };
 const body = pieces.join("\n\n") + `
 return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
-         extractInfoboxFields, extractSection, extractLead, extractAliases,
-         extractFromProse, mentioned, escapeRegex, clip, cacheEntryFor,
-         pruneStaleCast, isUnhandledName, parseNameArray,
+         extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
+         extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
+         clip, cacheEntryFor, pruneStaleCast, isUnhandledName, parseNameArray,
+         relationFor, pickArcHit, relevantCanonNote,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -168,6 +173,64 @@ eq("past grace: off-screen char dropped, mentioned (via alias) kept", pruned, ["
 eq("prune writes back (ghost stays gone)", api.getCast(), ["Alisa Mikhailovna Kujou"]);
 api.setCast([], 0);
 eq("empty cast → []", api.pruneStaleCast(50, ["anything"]), []);
+
+// ---------------------------------------------------------------- v0.3: trivia
+console.log("[trivia]");
+const TRIV = `Intro.\n== Trivia ==\n* Alpha secretly keeps every note Cid has ever written her.\n* [[Piped link|Her favorite tea]] is chamomile, per the author Q&A.\n* short\n* Alpha secretly keeps every note Cid has ever written her.\n== Gallery ==\n* notatrivia.png`;
+const triv = api.extractTrivia(TRIV, ["trivia"]);
+T("bullets extracted + piped link cleaned", /secretly keeps every note/.test(triv) && /favorite tea/.test(triv) && !/Piped link/.test(triv));
+T("short bullets dropped, duplicates deduped", !/(^|; )short/.test(triv) && triv.indexOf("secretly keeps") === triv.lastIndexOf("secretly keeps"));
+T("bullets outside the Trivia section excluded", !/notatrivia/.test(triv));
+T("maxBullets honored", api.extractTrivia(TRIV, ["trivia"], 1).split("; ").length === 1);
+
+// ---------------------------------------------------------------- v0.3: raw subtree + relationFor
+console.log("[relationFor]");
+const RELPAGE = `== Relationships ==\nGeneral intro line.\n=== Cid Kagenou ===\nUtterly devoted to him; around Cid her stoic mask slips into open warmth.\n=== Beta ===\nTrusted fellow founder.\n== Trivia ==\n* x`;
+const relRaw = api.extractSectionRaw(RELPAGE, ["relationships"]);
+T("raw subtree keeps subsection headers", /=== Cid Kagenou ===/.test(relRaw) && /=== Beta ===/.test(relRaw));
+T("raw subtree stops at sibling section", !/Trivia/.test(relRaw));
+T("subsection hit via full name", /stoic mask slips/.test(api.relationFor(relRaw, ["Cid Kagenou"])));
+T("subsection hit via ALIAS (Cid → Cid Kagenou)", /stoic mask slips/.test(api.relationFor(relRaw, ["Cid"])));
+T("other subsection not leaked", !/devoted/.test(api.relationFor(relRaw, ["Beta"])));
+const RELFLAT = `== Relationships ==\nShe treats most of Shadow Garden formally. Around Cid, however, she softens completely and defers to his every whim.\n\nWith strangers she is curt.`;
+T("paragraph fallback when no subsections", /softens completely/.test(api.relationFor(api.extractSectionRaw(RELFLAT, ["relationships"]), ["Cid"])));
+T("no mention → empty", api.relationFor(relRaw, ["Rose Oriana"]) === "");
+
+// ---------------------------------------------------------------- v0.3: arc picking
+console.log("[pickArcHit]");
+T("exact title wins", api.pickArcHit(["Lawless City", "Lawless City Arc"], "lawless city") === "Lawless City");
+T("structural title preferred over character page", api.pickArcHit(["Alexia Midgar", "Lawless City Arc"], "lawless") === "Lawless City Arc");
+T("subpages skipped for structural pick", api.pickArcHit(["Cid Kagenou/Chapter Notes", "Chapter 45"], "chapter 45 stuff") === "Chapter 45");
+T("no hits → null", api.pickArcHit([], "anything") === null);
+
+// ---------------------------------------------------------------- v0.3: note framing + dynamics + arc
+console.log("[note builder]");
+sandbox.__settings = {
+    cache: {
+        "alpha": { name: "Alpha", found: true, wiki: "w", aliases: [],
+                   sections: { physical: "hair: blonde", personality: "Stoic, commanding presence", trivia: "Keeps every note Cid wrote her" },
+                   rel: { "cid kagenou": "Around Cid her stoic mask slips into open warmth." } },
+        "cid kagenou": { name: "Cid Kagenou", found: true, wiki: "w", aliases: ["Cid"],
+                   sections: { physical: "hair: black" }, rel: {} },
+    },
+    physical: true, personality: true, relationship: true, biography: false, abilities: false, trivia: true,
+    relationDynamics: true, maxCharacters: 8, maxCharsPerChar: 700, maxTotalChars: 4500,
+    arcInject: true, arcNote: { title: "Lawless City Arc", wiki: "w", summary: "Shadow Garden infiltrates the lawless city." },
+    llmParser: true, contextWindow: 10,
+};
+const note = api.relevantCanonNote(["alpha nodded at cid kagenou"], ["Alpha", "Cid Kagenou"]);
+T("framing: baseline-not-script present", /BASELINE, not a script/.test(note) && /overrides the baseline/.test(note));
+T("per-pair dynamics line injected", /- With Cid Kagenou: Around Cid her stoic mask slips/.test(note));
+T("dynamics line sits under Personality", note.indexOf("Personality: Stoic") < note.indexOf("With Cid Kagenou:"));
+T("trivia line injected", /- Trivia: Keeps every note/.test(note));
+T("arc block + spoiler guard on top", /STORY POSITION — Lawless City Arc/.test(note) && /never foreshadow/.test(note) && note.indexOf("STORY POSITION") < note.indexOf("Alpha:"));
+sandbox.__settings.arcInject = false;
+T("arc toggle off → no arc block", !/STORY POSITION/.test(api.relevantCanonNote(["alpha"], ["Alpha"])));
+sandbox.__settings.arcInject = true;
+sandbox.__settings.cache = {};
+T("arc-only note injects with empty cast", /STORY POSITION/.test(api.relevantCanonNote([], [])));
+sandbox.__settings.arcNote = null;
+T("nothing at all → empty note", api.relevantCanonNote([], []) === "");
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

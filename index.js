@@ -34,6 +34,17 @@
  * (directly or via alias) are pruned, so ghosts can't ride the injection forever.
  * Parser failure (timeout/garbage → null) is distinguished from an explicit empty
  * answer ([]) — failure keeps the previous cast, empty clears it.
+ *
+ * v0.3 — lore depth without rigidity:
+ *   - Trivia: "== Trivia ==" bullets (fan-level canon) ground and inject per entity.
+ *   - Per-pair DYNAMICS: when A and B share the scene, "With B: …" is sliced from A's
+ *     Relationships subsections (or the A/Relationships subpage, fetched once ever) and
+ *     injected under A's Personality — the wiki's own record of how A acts around B.
+ *   - The note header frames Personality as a public BASELINE that per-pair dynamics
+ *     override: facts are authoritative, DELIVERY is situational. This is the fix for
+ *     "the wiki says stoic → stoic with everyone" flattening.
+ *   - Story position: an arc/chapter page can be grounded and pinned with a spoiler
+ *     guard, so the model knows what has happened and never uses what hasn't.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -73,13 +84,28 @@ const defaultSettings = {
     // Infobox fields that list a character's other names, so nicknames (e.g. "Alya"
     // for "Alisa Mikhailovna Kujou") match the same grounded entry automatically.
     aliasKeywords: "alias,nickname,also known,other name,epithet,codename,aka,known as",
-    // What KIND of canon to ground and inject. Physical is on by default; the others
-    // are opt-in because they inject prose and can make the model more rigid.
+    // What KIND of canon to ground and inject. v0.3 turns the lore categories ON by
+    // default: the old rigidity fear ("personality prose makes the model robotic") is
+    // fixed at the source by the baseline-not-script framing + per-pair dynamics below,
+    // so knowing the lore no longer costs natural behavior.
     physical: true,       // appearance: hair, eyes, look
-    personality: false,   // temperament / how they behave
-    relationship: false,  // family and key connections (helps correct invented parents)
+    personality: true,    // temperament — injected as a BASELINE, not a script
+    relationship: true,   // family and key connections (helps correct invented parents)
     biography: false,     // role, affiliation, background
     abilities: false,     // powers, skills, weapons
+    trivia: true,         // "== Trivia ==" bullets — dense fan-level canon facts
+    triviaKeywords: "trivia",
+    // Per-PAIR relationship dynamics: when two grounded characters share the scene,
+    // inject how A acts around B specifically ("With Cid: …"), from the Relationships
+    // subsections of A's page (or the "A/Relationships" subpage). This is the fix for
+    // "the wiki says stoic, so she's stoic with everyone" — the wiki itself documents
+    // the exceptions, per person; we surface exactly the pair that's on screen.
+    relationDynamics: true,
+    // Story position: a grounded arc/chapter page pinned into the note, with a spoiler
+    // guard so later canon events stay unknown to every character.
+    arcTitle: "",
+    arcNote: null,        // { query, title, wiki, summary, ts }
+    arcInject: true,
     // How many recent VISIBLE messages count as "the current scene" for deciding who
     // to inject. ~10 matches a setup that summarizes everything older. Higher = a
     // character stays grounded longer after they stop being mentioned.
@@ -136,6 +162,18 @@ function settings() {
         if (st.maxCharacters === 6) st.maxCharacters = 8;
         if (st.maxTotalChars === 2400) st.maxTotalChars = 3000;
         st.migrated_v2 = true;
+        saveSettingsDebounced();
+    }
+    if (!st.migrated_v3) {
+        // v0.3 is the "make the AI actually know the lore" release: personality and
+        // relationships go ON (the rigidity they used to cause is solved by framing +
+        // per-pair dynamics, not by hiding the lore), and the caps grow so the richer
+        // note isn't truncated mid-category. Numeric bumps only touch untouched defaults.
+        st.personality = true;
+        st.relationship = true;
+        if (st.maxCharsPerChar === 400) st.maxCharsPerChar = 700;
+        if (st.maxTotalChars === 3000) st.maxTotalChars = 4500;
+        st.migrated_v3 = true;
         saveSettingsDebounced();
     }
     return st;
@@ -516,6 +554,56 @@ function extractSection(wikitext, titles, maxLen = 260) {
     return "";
 }
 
+/**
+ * RAW (uncleaned) body of a section — keeps ===Subsection=== headers and paragraph
+ * breaks intact, so per-pair relationship slicing can find "=== Cid Kagenou ===".
+ */
+function extractSectionRaw(wikitext, titles, maxLen = 4000) {
+    if (!wikitext) return "";
+    const chunks = wikitext.split(/\n(?==={1,4}[^=])/);
+    const want = titles.map(t => t.toLowerCase());
+    for (const chunk of chunks) {
+        const m = chunk.match(/^(=+)\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
+        if (!m) continue;
+        const title = m[2].trim().toLowerCase();
+        if (!want.some(w => title === w || title.includes(w))) continue;
+        // The split cuts at EVERY header, so deeper subsections (=== X ===) landed in
+        // LATER chunks — re-attach every following chunk whose header is DEEPER than
+        // this one, so the returned body contains the whole subtree.
+        const depth = m[1].length;
+        let body = m[3];
+        const start = chunks.indexOf(chunk);
+        for (let i = start + 1; i < chunks.length; i++) {
+            const hm = chunks[i].match(/^(=+)\s*.+?\s*=+[^\n]*\n/);
+            if (!hm || hm[1].length <= depth) break;
+            body += "\n" + chunks[i];
+            if (body.length >= maxLen) break;
+        }
+        return body.slice(0, maxLen);
+    }
+    return "";
+}
+
+/**
+ * "== Trivia ==" bullets: dense fan-level canon (habits, quirks, hidden facts) that
+ * humanizes a character beyond the formal sections. First N usable bullets, cleaned.
+ */
+function extractTrivia(wikitext, titles, maxBullets = 6, maxLen = 700) {
+    const raw = extractSectionRaw(wikitext, titles, 6000);
+    if (!raw) return "";
+    const out = [];
+    let total = 0;
+    for (const line of raw.split(/\n\*+\s*/).slice(1)) {
+        const item = cleanWikitext(line.split("\n")[0]).trim();
+        if (item.length < 10 || out.includes(item)) continue;
+        if (total + item.length > maxLen) break;
+        out.push(item);
+        total += item.length;
+        if (out.length >= maxBullets) break;
+    }
+    return out.join("; ");
+}
+
 /** Lead (intro) paragraph of the article, before the first section header. */
 function extractLead(wikitext, maxLen = 220) {
     if (!wikitext) return "";
@@ -620,23 +708,27 @@ async function ensureGrounded(name, trusted = false) {
                 physical,
                 personality: join(
                     extractInfoboxFields(wikitext, perKw),
-                    extractSection(wikitext, perKw)
+                    extractSection(wikitext, perKw, 500)
                 ),
                 relationship: join(
                     extractInfoboxFields(wikitext, relKw),
-                    extractSection(wikitext, relKw)
+                    extractSection(wikitext, relKw, 500)
                 ),
                 // Biography always leads with the intro paragraph (the "X is a …" line
                 // that has no header), then adds infobox bio fields and a history section.
                 biography: join(
                     extractLead(wikitext),
                     extractInfoboxFields(wikitext, bioKw),
-                    extractSection(wikitext, bioKw)
+                    extractSection(wikitext, bioKw, 400)
                 ),
                 abilities: join(
                     extractInfoboxFields(wikitext, abiKw),
-                    extractSection(wikitext, abiKw)
+                    extractSection(wikitext, abiKw, 300)
                 ),
+                // Fan-level canon: quirks, habits, hidden facts. Often the ONLY place the
+                // wiki records the humanizing detail ("secretly practices X", "only smiles
+                // around Y") that keeps a character from reading as their job title.
+                trivia: extractTrivia(wikitext, s.triviaKeywords.split(",").map(t => t.trim()).filter(Boolean)),
             };
 
             const anything = Object.values(sections).some(Boolean);
@@ -645,7 +737,11 @@ async function ensureGrounded(name, trusted = false) {
                 // term we searched with, so any of them match this entry later.
                 const aliases = extractAliases(wikitext, s.aliasKeywords.split(","));
                 if (name && name.toLowerCase() !== title.toLowerCase()) aliases.push(name);
-                s.cache[key] = { name: title, sections, aliases, wiki, found: true, ts: Date.now() };
+                // Raw material for per-pair dynamics: the whole Relationships subtree,
+                // subsection headers intact, so relationFor can slice "how A is with B"
+                // at note time for exactly the pair that's on screen.
+                const relRaw = extractSectionRaw(wikitext, ["relationships", "relationship"], 4000);
+                s.cache[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, found: true, ts: Date.now() };
                 saveSettingsDebounced();
                 const got = Object.entries(sections).filter(([, v]) => v).map(([k]) => k).join(", ");
                 debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${physical || "(no appearance)"} [have: ${got}]`);
@@ -679,6 +775,103 @@ async function groundNames(names, trusted = false) {
     );
 }
 
+/**
+ * Per-PAIR dynamics: for every ordered pair (A, B) of grounded characters on screen,
+ * resolve "how A is around B" once and cache it forever at A.rel[bKey].
+ * Sources, in order: the Relationships subtree already on A's page (free), then the
+ * "A/Relationships" subpage (one fetch per character, ever — capped per turn).
+ * An empty string is a real, cached answer ("no documented dynamic"), so settled
+ * pairs cost nothing on later turns.
+ */
+async function resolveRelations(entries) {
+    const s = settings();
+    if (!s.relationDynamics) return;
+    const found = (entries || []).filter(e => e && e.found);
+    let fetchBudget = 3; // first-time subpage fetches per turn; the cache absorbs the rest
+    for (const a of found) {
+        if (!a.rel) a.rel = {};
+        for (const b of found) {
+            if (a === b || (a.name || "").toLowerCase() === (b.name || "").toLowerCase()) continue;
+            const bKey = (b.name || "").toLowerCase();
+            if (!bKey || a.rel[bKey] !== undefined) continue;      // already resolved (even to "")
+            const bNames = [b.name, ...(b.aliases || [])].filter(Boolean);
+            let snip = relationFor(a.relRaw, bNames);
+            if (!snip && a.wiki) {
+                // Many wikis keep dynamics on a dedicated subpage. Fetch it AT MOST once
+                // per character, ever; a missing page parses to "" and is remembered.
+                if (a.relPageRaw === undefined && fetchBudget > 0) {
+                    fetchBudget--;
+                    try {
+                        a.relPageRaw = (await fetchWikitext(a.wiki, `${a.name}/Relationships`)).slice(0, 8000);
+                    } catch (e) {
+                        a.relPageRaw = "";
+                        debug(`rel subpage fetch failed for ${a.name}: ${e.message}`);
+                    }
+                }
+                if (a.relPageRaw) snip = relationFor(a.relPageRaw, bNames);
+            }
+            if (snip) { a.rel[bKey] = snip; continue; }
+            // "" (no documented dynamic) is only FINAL once the subpage has actually been
+            // consulted — or there's no wiki to consult. If the per-turn fetch budget ran
+            // out first, leave the pair unresolved so a later turn can still try it.
+            if (!a.wiki || a.relPageRaw !== undefined) a.rel[bKey] = "";
+        }
+    }
+    saveSettingsDebounced();
+}
+
+/**
+ * Ground a story ARC / CHAPTER / EPISODE page and pin its summary as the current
+ * story position. Character lookups reject these titles on purpose (isMediaTitle);
+ * here they are the point, so this path does its own exact-then-search resolution.
+ */
+async function groundArc(query) {
+    const s = settings();
+    const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
+    for (const wiki of wikis) {
+        try {
+            let title = null;
+            try {
+                const exact = query.replace(/\S+/g, w => w[0].toUpperCase() + w.slice(1));
+                const r = await fetch(`${apiBase(wiki)}?action=query&titles=${encodeURIComponent(exact)}&redirects=1&format=json&origin=*`);
+                if (r.ok) {
+                    const p = Object.values((await r.json())?.query?.pages || {})[0];
+                    if (p && p.pageid && !("missing" in p)) title = p.title;
+                }
+            } catch (e) { /* fall through to search */ }
+            if (!title) {
+                const res = await fetch(`${apiBase(wiki)}?action=query&list=search&srlimit=8&format=json&origin=*&srsearch=${encodeURIComponent(query)}`);
+                if (!res.ok) continue;
+                const hits = (await res.json())?.query?.search || [];
+                title = pickArcHit(hits.map(h => h.title), query);
+            }
+            if (!title) continue;
+            const wikitext = await fetchWikitext(wiki, title);
+            const summary = extractSection(wikitext, ["summary", "plot", "synopsis", "overview", "story", "events"], 900)
+                || extractLead(wikitext, 900);
+            if (!summary) continue;
+            s.arcNote = { query, title, wiki, summary, ts: Date.now() };
+            s.arcTitle = query;
+            saveSettingsDebounced();
+            debug(`✓ story position → ${title} (${wiki})`);
+            return s.arcNote;
+        } catch (e) {
+            debug(`arc ground error on ${wiki}: ${e.message}`);
+        }
+    }
+    return null;
+}
+
+/** Prefer story-structure titles (Arc/Chapter/Episode/…) over character/subpage hits. */
+function pickArcHit(titles, query) {
+    const q = String(query || "").toLowerCase();
+    const structural = /\b(arc|saga|chapter|episode|season|volume|part)\b/i;
+    return titles.find(t => t.toLowerCase() === q)
+        || titles.find(t => structural.test(t) && !t.includes("/"))
+        || titles.find(t => !t.includes("/"))
+        || null;
+}
+
 // ---------------------------------------------------------------------------
 // Which cached entities are relevant to the current moment?
 // ---------------------------------------------------------------------------
@@ -698,7 +891,7 @@ async function groundNames(names, trusted = false) {
  */
 function sceneMessages(ctx, windowSize) {
     const chat = ctx.chat || [];
-    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[Canonical reference", "[Plot essential"];
+    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[CANON REFERENCE", "[Canonical reference", "[Plot essential"];
     const visible = chat.filter(m =>
         !m.is_system && !markers.some(mk => (m.mes || "").includes(mk))
     );
@@ -753,6 +946,33 @@ function mentioned(name, lowerText) {
     } catch (e) {
         return lowerText.includes(name);
     }
+}
+
+/**
+ * How this character relates to ONE specific other character, sliced from a
+ * Relationships section body (raw wikitext, subsection headers intact).
+ * Priority: a "=== Other Name ===" subsection matching any of the other's
+ * names/aliases; else the first paragraph that mentions them. Returns "" on miss.
+ */
+function relationFor(relWikitext, otherNames, maxLen = 350) {
+    if (!relWikitext || !otherNames || !otherNames.length) return "";
+    const wants = otherNames.map(n => String(n).toLowerCase()).filter(Boolean);
+    // 1) Subsection headed with the other character's name (the common Fandom layout).
+    for (const chunk of relWikitext.split(/\n(?==={1,4}[^=])/)) {
+        const m = chunk.match(/^=+\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
+        if (!m) continue;
+        const title = m[1].trim().toLowerCase();
+        if (wants.some(w => title === w || title.includes(w) || w.includes(title))) {
+            const body = cleanWikitext(m[2].split(/\n=={1,4}[^=]/)[0]);
+            if (body) return clip(body, maxLen);
+        }
+    }
+    // 2) No subsection — first paragraph that names them.
+    for (const para of cleanWikitext(relWikitext).split(/\n{2,}|(?<=\.)\s{2,}/)) {
+        const lower = para.toLowerCase();
+        if (wants.some(w => mentioned(w, lower))) return clip(para.trim(), maxLen);
+    }
+    return "";
 }
 
 /** Find the cached, grounded entry for a name (by key, then title/alias). */
@@ -832,10 +1052,13 @@ function relevantCanonNote(sceneMsgs, castNames) {
         personality: "Personality",
         biography: "Background",
         abilities: "Powers & Abilities",
+        trivia: "Trivia",
     };
     // Order matters: lean, high-value facts first so they survive the per-character cap;
-    // verbose biography/abilities are trimmed first when space runs out.
-    const order = ["physical", "relationship", "personality", "biography", "abilities"];
+    // verbose biography/abilities are trimmed first when space runs out. Trivia rides
+    // last — flavor, not identity — but per-pair dynamics are spliced in right after
+    // Personality (they're the anti-flattening payload, worth protecting).
+    const order = ["physical", "relationship", "personality", "biography", "abilities", "trivia"];
 
     const present = [];  // { entry, matchedName }
     if (castNames && castNames.length) {
@@ -881,6 +1104,16 @@ function relevantCanonNote(sceneMsgs, castNames) {
         const lines = [];
         for (const cat of order) {
             if (s[cat] && entry.sections[cat]) lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
+            // Per-pair dynamics ride directly under Personality: "the baseline says
+            // stoic, but with THIS person on screen, canon says she is like THIS."
+            if (cat === "personality" && s.relationDynamics && entry.rel) {
+                let dyn = 0;
+                for (const { entry: other } of present) {
+                    if (dyn >= 3 || other === entry) continue;
+                    const snip = entry.rel[(other.name || "").toLowerCase()];
+                    if (snip) { lines.push(`  - With ${other.name}: ${snip}`); dyn++; }
+                }
+            }
         }
         if (!lines.length) continue;
         let block = clip(`${entry.name}:\n${lines.join("\n")}`, s.maxCharsPerChar);
@@ -894,13 +1127,31 @@ function relevantCanonNote(sceneMsgs, castNames) {
         reasons.push(`${entry.name} ← ${matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene"}`);
     }
     lastMatchReasons = reasons;
-    if (!blocks.length) return "";
+
+    // Story position rides on top of the note: what has ALREADY happened (continuity
+    // anchor) plus a spoiler guard so later canon can't leak into anyone's head.
+    let arcBlock = "";
+    if (s.arcInject && s.arcNote && s.arcNote.summary) {
+        arcBlock =
+            `STORY POSITION — ${s.arcNote.title}: ${s.arcNote.summary}\n` +
+            `(Only events up to this point have occurred. Later canon events, reveals, and ` +
+            `identities are unknown to every character — never foreshadow or use them.)\n`;
+        reasons.push(`story position ← ${s.arcNote.title}`);
+    }
+
+    if (!blocks.length && !arcBlock) return "";
     return (
-        "[AUTHORITATIVE SOURCE CANON — retrieved from the official wiki for this " +
-        "series. These facts are CORRECT and take priority over your own memory, your " +
-        "assumptions, and any other description in this prompt. If something else here " +
-        "disagrees, it is wrong — use THESE and do not second-guess, 'correct', or " +
-        "invent alternatives.]\n" + blocks.join("\n")
+        "[CANON REFERENCE — retrieved from the official wiki for this series.\n" +
+        "FACTS (appearance, relations, history, events) are authoritative: they override " +
+        "your own memory and anything else in this prompt that disagrees — use them, do " +
+        "not second-guess, 'correct', or invent alternatives.\n" +
+        "BEHAVIOR is different: each Personality line is that character's public BASELINE, " +
+        "not a script. Real people modulate with company, mood, privacy, and stakes — a " +
+        "commander who is stoic on duty can be warm, petty, or openly devoted in private. " +
+        "When a 'With <name>' line exists and that person is in the scene, THAT dynamic " +
+        "overrides the baseline. Never flatten a character to their trait words; show the " +
+        "traits through fresh, situation-specific behavior, contradictions included.]\n" +
+        arcBlock + blocks.join("\n")
     );
 }
 
@@ -1117,6 +1368,20 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
         }
 
+        // Per-pair dynamics: with the cast settled, resolve "how A is around B" for every
+        // grounded pair on screen (cached forever per pair; subpage fetches budgeted).
+        if (cast && cast.length > 1) {
+            const uniq = new Map();
+            for (const n of cast) {
+                const hit = cacheEntryFor(n.toLowerCase());
+                if (hit) uniq.set(hit.key, hit.entry);
+            }
+            if (uniq.size > 1) {
+                await resolveRelations([...uniq.values()]);
+                if (myEpoch !== chatEpoch) return;
+            }
+        }
+
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
         // Scene text hasn't changed since the top of the run — reuse it (the old code
         // recomputed sceneMessages a second time for nothing).
@@ -1220,14 +1485,19 @@ async function addSettingsUI() {
                 <small class="cg-hint">Hair and eye color. Leanest and most useful — fixes wrong looks. Leave this on.</small>
                 <label class="checkbox_label">
                     <input id="cg_personality" type="checkbox">
-                    <span>Personality</span>
+                    <span>Personality (baseline)</span>
                 </label>
-                <small class="cg-hint">How they behave. Adds a short paragraph of tokens.</small>
+                <small class="cg-hint">Temperament, injected as a public BASELINE with framing that tells the model to modulate it — not a script. On by default in v0.3.</small>
                 <label class="checkbox_label">
                     <input id="cg_relationship" type="checkbox">
                     <span>Relationships / family</span>
                 </label>
                 <small class="cg-hint">Parents, siblings, key ties. Good for stopping invented family.</small>
+                <label class="checkbox_label">
+                    <input id="cg_dynamics" type="checkbox">
+                    <span>Per-pair dynamics ("With Cid: …")</span>
+                </label>
+                <small class="cg-hint">When two grounded characters share a scene, inject how THIS one acts around THAT one, from the wiki's Relationships subsections (or the X/Relationships subpage). The fix for "stoic on the wiki → stoic with everyone".</small>
                 <label class="checkbox_label">
                     <input id="cg_biography" type="checkbox">
                     <span>Biography (role, background)</span>
@@ -1238,6 +1508,24 @@ async function addSettingsUI() {
                     <span>Powers &amp; Abilities</span>
                 </label>
                 <small class="cg-hint">Powers, skills, weapons. Verbose, and the model often half-knows these.</small>
+                <label class="checkbox_label">
+                    <input id="cg_trivia" type="checkbox">
+                    <span>Trivia</span>
+                </label>
+                <small class="cg-hint">"== Trivia ==" bullets — dense fan-level canon (quirks, habits, hidden facts) that humanizes characters beyond the formal sections.</small>
+                <hr>
+                <small><b>Story position</b> — pin an arc/chapter so the model knows exactly where in canon you are (and never spoils past it):</small>
+                <div style="display:flex; gap:4px; align-items:center;">
+                    <input id="cg_arc" class="text_pole" type="text" placeholder="e.g. Lawless City Arc, Chapter 45" style="flex:1;">
+                    <div id="cg_arc_go" class="menu_button" title="Search the wiki and ground this arc/chapter">🔎</div>
+                    <div id="cg_arc_clear" class="menu_button" title="Clear story position">✕</div>
+                </div>
+                <small id="cg_arc_status" class="cg-hint">—</small>
+                <label class="checkbox_label">
+                    <input id="cg_arc_inject" type="checkbox">
+                    <span>Inject story position</span>
+                </label>
+                <small class="cg-hint">Adds the arc summary + a spoiler guard ("later events are unknown to every character") on top of the canon note.</small>
                 <hr>
                 <small><b>How characters are found</b>:</small>
                 <label class="checkbox_label">
@@ -1343,11 +1631,35 @@ async function addSettingsUI() {
     $("#cg_enabled").prop("checked", s.enabled).on("input", function () {
         s.enabled = $(this).prop("checked"); saveSettingsDebounced();
     });
-    for (const cat of ["physical", "personality", "relationship", "biography", "abilities"]) {
+    for (const cat of ["physical", "personality", "relationship", "biography", "abilities", "trivia"]) {
         $(`#cg_${cat}`).prop("checked", s[cat]).on("input", function () {
             s[cat] = $(this).prop("checked"); saveSettingsDebounced();
         });
     }
+    $("#cg_dynamics").prop("checked", s.relationDynamics).on("input", function () {
+        s.relationDynamics = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    // Story position (arc/chapter grounding).
+    const renderArc = () => $("#cg_arc_status").text(
+        s.arcNote ? `✓ ${s.arcNote.title} (${s.arcNote.wiki})` : "—"
+    );
+    $("#cg_arc").val(s.arcTitle || "");
+    renderArc();
+    $("#cg_arc_go").on("click", async function () {
+        const q = String($("#cg_arc").val() || "").trim();
+        if (!q) return;
+        $("#cg_arc_status").text("searching…");
+        const got = await groundArc(q);
+        if (got) renderArc();
+        else $("#cg_arc_status").text("✕ no arc/chapter page found on: " + s.wikis);
+    });
+    $("#cg_arc_clear").on("click", function () {
+        s.arcTitle = ""; s.arcNote = null; $("#cg_arc").val("");
+        saveSettingsDebounced(); renderArc();
+    });
+    $("#cg_arc_inject").prop("checked", s.arcInject).on("input", function () {
+        s.arcInject = $(this).prop("checked"); saveSettingsDebounced();
+    });
     $("#cg_debug").prop("checked", s.debug).on("input", function () {
         s.debug = $(this).prop("checked"); saveSettingsDebounced();
     });
@@ -1408,8 +1720,8 @@ async function addSettingsUI() {
         });
     };
     numHandler("#cg_maxchars", "maxCharacters", 1, 8);
-    numHandler("#cg_maxper", "maxCharsPerChar", 80, 400);
-    numHandler("#cg_maxtotal", "maxTotalChars", 200, 3000);
+    numHandler("#cg_maxper", "maxCharsPerChar", 80, 700);
+    numHandler("#cg_maxtotal", "maxTotalChars", 200, 4500);
 
     $("#cg_reset_kw").on("click", function () {
         for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords"]) {

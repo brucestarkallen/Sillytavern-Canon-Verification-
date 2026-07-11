@@ -56,6 +56,37 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.3.0 (lore depth without rigidity)
+
+Proven by `test/proof.js` (75 assertions, all passing).
+
+1. **Story position (arc/chapter grounding).** Type an arc or chapter into the new
+   "Story position" box and 🔎 grounds its wiki page (exact title, then a search that
+   *prefers* Arc/Chapter/Episode titles — the opposite of character lookup, which
+   rejects them). Its summary is pinned on top of the canon note with a spoiler
+   guard: *only events up to this point have occurred; later canon is unknown to
+   every character.* The model knows exactly where in the story you are.
+2. **Trivia.** `== Trivia ==` bullets now ground and inject per entity (on by
+   default). This is where wikis keep the humanizing canon — quirks, habits, hidden
+   facts — that never makes the formal sections.
+3. **Per-pair dynamics — the "stoic Alpha" fix.** A wiki personality line is a
+   *public baseline*, but models were playing it as a script: Alpha is "stoic
+   commander" everywhere, even alone with Cid. Now, when two grounded characters
+   share a scene, the extension slices *how A acts around B specifically* from A's
+   Relationships subsections (or the `A/Relationships` subpage — fetched at most
+   once per character, ever) and injects it as `With Cid: …` directly under A's
+   Personality. The rewritten note header makes the contract explicit: **facts are
+   authoritative; behavior is a baseline that the per-pair dynamic overrides when
+   that person is present** — never flatten a character to their trait words.
+   Resolved pairs (including "no documented dynamic") cache forever; settled casts
+   cost zero extra calls.
+4. **Lore-on defaults + room to breathe.** Personality and Relationships now default
+   ON (one-time `migrated_v3`) — the rigidity that justified hiding them is fixed at
+   the source by 3, not by starving the model of lore. Per-category extraction caps
+   raised (personality/relationships 260→500), per-character cap 400→700, total cap
+   3000→4500. Grounding still costs one fetch per entity, ever; the injection stays
+   hard-capped and scene-scoped.
+
 ## Changelog — v0.2.0 (deep audit: 15 root-cause fixes)
 
 Proven by `test/proof.js` (47 assertions, all passing — `node test/proof.js`).
