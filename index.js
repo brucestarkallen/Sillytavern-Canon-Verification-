@@ -26,6 +26,14 @@
  * generateRaw from re-entering; a re-entry flag guards overlaps; all wiki/LLM work is
  * time-boxed and wrapped so it can never block or break a turn. Injection size is hard-
  * capped (per-entity + total) so a big cast can't balloon the prompt.
+ *
+ * v0.2: every async result is epoch-guarded (CHAT_CHANGED bumps an epoch; stale
+ * parses/groundings from a previous chat are discarded) and serial-guarded (only the
+ * newest parse may write the cast). The cast itself DECAYS: past a grace window of
+ * `contextWindow` messages since the last parse, entities no longer named in the scene
+ * (directly or via alias) are pruned, so ghosts can't ride the injection forever.
+ * Parser failure (timeout/garbage → null) is distinguished from an explicit empty
+ * answer ([]) — failure keeps the previous cast, empty clears it.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -38,8 +46,12 @@ let lastInjection = "";
 let lastInjectionAt = 0;
 let lastMatchReasons = [];  // why each injected character was considered "present"
 let parsedWords = new Set(); // lowercased candidate words already shown to the LLM parser
-let cgInFlight = false;      // guard: don't re-enter the interceptor during our own sub-generation
+let cgInFlight = false;      // guard: don't run two interceptor passes at once
 let lastCast = [];          // entities the parser last judged present (reused between gated runs)
+let lastCastLen = 0;        // visible-chat length when lastCast was last confirmed (drives decay)
+let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
+let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
+let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
 
 const defaultSettings = {
@@ -111,18 +123,22 @@ function settings() {
             extension_settings[MODULE_NAME][k] = structuredClone(defaultSettings[k]);
         }
     }
-    // One-time migration: early versions defaulted physical fields to a broad list
-    // (height/age/race/gender) that pulled noise. If the saved value is exactly that
-    // old default (i.e. never customized), quietly move it to the new hair/eyes-only.
-    const OLD_FIELDS = "hair,haircolor,hair color,eyes,eye color,eyecolor,height,age,race,species,gender";
-    if (extension_settings[MODULE_NAME].fields === OLD_FIELDS) {
-        extension_settings[MODULE_NAME].fields = defaultSettings.fields;
+    // One-time migrations, GATED by a stamp. The old code re-applied these on every
+    // settings() call, which made it impossible to keep maxCharacters=6 or
+    // maxTotalChars=2400 on purpose — they silently reverted mid-session.
+    const st = extension_settings[MODULE_NAME];
+    if (!st.migrated_v2) {
+        // Early versions defaulted physical fields to a broad list (height/age/race/
+        // gender) that pulled noise. If never customized, move to hair/eyes-only.
+        const OLD_FIELDS = "hair,haircolor,hair color,eyes,eye color,eyecolor,height,age,race,species,gender";
+        if (st.fields === OLD_FIELDS) st.fields = defaultSettings.fields;
+        // Bump the old default caps (6 / 2400) so referenced characters have room.
+        if (st.maxCharacters === 6) st.maxCharacters = 8;
+        if (st.maxTotalChars === 2400) st.maxTotalChars = 3000;
+        st.migrated_v2 = true;
+        saveSettingsDebounced();
     }
-    // Bump the old default caps (6 / 2400) so referenced characters have room. Only if
-    // still at the old default (i.e. never customized).
-    if (extension_settings[MODULE_NAME].maxCharacters === 6) extension_settings[MODULE_NAME].maxCharacters = 8;
-    if (extension_settings[MODULE_NAME].maxTotalChars === 2400) extension_settings[MODULE_NAME].maxTotalChars = 3000;
-    return extension_settings[MODULE_NAME];
+    return st;
 }
 
 // Emit a diagnostic line (console always; toast when debug is on) so we can SEE
@@ -159,11 +175,32 @@ const NOISE_WORDS = new Set([
     "that", "her", "his", "their", "its", "he", "she", "they", "it", "you",
     "your", "my", "our", "how", "why", "when", "where", "which", "please",
     "give", "show", "name", "named", "called", "from", "source", "material",
-    "canon", "character", "physical", "personality",
+    "canon", "character", "physical", "personality", "today", "tonight",
+    "tomorrow", "yesterday", "now", "right", "just", "really", "still", "again",
+]);
+
+// Words that mark a lowercase message as a QUESTION/COMMAND about someone — the only
+// situation where the lowercase-run fallback should fire (see extractCandidateNames).
+const LOWER_TRIGGERS = new Set([
+    "what", "whats", "who", "whos", "tell", "about", "describe", "show", "name",
+    "named", "called", "how", "which", "know", "knows", "remember", "seen", "heard",
+    "met", "meet", "find", "search", "lookup", "look", "wiki", "canon", "info",
 ]);
 
 function isNameToken(tok) {
     return /^[A-Za-z][A-Za-z'’-]+$/.test(tok) && tok.length >= 2;
+}
+
+// Suffixes that glue onto names in RP prose — honorifics ("Alya-chan", "Rias-senpai"),
+// possessives ("Cid's"), and contractions ("He'll") — stripped so the bare name is what
+// gets gated, searched, and cached. Without this, every honorific variant would be a
+// separate "new name" (parser re-fires) and a separate dead wiki lookup.
+const HONORIFIC_RE = /-(?:chan|san|sama|kun|senpai|sensei|dono|tan|chi|nee(?:chan|san)?|nii(?:chan|san)?|kouhai|shi|han)$/i;
+function normalizeNameWord(w) {
+    return w
+        .replace(/['’](?:s|ll|re|ve|d|m)$/i, "")
+        .replace(HONORIFIC_RE, "")
+        .replace(/^[-'’]+|[-'’]+$/g, "");
 }
 
 /**
@@ -181,46 +218,74 @@ function extractCandidateNames(text) {
     const out = new Set();
     const clean = text.replace(/[*_`~"“”()]/g, " ");
 
-    // (1) Capitalized phrases.
-    const capRe = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g;
+    // (1) Capitalized phrases. Token = Upper + lower + any word-ish tail, so
+    // McGonagall and DxD match in full (ALLCAPS shouting still doesn't — the second
+    // character must be lowercase). Honorifics/possessives are stripped BEFORE the
+    // stopword check so "He'll" → "He" is filtered, "Alya-chan" → "Alya" is kept.
+    // Sentence-start stopwords are stripped from phrase EDGES ("Then Rose Oriana" →
+    // "Rose Oriana", "Later He" → nothing) — the old code kept whole phrases verbatim,
+    // so sentence-glue words became part of the searched name.
+    const capRe = /\b([A-Z][a-z][A-Za-z'’-]*(?:\s+[A-Z][a-z][A-Za-z'’-]*){0,3})\b/g;
     let m;
     while ((m = capRe.exec(clean)) !== null) {
-        const phrase = m[1].trim();
-        const words = phrase.split(/\s+/);
+        let words = m[1].trim().split(/\s+/).map(normalizeNameWord).filter(w => w.length >= 2);
+        const hadLeading = words.length > 0 && STOPWORDS.has(words[0]);
+        while (words.length && STOPWORDS.has(words[0])) words.shift();
+        while (words.length && STOPWORDS.has(words[words.length - 1])) words.pop();
+        if (!words.length) continue;
         if (words.length === 1) {
             if (STOPWORDS.has(words[0])) continue;
             // A lone capitalized word that merely STARTS a sentence is not a name
-            // signal ("Current scene…", "Steam drifted…", "Water pooled…"). Only keep
-            // single capitals that appear MID-sentence (a real proper-noun signal).
-            // Multi-word phrases (Rose Oriana) are always kept.
-            const before = clean.slice(0, m.index).replace(/\s+$/, "");
-            if (before === "" || /[.!?:;\n"”)]$/.test(before)) continue;
-        }
-        out.add(phrase);
-    }
-
-    // (2) Lowercase runs — short messages only.
-    const tokens = clean.split(/\s+/).filter(Boolean);
-    if (tokens.length <= 20) {
-        const lowerCandidates = [];
-        let run = [];
-        const flush = () => {
-            // Most character names are 1-2 words; take the first two tokens of a
-            // run so trailing verbs ("cid kagenou before speaking") don't glue on.
-            if (run.length >= 2) lowerCandidates.push(run.slice(0, 2).join(" "));
-            run = [];
-        };
-        for (const raw of tokens) {
-            const tok = raw.replace(/[.,;:!?]+$/, "");
-            if (isNameToken(tok) && !NOISE_WORDS.has(tok.toLowerCase())) {
-                run.push(tok);
-            } else {
-                flush();
+            // signal ("Current scene…", "Steam drifted…"). Only keep single capitals
+            // that sit MID-sentence — which a stripped leading stopword also proves
+            // ("Then Cid" ⇒ "Cid" was mid-phrase even though the MATCH starts the line).
+            if (!hadLeading) {
+                const before = clean.slice(0, m.index).replace(/\s+$/, "");
+                if (before === "" || /[.!?:;\n"”)]$/.test(before)) continue;
             }
         }
-        flush();
-        for (const c of lowerCandidates.slice(0, 6)) {
-            if (![...out].some(o => o.toLowerCase() === c.toLowerCase())) out.add(c);
+        out.add(words.join(" "));
+    }
+
+    // (2) Lowercase runs — a FALLBACK for names typed without capitals, and only when
+    // the message reads like a short question/command about someone ("whats rose oriana
+    // hair", "have you seen mary", or a bare 1–4 token name). The old version also ran
+    // on ordinary short narration and manufactured junk candidates out of verbs and
+    // shouting ("screamed STOP", "took Cid", "Then Rose") — every one a dead wiki
+    // lookup plus a pointless parser-gate re-fire.
+    if (out.size === 0) {
+        const tokens = clean.split(/\s+/).filter(Boolean);
+        const bare = (t) => t.toLowerCase().replace(/[.,;:!?]+$/, "");
+        const askish = /\?/.test(clean)
+            || tokens.length <= 4
+            || tokens.some(t => LOWER_TRIGGERS.has(bare(t)));
+        if (tokens.length <= 20 && askish) {
+            const lowerCandidates = [];
+            let run = [];
+            const flush = () => {
+                // Most character names are 1-2 words; take the first two tokens of a
+                // run so trailing verbs ("cid kagenou before speaking") don't glue on.
+                // Single-token runs count too when the token is substantial (≥3 chars) —
+                // otherwise one-word names typed lowercase ("whats alpha hair") were
+                // unreachable, the exact case this fallback exists for.
+                if (run.length >= 2) lowerCandidates.push(run.slice(0, 2).join(" "));
+                else if (run.length === 1 && run[0].length >= 3) lowerCandidates.push(run[0]);
+                run = [];
+            };
+            for (const raw of tokens) {
+                const tok = normalizeNameWord(raw.replace(/[.,;:!?]+$/, ""));
+                // A lowercase RUN must actually be lowercase — a token with any capital
+                // belongs to path (1)'s world (or is ALLCAPS shouting) and breaks the run.
+                if (tok === tok.toLowerCase() && isNameToken(tok) && !NOISE_WORDS.has(tok)) {
+                    run.push(tok);
+                } else {
+                    flush();
+                }
+            }
+            flush();
+            for (const c of lowerCandidates.slice(0, 6)) {
+                if (![...out].some(o => o.toLowerCase() === c.toLowerCase())) out.add(c);
+            }
         }
     }
 
@@ -249,9 +314,13 @@ function isMediaTitle(t) {
 async function findPageTitle(wiki, name) {
     // 1) Exact-title lookup first. A character's page is almost always titled with
     //    their name, so this avoids search returning a subpage ("X/Relationships")
-    //    or an unrelated page ("Shadow Garden", "Anime").
+    //    or an unrelated page ("Shadow Garden", "Anime"). MediaWiki only auto-
+    //    capitalizes the FIRST letter, so "rose oriana" would always miss here and
+    //    burn a second request — title-case each word (preserving internal caps
+    //    like McGonagall) so lowercase-typed names hit on the first round trip.
     try {
-        const u = `${apiBase(wiki)}?action=query&titles=${encodeURIComponent(name)}&redirects=1&format=json&origin=*`;
+        const exactName = name.replace(/\S+/g, w => w[0].toUpperCase() + w.slice(1));
+        const u = `${apiBase(wiki)}?action=query&titles=${encodeURIComponent(exactName)}&redirects=1&format=json&origin=*`;
         const r = await fetch(u);
         if (r.ok) {
             const d = await r.json();
@@ -349,6 +418,10 @@ function cleanWikitext(wt) {
     // Keep the content of common list templates instead of deleting them.
     s = s.replace(/\{\{\s*(?:plainlist|unbulleted list|ubl|flatlist|hlist|bulleted list|cslist)\s*\|([\s\S]*?)\}\}/gi, "$1");
     for (let i = 0; i < 4; i++) s = s.replace(/\{\{[^{}]*\}\}/g, ""); // remaining templates (nested)
+    // A multi-line list template whose close was cut off upstream (value ends at the
+    // "\n}}" terminator) leaves a dangling "{{Plainlist|" opener — unwrap it, then
+    // purge any stray brace runs so raw markup can never reach the model.
+    s = s.replace(/\{\{[^{}|\n]*\|/g, "").replace(/[{}]{2,}/g, " ");
     return s
         .replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "")
         .replace(/<ref[^>]*\/>/gi, "")
@@ -369,8 +442,11 @@ function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
     const kw = keywords.map(k => k.trim().toLowerCase()).filter(Boolean);
     const out = [];
     const seen = new Set();
-    // |Field = value, where value runs until the next "\n|" param or the "\n}}" close.
-    const re = /\n\|\s*([A-Za-z][A-Za-z0-9 _()'-]*?)\s*=\s*([\s\S]*?)(?=\n\s*\||\n\s*\}\})/g;
+    // |Field = value, where value runs until the next "\n|" param, the "\n}}" close,
+    // or end-of-input. Without the $ alternative, the LAST field of an infobox whose
+    // "}}" sits inline (|eyes = Blue}}) was silently invisible — the lazy value could
+    // never satisfy a terminator, so the whole field match failed.
+    const re = /\n\|\s*([A-Za-z][A-Za-z0-9 _()'-]*?)\s*=\s*([\s\S]*?)(?=\n\s*\||\n\s*\}\}|$)/g;
     let m;
     const src = "\n" + wikitext;
     while ((m = re.exec(src)) !== null) {
@@ -378,8 +454,22 @@ function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
         const key = rawKey.toLowerCase();
         if (!kw.some(k => key.includes(k))) continue;
         // Guard: on inline infoboxes the value regex can over-run into the next
-        // "| NextField =" on the same line — cut it off there.
+        // "| NextField =" on the same line — cut it off there. A value can also never
+        // legitimately contain a section header, so cut at "\n==" too; the hard length
+        // cap keeps cleanWikitext cheap on pathological runs.
         let raw = m[2].split(/(?:^|[\s\n])\|\s*[A-Za-z][A-Za-z0-9 _()'-]*\s*=/)[0];
+        raw = raw.split(/\n==/)[0].slice(0, 3000);
+        // Cut at the infobox's OWN closing "}}" when it sits inline (|eyes = Blue}}Body…):
+        // walk brace depth so closers of templates INSIDE the value ({{ubl|…}}) don't
+        // truncate it, but an unbalanced close (depth 0 = the box itself) does.
+        let depth = 0;
+        for (let i = 0; i < raw.length - 1; i++) {
+            if (raw[i] === "{" && raw[i + 1] === "{") { depth++; i++; }
+            else if (raw[i] === "}" && raw[i + 1] === "}") {
+                if (depth === 0) { raw = raw.slice(0, i); break; }
+                depth--; i++;
+            }
+        }
         const val = cleanWikitext(raw);
         if (!val || seen.has(key)) continue;
         if (/^\d+\s*px$/i.test(val) || /\.(png|jpe?g|gif|webp|svg)$/i.test(val) || /^\d+$/.test(val)) continue;
@@ -396,7 +486,10 @@ function extractSection(wikitext, titles, maxLen = 260) {
     const chunks = wikitext.split(/\n(?==={1,4}[^=])/);
     const want = titles.map(t => t.toLowerCase());
     for (const chunk of chunks) {
-        const m = chunk.match(/^=+\s*(.+?)\s*=+\s*\n([\s\S]*)$/);
+        // [^\n]* after the closing "==" tolerates trailing comments/whitespace
+        // ("== Appearance == <!--note-->"), which previously made the whole
+        // section invisible.
+        const m = chunk.match(/^=+\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
         if (!m) continue;
         const title = m[1].trim().toLowerCase();
         if (want.some(w => title === w || title.includes(w))) {
@@ -422,7 +515,7 @@ function extractAliases(wikitext, keywords) {
     // "Nicknames: Alya, Alya-chan; Aliases: Solitary Princess" -> ["Alya","Solitary Princess",...]
     const values = raw.split(";").map(part => part.replace(/^[^:]+:\s*/, "")).join(",");
     const out = [];
-    for (let a of values.split(/[,、]/)) {
+    for (let a of values.split(/[,、\/・]/)) {
         a = a.replace(/\([^)]*\)/g, "").replace(/["'“”]/g, "").trim(); // drop "(by X)" notes, quotes
         if (a.length >= 2 && a.length <= 40 && /[A-Za-z]/.test(a)) out.push(a);
     }
@@ -448,6 +541,13 @@ async function ensureGrounded(name, trusted = false) {
             if (!(existing.reason === "not-character" && trusted)) return existing;
         }
     }
+
+    // The same character may already be grounded under a DIFFERENT key — e.g. "alya"
+    // resolved to the page "Alisa Mikhailovna Kujou", and now the parser asks for the
+    // canonical name. Reuse that entry instead of re-hitting the wiki and creating a
+    // second cache entry for the same character (which also injected them twice).
+    const aliasHit = cacheEntryFor(key);
+    if (aliasHit) return aliasHit.entry;
 
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
     let hadError = false;          // network / HTTP / parse failure (transient — retry later)
@@ -478,8 +578,18 @@ async function ensureGrounded(name, trusted = false) {
 
             // Physical: infobox hair/eyes (robust extractor handles piped links and
             // <br> lists), else prose appearance with the "pink hair and eyes" handling.
+            // Prose is read from the WIKITEXT WE ALREADY HAVE (Appearance section, then
+            // the lead) — the old code always made a second network round trip for the
+            // full plain-text extract, which on mobile added 100-500ms per new entity
+            // and pulled entire articles. The extract fetch remains only as a last resort.
             let physical = extractInfoboxFields(wikitext, s.fields.split(","));
-            if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
+            if (!physical) {
+                physical = extractFromProse(
+                    extractSection(wikitext, ["appearance", "physical appearance", "physical description", "looks"], 1500)
+                    || extractLead(wikitext, 1200)
+                );
+                if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
+            }
 
             // For the other categories, look in BOTH infobox fields and prose sections,
             // using the keyword lists — so family in an infobox "Relatives" field is found.
@@ -618,7 +728,10 @@ function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
  */
 function mentioned(name, lowerText) {
     if (!name || !lowerText) return false;
-    if (/[^\x00-\x7F]/.test(name)) return lowerText.includes(name);
+    // Non-Latin fallback: the text is already lowercased, so the name must be too —
+    // Cyrillic HAS case ("Мария" never matched "мария" before this fix, which broke
+    // mention detection for Russian names entirely).
+    if (/[^\x00-\x7F]/.test(name)) return lowerText.includes(name.toLowerCase());
     try {
         return new RegExp(`(^|[^a-z0-9])${escapeRegex(name)}([^a-z0-9]|$)`, "i").test(lowerText);
     } catch (e) {
@@ -638,6 +751,51 @@ function cacheEntryFor(nameLc) {
         if (names.includes(nameLc)) return { key: k, entry: e };
     }
     return null;
+}
+
+/**
+ * Cast decay (parser mode). lastCast is reused between gated parser runs so injection
+ * stays pronoun-proof — but without decay, a character who LEFT the scene kept
+ * injecting forever if no new capitalized word ever re-fired the gate. Rule:
+ *  - within `contextWindow` visible messages of the last confirmed parse → keep the
+ *    full cast (grace period; pronoun-only stretches right after a parse stay covered);
+ *  - past that → keep only entities still mentioned (by any name/alias) in the visible
+ *    scene window, and write the pruned list back so ghosts stay gone. Entities that
+ *    keep being named renew naturally; staleness is bounded by ~2× the window. A char
+ *    dropped here but still named in-scene is caught by the scene-scan fallback anyway.
+ */
+function pruneStaleCast(visibleLen, sceneMsgs) {
+    if (!lastCast || !lastCast.length) return [];
+    const s = settings();
+    if (visibleLen - lastCastLen <= s.contextWindow) return [...lastCast];
+    const lower = (sceneMsgs || []).map(m => m.toLowerCase());
+    const kept = lastCast.filter(cn => {
+        const hit = cacheEntryFor(cn.toLowerCase());
+        const names = hit
+            ? [hit.entry.name.toLowerCase(), ...(hit.entry.aliases || []).map(a => a.toLowerCase())]
+            : [cn.toLowerCase()];
+        return lower.some(msg => names.some(n => mentioned(n, msg)));
+    });
+    if (kept.length !== lastCast.length) {
+        debug(`cast decay: ${lastCast.length} → ${kept.length} (off-screen > ${s.contextWindow} msgs dropped)`);
+    }
+    lastCast = kept;
+    lastCastLen = visibleLen;
+    return [...kept];
+}
+
+/**
+ * Gate check shared by the pre-generation interceptor AND the post-generation scan —
+ * they previously disagreed: the post-gen gate used a raw cache-key check, so a name
+ * already grounded under an alias re-fired the parser, and an EXPIRED negative was
+ * treated as handled forever. One definition, both sides.
+ */
+function isUnhandledName(n) {
+    const lc = n.toLowerCase();
+    if (cacheEntryFor(lc)) return false;                                        // grounded (any name/alias)
+    const neg = settings().cache[lc];
+    if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)) return false; // fresh miss
+    return true;
 }
 
 /**
@@ -698,9 +856,12 @@ function relevantCanonNote(sceneMsgs, castNames) {
 
     const blocks = [];
     const reasons = [];
+    const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
     for (const { entry, matchedName } of present) {
         if (blocks.length >= s.maxCharacters) break;
+        const nameKey = (entry.name || "").toLowerCase();
+        if (seenEntities.has(nameKey)) continue;
         const lines = [];
         for (const cat of order) {
             if (s[cat] && entry.sections[cat]) lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
@@ -712,6 +873,7 @@ function relevantCanonNote(sceneMsgs, castNames) {
             else break;
         }
         blocks.push(block);
+        seenEntities.add(nameKey);
         total += block.length;
         reasons.push(`${entry.name} ← ${matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene"}`);
     }
@@ -738,9 +900,15 @@ function getProfiles() {
     } catch (e) { return []; }
 }
 
-/** Pull a JSON array of strings out of model output (may include reasoning/fences). */
+/**
+ * Pull a JSON array of strings out of model output (may include reasoning/fences).
+ * Returns the (possibly EMPTY) array when the model actually answered with one —
+ * an explicit [] means "I looked; nobody canon is here" and may clear a stale cast.
+ * Returns NULL when no array could be recovered (garbled/refused output), so the
+ * caller keeps the previous cast instead of treating failure as "nobody present".
+ */
 function parseNameArray(text) {
-    if (!text) return [];
+    if (!text) return null;
     const cleaned = String(text).replace(/```(?:json)?/gi, "");
     const start = cleaned.indexOf("[");
     const end = cleaned.lastIndexOf("]");
@@ -755,13 +923,15 @@ function parseNameArray(text) {
             }
         } catch (e) { /* fall through */ }
     }
-    return [];
+    return null;
 }
 
 /**
  * Arbiter-style pre-generation parse: a fast model reads the scene and returns the
- * character names actually present. Time-boxed; returns [] on any failure so it can
- * never block or break a turn.
+ * character names actually present. Time-boxed so it can never block a turn.
+ * Returns: string[] when the model answered ([] = it says no canon entities are
+ * present, which may legitimately clear a stale cast); NULL on timeout/failure
+ * (caller keeps the previous cast — failure must never be read as "nobody here").
  */
 async function parseSceneCharacters(sceneText) {
     const c = getContext();
@@ -791,22 +961,24 @@ async function parseSceneCharacters(sceneText) {
         const svc = c.ConnectionManagerRequestService;
         if (s.llmProfileId && svc && typeof svc.sendRequest === "function") {
             const messages = [{ role: "system", content: systemText }, { role: "user", content: userText }];
-            const res = await Promise.race([
-                svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true }),
-                sleep(budgetMs + 250).then(() => null),
-            ]);
+            // The raced-out promise must not surface as an unhandled rejection when
+            // the timeout wins and the abort later rejects it (console noise, and
+            // Android webviews can surface those as visible errors).
+            const req = svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true });
+            if (req && typeof req.catch === "function") req.catch(() => {});
+            const res = await Promise.race([req, sleep(budgetMs + 250).then(() => null)]);
             out = extract(res);
         } else if (typeof c.generateRaw === "function") {
-            const res = await Promise.race([
-                c.generateRaw({ prompt: userText, systemPrompt: systemText, responseLength: maxTokens }),
-                sleep(budgetMs).then(() => null),
-            ]);
+            const req = c.generateRaw({ prompt: userText, systemPrompt: systemText, responseLength: maxTokens });
+            if (req && typeof req.catch === "function") req.catch(() => {});
+            const res = await Promise.race([req, sleep(budgetMs).then(() => null)]);
             out = extract(res);
         }
-        return parseNameArray(out);
+        if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
+        return parseNameArray(out);   // [] only when the model explicitly answered []
     } catch (e) {
         debug(`LLM parser failed: ${e.message}`);
-        return [];
+        return null;
     } finally {
         clearTimeout(timer);
     }
@@ -840,13 +1012,17 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
     if (!["normal", "swipe", "regenerate", "continue"].includes(genType)) return;
     if (cgInFlight) return;
     cgInFlight = true;
+    const myEpoch = chatEpoch;   // if the chat switches during any await below, drop everything
     try {
         const s = settings();
         setInjection("");            // start each generation clean; re-set below if needed
         if (!s.enabled) return;
 
-        const scene = sceneMessages(getContext(), s.contextWindow);
+        const ctx = getContext();
+        const scene = sceneMessages(ctx, s.contextWindow);
         const sceneText = scene.join("\n");
+        const visibleLen = (ctx.chat || []).filter(m => !m.is_system).length;
+        const lastUserMsg = ([...chat].reverse().find(m => m.is_user) || {}).mes || "";
         const lgNames = ledgerNames();
         let cast = null;  // entities present this turn; drives injection when known
 
@@ -858,40 +1034,47 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             //    recurring non-characters (Mitsugoshi) don't re-fire — it settles when stable.
             let shouldParse = s.parserEveryTurn;
             const quick = extractCandidateNames(sceneText);
-            const notHandled = (n) => {
-                const lc = n.toLowerCase();
-                if (cacheEntryFor(lc)) return false;                                   // grounded (name/alias)
-                const neg = s.cache[lc];
-                if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)) return false; // fresh miss
-                return true;
-            };
             if (!shouldParse) {
                 // A capitalized word we've never shown the model and never grounded.
-                shouldParse = quick.some(n => notHandled(n) && !parsedWords.has(n.toLowerCase()));
+                shouldParse = quick.some(n => isUnhandledName(n) && !parsedWords.has(n.toLowerCase()));
             }
             if (!shouldParse) {
                 // Always (re)parse when the CURRENT user message names someone we haven't
                 // grounded — the player is bringing them up (e.g. "have you seen Mary?"), so
                 // fetch their canon even if that name was seen before.
-                const lastUserMsg = ([...chat].reverse().find(m => m.is_user) || {}).mes || "";
-                shouldParse = extractCandidateNames(lastUserMsg).some(notHandled);
+                shouldParse = extractCandidateNames(lastUserMsg).some(isUnhandledName);
             }
             if (shouldParse) {
+                const mySerial = ++parseSerial;
                 const parsed = await parseSceneCharacters(sceneText);
-                for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
-                if (parsed.length) {
-                    debug(`LLM parser → ${parsed.join(", ")}`);
-                    lastCast = parsed;                       // remember for turns the gate skips
-                    await groundNames(parsed, true);         // trusted: model chose these (may be lore)
+                if (myEpoch !== chatEpoch) return;   // chat switched mid-parse: old-chat results must not apply
+                if (mySerial === parseSerial) {      // a newer parse hasn't superseded this one
+                    for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
+                    if (parsed) {                    // null = call failed → keep the previous cast
+                        debug(parsed.length ? `LLM parser → ${parsed.join(", ")}` : "LLM parser → (no canon entities present)");
+                        lastCast = parsed;           // [] here is REAL info: clears a stale cast
+                        lastCastLen = visibleLen;
+                        if (parsed.length) {
+                            await groundNames(parsed, true);   // trusted: model chose these (may be lore)
+                            if (myEpoch !== chatEpoch) return;
+                        }
+                    }
                 }
             }
-            // Inject the parser's present-cast (pronoun-proof), reused between gated runs.
-            cast = lastCast ? [...lastCast] : [];
+            // Inject the present-cast (pronoun-proof), reused between gated runs but
+            // DECAYED: entities off-screen for more than the scene window drop out.
+            cast = pruneStaleCast(visibleLen, scene);
         } else if (lgNames) {
             // Ledger present → its real characters that are on-screen (named in the window).
             const sceneLower = sceneText.toLowerCase();
             cast = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
-            if (cast.length) await groundNames(cast);
+            if (cast.length) {
+                // Ledger names are LLM-curated (the story's REAL cast) — trusted, same as
+                // parser picks. The untrusted character-page gate was wrongly dropping
+                // valid ledger entities whose pages lack standard infobox fields.
+                await groundNames(cast, true);
+                if (myEpoch !== chatEpoch) return;
+            }
         } else {
             // No parser, no ledger → regex fallback. Grounding of the user's names happens
             // in the shared block below; injection then uses the scene-scan (cast stays null).
@@ -903,10 +1086,10 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // them FIRST so they aren't capped out. (Character-gated: only real character pages
         // ground, so a stray capitalized word can't pollute anything.)
         {
-            const lastUserMsg = ([...chat].reverse().find(m => m.is_user) || {}).mes || "";
             const userNames = extractCandidateNames(lastUserMsg);
             if (userNames.length) {
                 await groundNames(userNames);
+                if (myEpoch !== chatEpoch) return;
                 if (cast) {
                     const groundedUser = [];
                     for (const n of userNames) {
@@ -919,7 +1102,12 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         }
 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
-        const note = relevantCanonNote(sceneMessages(getContext(), s.contextWindow), cast);
+        // Scene text hasn't changed since the top of the run — reuse it (the old code
+        // recomputed sceneMessages a second time for nothing).
+        const note = relevantCanonNote(scene, cast);
+        lastSource = (cast && cast.length)
+            ? (s.llmParser ? `LLM parser cast (${cast.length})` : `ledger cast (${cast.length})`)
+            : "scene scan";
 
         // Record exactly what we injected this turn so it can be shown in settings.
         lastInjection = note || "";
@@ -956,19 +1144,30 @@ async function onMessageReceived() {
 
     if (s.llmParser) {
         // Scan the AI's fresh output so characters IT introduced are grounded now and the
-        // present-cast is up to date for the next turn's injection. Same gate as pre-gen.
-        const sceneText = sceneMessages(getContext(), s.contextWindow).join("\n");
+        // present-cast is up to date for the next turn's injection. Same gate as pre-gen
+        // (isUnhandledName — the old raw-key check re-fired on alias-known names and
+        // treated EXPIRED negatives as handled forever).
+        const sceneText = sceneMessages(ctx, s.contextWindow).join("\n");
         const quick = extractCandidateNames(sceneText);
         const hasNew = s.parserEveryTurn ||
-            quick.some(n => !parsedWords.has(n.toLowerCase()) && !s.cache[n.toLowerCase()]);
+            quick.some(n => isUnhandledName(n) && !parsedWords.has(n.toLowerCase()));
         if (!hasNew) return;
-        cgInFlight = true; // block the interceptor from re-entering during our generateRaw
-        try {
-            const parsed = await parseSceneCharacters(sceneText);
-            for (const n of quick) parsedWords.add(n.toLowerCase());
-            if (parsed.length) { lastCast = parsed; await groundNames(parsed, true); }
-        } finally {
-            cgInFlight = false;
+        // NOT guarded by cgInFlight: the old code held that flag for up to 15s here,
+        // which made the NEXT user turn's interceptor bail out entirely — a whole
+        // generation went out with a stale (previous turn's) canon note. The parser
+        // call doesn't route through Generate(), so it can't re-enter the interceptor;
+        // stale-result safety is handled by the epoch + serial guards instead.
+        const myEpoch = chatEpoch;
+        const mySerial = ++parseSerial;
+        const visibleLen = chat.filter(m => !m.is_system).length;
+        const parsed = await parseSceneCharacters(sceneText);
+        if (myEpoch !== chatEpoch) return;      // chat switched while parsing: results belong to the OLD chat
+        if (mySerial !== parseSerial) return;   // a newer parse (interceptor/rescan) already superseded us
+        for (const n of quick) parsedWords.add(n.toLowerCase());
+        if (parsed) {                            // null = failure → keep previous cast
+            lastCast = parsed;
+            lastCastLen = visibleLen;
+            if (parsed.length) await groundNames(parsed, true);
         }
         return;
     }
@@ -1161,9 +1360,7 @@ async function addSettingsUI() {
     $("#cg_llm_every").prop("checked", s.parserEveryTurn).on("input", function () {
         s.parserEveryTurn = $(this).prop("checked"); saveSettingsDebounced();
     });
-    $("#cg_wikis").val(s.wikis).on("input", function () {
-        s.wikis = String($(this).val()); saveSettingsDebounced();
-    });
+    $("#cg_wikis").val(s.wikis); // input handler bound once, further below (keeps chips in sync)
     $("#cg_fields").val(s.fields).on("input", function () {
         s.fields = String($(this).val()); saveSettingsDebounced();
     });
@@ -1194,9 +1391,9 @@ async function addSettingsUI() {
             saveSettingsDebounced();
         });
     };
-    numHandler("#cg_maxchars", "maxCharacters", 1, 6);
+    numHandler("#cg_maxchars", "maxCharacters", 1, 8);
     numHandler("#cg_maxper", "maxCharsPerChar", 80, 400);
-    numHandler("#cg_maxtotal", "maxTotalChars", 200, 2400);
+    numHandler("#cg_maxtotal", "maxTotalChars", 200, 3000);
 
     $("#cg_reset_kw").on("click", function () {
         for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords"]) {
@@ -1212,8 +1409,8 @@ async function addSettingsUI() {
         toastr?.info?.("Fields & keywords reset. Clear the cache to re-fetch with the new fields.");
     });
 
-    // Keep the active field and the saved-wiki highlights in sync.
-    $("#cg_wikis").off("input").on("input", function () {
+    // Keep the active field and the saved-wiki highlights in sync (single binding).
+    $("#cg_wikis").on("input", function () {
         s.wikis = String($(this).val()); saveSettingsDebounced();
         renderSavedWikis();
     });
@@ -1234,32 +1431,41 @@ async function addSettingsUI() {
         s.cache = {}; saveSettingsDebounced();
         parsedWords = new Set();   // let the parser re-evaluate every name again
         lastCast = [];
+        lastCastLen = 0;
         renderCacheList();
         toastr?.info?.("Canon cache cleared. Send a message (or 'Scan current scene now') to re-ground.");
     });
     $("#cg_rescan").on("click", async function () {
         const st = settings();
         if (!st.enabled) { toastr?.warning?.("Canon Grounding is disabled."); return; }
-        const sceneText = sceneMessages(getContext(), st.contextWindow).join("\n");
+        const ctx = getContext();
+        const sceneText = sceneMessages(ctx, st.contextWindow).join("\n");
         if (!sceneText.trim()) { toastr?.info?.("No visible scene to scan yet."); return; }
+        const myEpoch = chatEpoch;   // switching chats mid-scan must not apply old-chat results
         try {
             if (st.llmParser) {
                 toastr?.info?.("Scanning the current scene…");
-                cgInFlight = true;
-                let parsed = [];
-                try { parsed = await parseSceneCharacters(sceneText); }
-                finally { cgInFlight = false; }
+                const mySerial = ++parseSerial;
+                const parsed = await parseSceneCharacters(sceneText);
+                if (myEpoch !== chatEpoch) return;
                 for (const n of extractCandidateNames(sceneText)) parsedWords.add(n.toLowerCase());
-                if (parsed.length) {
+                if (parsed === null) {
+                    toastr?.warning?.("Parser call failed or timed out — nothing changed.");
+                } else if (mySerial === parseSerial) {
                     lastCast = parsed;
-                    await groundNames(parsed, true);
-                    toastr?.success?.(`Grounded: ${parsed.join(", ")}`);
-                } else {
-                    toastr?.info?.("Parser returned no entities.");
+                    lastCastLen = (ctx.chat || []).filter(m => !m.is_system).length;
+                    if (parsed.length) {
+                        await groundNames(parsed, true);
+                        if (myEpoch !== chatEpoch) return;
+                        toastr?.success?.(`Grounded: ${parsed.join(", ")}`);
+                    } else {
+                        toastr?.info?.("Parser says no canon entities are in this scene.");
+                    }
                 }
             } else {
                 const names = extractCandidateNames(sceneText);
                 await groundNames(names);
+                if (myEpoch !== chatEpoch) return;
                 toastr?.info?.(`Scanned ${names.length} name(s) from the scene.`);
             }
         } catch (e) {
@@ -1284,8 +1490,9 @@ function renderLastInjection() {
     $el.text(lastInjection);
     const approxTokens = Math.round(lastInjection.length / 4);
     const when = lastInjectionAt ? new Date(lastInjectionAt).toLocaleTimeString() : "";
-    const lg = ledgerNames();
-    const src = lg ? `ledger cast (${lg.length})` : "name-matching";
+    // Report how the cast was ACTUALLY chosen last turn — the old code sniffed the
+    // ledger live, so it said "ledger cast" even when the parser or scene scan did it.
+    const src = lastSource || "name-matching";
     $("#cg_inject_time").text(`~${approxTokens} tokens · ${src}${when ? " · " + when : ""}`);
     // Show WHY each character was injected — reveals a wrong match at a glance.
     const $why = $("#cg_why");
@@ -1367,12 +1574,22 @@ jQuery(async () => {
     await addSettingsUI();
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     // Switching chats: forget the previous story's parsed words and drop any lingering
-    // canon injection so it can't bleed into the new chat's first generation.
+    // canon injection so it can't bleed into the new chat's first generation. The epoch
+    // bump also invalidates any parse/grounding still awaiting for the OLD chat — its
+    // results are discarded instead of contaminating the new chat's cast (same failure
+    // class as Summaryception's cross-chat contamination bug).
     if (event_types.CHAT_CHANGED) {
         eventSource.on(event_types.CHAT_CHANGED, () => {
+            chatEpoch++;
             parsedWords = new Set();
             lastCast = [];
+            lastCastLen = 0;
+            lastInjection = "";
+            lastInjectionAt = 0;
+            lastMatchReasons = [];
+            lastSource = "";
             try { setInjection(""); } catch (e) { /* not critical */ }
+            renderLastInjection();
         });
     }
     console.log("[CanonGrounding] loaded.");
