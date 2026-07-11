@@ -176,8 +176,9 @@ eq("empty cast → []", api.pruneStaleCast(50, ["anything"]), []);
 
 // ---------------------------------------------------------------- v0.3: trivia
 console.log("[trivia]");
-const TRIV = `Intro.\n== Trivia ==\n* Alpha secretly keeps every note Cid has ever written her.\n* [[Piped link|Her favorite tea]] is chamomile, per the author Q&A.\n* short\n* Alpha secretly keeps every note Cid has ever written her.\n== Gallery ==\n* notatrivia.png`;
+const TRIV = `== Trivia ==\n* Alpha secretly keeps every note Cid has ever written her.\n* [[Piped link|Her favorite tea]] is chamomile, per the author Q&A.\n* short\n* Alpha secretly keeps every note Cid has ever written her.\n== Gallery ==\n* notatrivia.png`;
 const triv = api.extractTrivia(TRIV, ["trivia"]);
+T("FIRST bullet survives when section starts with '*' (was dropped)", triv.startsWith("Alpha secretly keeps"));
 T("bullets extracted + piped link cleaned", /secretly keeps every note/.test(triv) && /favorite tea/.test(triv) && !/Piped link/.test(triv));
 T("short bullets dropped, duplicates deduped", !/(^|; )short/.test(triv) && triv.indexOf("secretly keeps") === triv.lastIndexOf("secretly keeps"));
 T("bullets outside the Trivia section excluded", !/notatrivia/.test(triv));
@@ -235,6 +236,7 @@ T("nothing at all → empty note", api.relevantCanonNote([], []) === "");
 // ---------------------------------------------------------------- v0.4: voice quotes
 console.log("[extractQuotes]");
 const QSEC = `== Quotes ==\n* "I am [[Atomic (spell)|Atomic]]." — Lawless City\n* ''The truth hides in the shadows.''\n{{Quote|A mob character should act like a mob.|Cid|ch. 12}}\n* "I am Atomic." — repeated\n* "${"x".repeat(200)}"\n* "ok"`;
+T("FIRST quote bullet survives leading-'*' body", api.extractQuotes(`== Quotes ==\n* "Unique first line here."`).includes("Unique first line here."));
 const qs = api.extractQuotes(QSEC);
 T("bullet quote extracted, link cleaned, attribution tail cut", /"I am Atomic\."/.test(qs) && !/Lawless City/.test(qs) && !/spell/.test(qs));
 T("{{Quote|…}} template param lifted before cleaning", /mob character should act like a mob/.test(qs));
@@ -261,6 +263,30 @@ T("voice ordered after dynamics", vnote.indexOf("With Cid Kagenou:") < vnote.ind
 T("anti-parroting clause in header", /STYLE SAMPLES/.test(vnote) && /never repeat the sample lines/.test(vnote));
 sandbox.__settings.voice = false;
 T("voice toggle off → no voice line", !/- Voice:/.test(api.relevantCanonNote(["alpha spoke"], ["Alpha"])));
+
+// ---------------------------------------------------------------- v0.5: fixes
+console.log("[v0.5 fixes]");
+const RELMULTI = `== Relationships ==\nShe respects Beta as her oldest comrade and studies alongside her.\n\nWith Cid she abandons formality entirely, hovering over him with unguarded warmth.\n\nGamma reports to her weekly.`;
+const relmulti = api.extractSectionRaw(RELMULTI, ["relationships"]);
+T("paragraph fallback returns the MENTIONING paragraph", /unguarded warmth/.test(api.relationFor(relmulti, ["Cid"])) && !/oldest comrade/.test(api.relationFor(relmulti, ["Cid"])));
+T("first-paragraph mention still works", /oldest comrade/.test(api.relationFor(relmulti, ["Beta"])));
+const QFIX = `== Quotes ==\n{{Quote|quote=Speak plainly.|Cid|ch. 3}}\n* "Half - broken - but alive."\n* Just a passing line — to Cid, ch. 12`;
+const qfix = api.extractQuotes(QFIX);
+T("named template param prefix stripped", /"Speak plainly\."/.test(qfix) && !/quote=/.test(qfix));
+T("dash INSIDE quotation marks preserved", /"Half - broken - but alive\."/.test(qfix));
+T("unquoted attribution tail still cut", /"Just a passing line"/.test(qfix) && !/ch\. 12/.test(qfix));
+sandbox.__settings.arcInject = true;
+sandbox.__settings.arcNote = { title: "Legacy Arc", wiki: "w", summary: "Legacy pin." };
+T("per-chat arc param overrides legacy settings pin", /Chat Arc/.test(api.relevantCanonNote([], [], { title: "Chat Arc", wiki: "w", summary: "Chat pin." })) && !/Legacy Arc/.test(api.relevantCanonNote([], [], { title: "Chat Arc", wiki: "w", summary: "Chat pin." })));
+T("explicit per-chat null suppresses legacy pin", api.relevantCanonNote([], [], null) === "");
+T("undefined arc arg falls back to legacy", /Legacy Arc/.test(api.relevantCanonNote([], [])));
+sandbox.__settings.arcNote = null;
+T("[[File:…|thumb|Caption]] vanishes whole (no param leak)", api.cleanWikitext("Her cloak [[File:cloak.png|thumb|the cloak]] is black.") === "Her cloak is black.");
+const TRIVFILE = `== Trivia ==\n* Her design changed in volume 3. [[File:old.png|200px|old design]]\n* Something else entirely here.`;
+T("trivia bullet keeps text, drops file link", /design changed in volume 3\./.test(api.extractTrivia(TRIVFILE, ["trivia"])) && !/200px|old design/.test(api.extractTrivia(TRIVFILE, ["trivia"])));
+sandbox.__settings.cache = { "alpha": { name: "Alpha", found: true, wiki: "w", aliases: [], sections: { physical: "hair: blonde" }, rel: {} } };
+const knote = api.relevantCanonNote(["alpha"], ["Alpha"]);
+T("knowledge-scope clause present (hidden-identity guard)", /KNOWLEDGE SCOPE/.test(knote) && /Hidden identities/.test(knote) && /never let a character/.test(knote));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

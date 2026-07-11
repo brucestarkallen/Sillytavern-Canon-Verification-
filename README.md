@@ -56,6 +56,37 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.5.0 (deep audit II: 9 fixes, hidden-identity guard, per-chat story position)
+
+Proven by `test/proof.js` (98 assertions) + `test/sim.mjs` (21), all passing.
+
+1. **KNOWLEDGE SCOPE — the hidden-identity guard.** Grounded biography/trivia can
+   contain the exact reveal an asymmetric-information RP depends on ("X is
+   secretly Y"), and the old header ordered the model to treat facts as absolute.
+   New header clause: the reference is for the NARRATOR's accuracy only — a
+   character may only know, reveal, or react to what they could know in-story
+   right now; hidden identities and unrevealed connections are guarded actively.
+2. **Story position is now PER-CHAT** (chat metadata, legacy global pin as
+   fallback; clear wipes both). A pinned Eminence arc can no longer bleed into a
+   Roshidere chat. Status line re-renders on chat switch.
+3. **First bullet was silently dropped** in Trivia AND Quotes whenever the section
+   body started directly with `*` (shipped in v0.3, masked by duplicate-bullet
+   test fixtures — fixtures de-masked too).
+4. **relationFor paragraph fallback returned the wrong paragraph**: it split after
+   markup cleaning, which collapses newlines, so any mention returned the
+   section's opening lines. Now splits raw paragraphs first, cleans each.
+5. **`[[File:x.png|thumb|Caption]]` leaked "thumb|Caption" into cleaned text** —
+   media links are now removed whole before generic link conversion.
+6. **Quote extraction**: `{{Quote|quote=…}}` named-param prefixes stripped; the
+   attribution tail cut no longer amputates dashes INSIDE quotation marks
+   ("Half - broken - but alive." survives).
+7. **groundArc**: an exact-title hit that isn't a story unit ("Alpha" → her
+   character page) now yields to a structural search result ("Alpha Arc").
+8. **Voice subpage probe gated on character signal** — places/organizations no
+   longer burn a dead `X/Quotes` round trip.
+9. **extractSectionRaw** anchors its subtree walk by position, not `indexOf`, so
+   duplicate section text can't misanchor it.
+
 ## Changelog — v0.4.0 (voice)
 
 Proven by `test/proof.js` (85 assertions) + `test/sim.mjs` (21), all passing.

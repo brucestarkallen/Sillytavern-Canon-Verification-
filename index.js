@@ -48,6 +48,9 @@
  *   - v0.4 Voice: up to 3 short verbatim quotes (Quotes section, or the X/Quotes
  *     subpage fetched once ever) injected as style samples with anti-parroting
  *     framing — the model hears HOW they talk, not just a description of it.
+ *   - v0.5 KNOWLEDGE SCOPE: canon facts are narrator knowledge, not character
+ *     knowledge — hidden identities stay hidden. Story position is per-chat
+ *     (chat metadata); characters/arcs from one story can't bleed into another.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -64,6 +67,7 @@ let cgInFlight = false;      // guard: don't run two interceptor passes at once
 let lastCast = [];          // entities the parser last judged present (reused between gated runs)
 let lastCastLen = 0;        // visible-chat length when lastCast was last confirmed (drives decay)
 let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
+let renderArcStatus = null;  // set by the settings UI; called on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
@@ -474,6 +478,9 @@ function extractFromProse(text) {
 function cleanWikitext(wt) {
     if (!wt) return "";
     let s = wt;
+    // Media links FIRST — [[File:x.png|thumb|Caption]] must vanish whole, or the
+    // generic link rule below leaks its parameters ("thumb|Caption") into the text.
+    s = s.replace(/\[\[(?:File|Image|Media):[^\]]*\]\]/gi, "");
     // Convert links to their text BEFORE removing templates, so names inside list
     // templates (e.g. a Relatives field) survive.
     s = s.replace(/\[\[[^\]|]*\|([^\]]+)\]\]/g, "$1").replace(/\[\[([^\]]+)\]\]/g, "$1");
@@ -571,18 +578,18 @@ function extractSectionRaw(wikitext, titles, maxLen = 4000) {
     if (!wikitext) return "";
     const chunks = wikitext.split(/\n(?==={1,4}[^=])/);
     const want = titles.map(t => t.toLowerCase());
-    for (const chunk of chunks) {
-        const m = chunk.match(/^(=+)\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
+    for (let ci = 0; ci < chunks.length; ci++) {
+        const m = chunks[ci].match(/^(=+)\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
         if (!m) continue;
         const title = m[2].trim().toLowerCase();
         if (!want.some(w => title === w || title.includes(w))) continue;
         // The split cuts at EVERY header, so deeper subsections (=== X ===) landed in
         // LATER chunks — re-attach every following chunk whose header is DEEPER than
-        // this one, so the returned body contains the whole subtree.
+        // this one, so the returned body contains the whole subtree. Positional index
+        // (not indexOf) so a duplicate chunk text elsewhere can't misanchor the walk.
         const depth = m[1].length;
         let body = m[3];
-        const start = chunks.indexOf(chunk);
-        for (let i = start + 1; i < chunks.length; i++) {
+        for (let i = ci + 1; i < chunks.length; i++) {
             const hm = chunks[i].match(/^(=+)\s*.+?\s*=+[^\n]*\n/);
             if (!hm || hm[1].length <= depth) break;
             body += "\n" + chunks[i];
@@ -602,7 +609,9 @@ function extractTrivia(wikitext, titles, maxBullets = 6, maxLen = 700) {
     if (!raw) return "";
     const out = [];
     let total = 0;
-    for (const line of raw.split(/\n\*+\s*/).slice(1)) {
+    // "\n" prefix: a body that STARTS with "*" must not lose its first bullet to
+    // slice(1) — slice only drops the pre-bullet intro text.
+    for (const line of ("\n" + raw).split(/\n\*+\s*/).slice(1)) {
         const item = cleanWikitext(line.split("\n")[0]).trim();
         if (item.length < 10 || out.includes(item)) continue;
         if (total + item.length > maxLen) break;
@@ -624,20 +633,26 @@ function extractTrivia(wikitext, titles, maxBullets = 6, maxLen = 700) {
  */
 function extractQuotes(sectionRaw, maxQuotes = 3, maxLen = 420) {
     if (!sectionRaw) return "";
-    const found = [];
+    const found = [];  // { text, cutTail } — tails ("— to Cid, ch. 12") only exist on UNQUOTED lines
     const tpl = /\{\{\s*(?:c?quote[dh]?|quotation|dialogue)\s*\|([^|{}]+)/gi;
     let m;
-    while ((m = tpl.exec(sectionRaw)) !== null) found.push(m[1]);
-    for (const line of sectionRaw.split(/\n\*+\s*/).slice(1)) {
+    while ((m = tpl.exec(sectionRaw)) !== null) {
+        // Named first params ({{Quote|quote=…}}, {{Quote|1=…}}) carry a key= prefix.
+        found.push({ text: m[1].replace(/^\s*[a-zA-Z0-9 _]+=\s*/, ""), cutTail: false });
+    }
+    for (const line of ("\n" + sectionRaw).split(/\n\*+\s*/).slice(1)) {
         const first = line.split("\n")[0];
         const q = first.match(/["“]([^"”]{4,})["”]/);
-        found.push(q ? q[1] : first);
+        // Inside quotation marks the attribution tail is already excluded; a dash in
+        // there is CONTENT ("Half - broken - but alive.") and must survive. Only the
+        // unquoted fallback gets the "— context" tail cut.
+        found.push(q ? { text: q[1], cutTail: false } : { text: first, cutTail: true });
     }
     const out = [];
     let total = 0;
-    for (const raw of found) {
-        let q = cleanWikitext(raw).replace(/^["“'\s]+|["”'\s]+$/g, "");
-        q = q.split(/\s+[—–-]\s+/)[0].trim();          // drop "— to Cid, chapter 12" tails
+    for (const { text, cutTail } of found) {
+        let q = cleanWikitext(text).replace(/^["“'\s]+|["”'\s]+$/g, "");
+        if (cutTail) q = q.split(/\s+[—–-]\s+/)[0].trim();
         if (q.length < 4 || q.length > 160) continue;  // voice samples, not monologues
         if (out.some(o => o.toLowerCase() === q.toLowerCase())) continue;
         if (total + q.length > maxLen) break;
@@ -779,8 +794,10 @@ async function ensureGrounded(name, trusted = false) {
 
             // Many wikis keep quotes on a dedicated "X/Quotes" subpage instead of a
             // section. One extra fetch, at ground time, only when the main page had
-            // none — cached forever on the entry like everything else.
-            if (s.voice && !sections.voice) {
+            // none — cached forever on the entry like everything else. Gated on the
+            // CHARACTER signal: places/organizations (trusted lore) don't get quote
+            // subpages, so probing them is a guaranteed dead round trip.
+            if (s.voice && !sections.voice && (charSignal || charSection)) {
                 try {
                     const qp = await fetchWikitext(wiki, `${title}/Quotes`);
                     if (qp) sections.voice = extractQuotes(qp);
@@ -884,33 +901,43 @@ async function resolveRelations(entries) {
 async function groundArc(query) {
     const s = settings();
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
+    const structural = /\b(arc|saga|chapter|episode|season|volume|part)\b/i;
     for (const wiki of wikis) {
         try {
-            let title = null;
+            let exact = null;
             try {
-                const exact = query.replace(/\S+/g, w => w[0].toUpperCase() + w.slice(1));
-                const r = await fetch(`${apiBase(wiki)}?action=query&titles=${encodeURIComponent(exact)}&redirects=1&format=json&origin=*`);
+                const cap = query.replace(/\S+/g, w => w[0].toUpperCase() + w.slice(1));
+                const r = await fetch(`${apiBase(wiki)}?action=query&titles=${encodeURIComponent(cap)}&redirects=1&format=json&origin=*`);
                 if (r.ok) {
                     const p = Object.values((await r.json())?.query?.pages || {})[0];
-                    if (p && p.pageid && !("missing" in p)) title = p.title;
+                    if (p && p.pageid && !("missing" in p)) exact = p.title;
                 }
             } catch (e) { /* fall through to search */ }
-            if (!title) {
+            let title = exact;
+            // An exact hit that doesn't LOOK like a story unit ("Alpha" → her character
+            // page) must yield to a structural search result ("Alpha Arc") — otherwise a
+            // character page becomes the pinned "story position". A structural exact hit
+            // skips the search entirely.
+            if (!exact || !structural.test(exact)) {
                 const res = await fetch(`${apiBase(wiki)}?action=query&list=search&srlimit=8&format=json&origin=*&srsearch=${encodeURIComponent(query)}`);
-                if (!res.ok) continue;
-                const hits = (await res.json())?.query?.search || [];
-                title = pickArcHit(hits.map(h => h.title), query);
+                if (res.ok) {
+                    const hits = ((await res.json())?.query?.search || []).map(h => h.title);
+                    const best = pickArcHit(hits, query);
+                    if (best && structural.test(best)) title = best;
+                    else if (!title) title = best;
+                }
             }
             if (!title) continue;
             const wikitext = await fetchWikitext(wiki, title);
             const summary = extractSection(wikitext, ["summary", "plot", "synopsis", "overview", "story", "events"], 900)
                 || extractLead(wikitext, 900);
             if (!summary) continue;
-            s.arcNote = { query, title, wiki, summary, ts: Date.now() };
-            s.arcTitle = query;
+            const note = { query, title, wiki, summary, ts: Date.now() };
+            setChatArc(note);
+            s.arcTitle = query;               // remembered globally as input convenience only
             saveSettingsDebounced();
             debug(`✓ story position → ${title} (${wiki})`);
-            return s.arcNote;
+            return note;
         } catch (e) {
             debug(`arc ground error on ${wiki}: ${e.message}`);
         }
@@ -926,6 +953,32 @@ function pickArcHit(titles, query) {
         || titles.find(t => structural.test(t) && !t.includes("/"))
         || titles.find(t => !t.includes("/"))
         || null;
+}
+
+/**
+ * Story position is PER-CHAT state (a pinned Eminence arc must not bleed into a
+ * Roshidere chat), stored in chat metadata. settings().arcNote remains as a legacy
+ * fallback for pre-v0.5 pins and for very old ST builds without chat metadata.
+ */
+function chatArc() {
+    try {
+        const md = getContext().chatMetadata;
+        if (md && md.canon_grounding_arc !== undefined) return md.canon_grounding_arc;
+    } catch (e) { /* no context yet */ }
+    return settings().arcNote;
+}
+function setChatArc(note) {
+    try {
+        const ctx = getContext();
+        if (ctx.chatMetadata) {
+            ctx.chatMetadata.canon_grounding_arc = note;
+            if (typeof ctx.saveMetadata === "function") ctx.saveMetadata();
+            if (note === null) settings().arcNote = null; // clear wipes the legacy pin too
+            return;
+        }
+    } catch (e) { /* fall back to global */ }
+    settings().arcNote = note;
+    saveSettingsDebounced();
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,8 +1076,13 @@ function relationFor(relWikitext, otherNames, maxLen = 350) {
             if (body) return clip(body, maxLen);
         }
     }
-    // 2) No subsection — first paragraph that names them.
-    for (const para of cleanWikitext(relWikitext).split(/\n{2,}|(?<=\.)\s{2,}/)) {
+    // 2) No subsection — the first PARAGRAPH that names them. Split the RAW text
+    //    (cleanWikitext collapses all whitespace, so splitting after cleaning made
+    //    the whole section one "paragraph" and always returned its opening lines
+    //    regardless of where the mention actually sat).
+    for (const rawPara of relWikitext.split(/\n{2,}/)) {
+        const para = cleanWikitext(rawPara);
+        if (!para) continue;
         const lower = para.toLowerCase();
         if (wants.some(w => mentioned(w, lower))) return clip(para.trim(), maxLen);
     }
@@ -1098,7 +1156,7 @@ function isUnhandledName(n) {
  *  - Otherwise fall back to scanning the visible scene for grounded names (regex mode).
  * Hard-capped by count / per-entity / total length either way.
  */
-function relevantCanonNote(sceneMsgs, castNames) {
+function relevantCanonNote(sceneMsgs, castNames, arc = undefined) {
     const s = settings();
     const msgs = sceneMsgs || [];
     const lowerMsgs = msgs.map(m => m.toLowerCase());
@@ -1189,12 +1247,13 @@ function relevantCanonNote(sceneMsgs, castNames) {
     // Story position rides on top of the note: what has ALREADY happened (continuity
     // anchor) plus a spoiler guard so later canon can't leak into anyone's head.
     let arcBlock = "";
-    if (s.arcInject && s.arcNote && s.arcNote.summary) {
+    const arcNote = (arc !== undefined) ? arc : s.arcNote;
+    if (s.arcInject && arcNote && arcNote.summary) {
         arcBlock =
-            `STORY POSITION — ${s.arcNote.title}: ${s.arcNote.summary}\n` +
+            `STORY POSITION — ${arcNote.title}: ${arcNote.summary}\n` +
             `(Only events up to this point have occurred. Later canon events, reveals, and ` +
             `identities are unknown to every character — never foreshadow or use them.)\n`;
-        reasons.push(`story position ← ${s.arcNote.title}`);
+        reasons.push(`story position ← ${arcNote.title}`);
     }
 
     if (!blocks.length && !arcBlock) return "";
@@ -1203,6 +1262,12 @@ function relevantCanonNote(sceneMsgs, castNames) {
         "FACTS (appearance, relations, history, events) are authoritative: they override " +
         "your own memory and anything else in this prompt that disagrees — use them, do " +
         "not second-guess, 'correct', or invent alternatives.\n" +
+        "KNOWLEDGE SCOPE: these facts are for YOUR accuracy as the narrator — they are " +
+        "NOT public knowledge inside the story. A character may only know, reveal, or " +
+        "react to what THEY could know in-story right now. Hidden identities, secret " +
+        "affiliations, and unrevealed connections stay hidden: guard them actively, and " +
+        "never let a character's dialogue, thoughts, or behavior betray information " +
+        "sourced from this reference.\n" +
         "BEHAVIOR is different: each Personality line is that character's public BASELINE, " +
         "not a script. Real people modulate with company, mood, privacy, and stakes — a " +
         "commander who is stoic on duty can be warm, petty, or openly devoted in private. " +
@@ -1446,7 +1511,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
         // Scene text hasn't changed since the top of the run — reuse it (the old code
         // recomputed sceneMessages a second time for nothing).
-        const note = relevantCanonNote(scene, cast);
+        const note = relevantCanonNote(scene, cast, chatArc());
         lastSource = (cast && cast.length)
             ? (s.llmParser ? `LLM parser cast (${cast.length})` : `ledger cast (${cast.length})`)
             : "scene scan";
@@ -1708,9 +1773,11 @@ async function addSettingsUI() {
         s.relationDynamics = $(this).prop("checked"); saveSettingsDebounced();
     });
     // Story position (arc/chapter grounding).
-    const renderArc = () => $("#cg_arc_status").text(
-        s.arcNote ? `✓ ${s.arcNote.title} (${s.arcNote.wiki})` : "—"
-    );
+    const renderArc = () => {
+        const a = chatArc();
+        $("#cg_arc_status").text(a ? `✓ ${a.title} (${a.wiki}) — this chat` : "—");
+    };
+    renderArcStatus = renderArc;
     $("#cg_arc").val(s.arcTitle || "");
     renderArc();
     $("#cg_arc_go").on("click", async function () {
@@ -1722,7 +1789,7 @@ async function addSettingsUI() {
         else $("#cg_arc_status").text("✕ no arc/chapter page found on: " + s.wikis);
     });
     $("#cg_arc_clear").on("click", function () {
-        s.arcTitle = ""; s.arcNote = null; $("#cg_arc").val("");
+        s.arcTitle = ""; setChatArc(null); $("#cg_arc").val("");
         saveSettingsDebounced(); renderArc();
     });
     $("#cg_arc_inject").prop("checked", s.arcInject).on("input", function () {
@@ -1990,6 +2057,7 @@ jQuery(async () => {
             lastSource = "";
             try { setInjection(""); } catch (e) { /* not critical */ }
             renderLastInjection();
+            try { if (renderArcStatus) renderArcStatus(); } catch (e) { /* UI optional */ }
         });
     }
     console.log("[CanonGrounding] loaded.");
