@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.19.0";
+const CG_VERSION = "0.20.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -223,6 +223,10 @@ const defaultSettings = {
     // mobile): a blown budget silently kills the cast, and everything downstream
     // looks "not smart". Raise further if you still see timeouts.
     parserBudgetMs: 30000,
+    // ⏱ IMMERSION CEILING: the storyteller never waits longer than this for canon.
+    // Discovery that misses the window keeps running in the background and lands
+    // next turn — stale for one turn beats a frozen storyteller every turn.
+    maxBlockMs: 2000,
     // The Cast Auditor: a dedicated referee call that judges weak evidence — does
     // this quote actually REFER to this entity? Fires only when weak items exist.
     castAuditor: true,
@@ -2267,8 +2271,15 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const visibleLen = (ctx.chat || []).filter(m => !m.is_system).length;
         const lastUserMsg = ([...chat].reverse().find(m => m.is_user) || {}).mes || "";
         const lgNames = ledgerNames();
+        const pinNames = chatPinNames();
         let cast = null;  // entities present this turn; drives injection when known
 
+        // ⏱ IMMERSION CEILING: everything below (parse → verify → audit → ground →
+        // pins → pairs → expansion → self-heal) runs as ONE background-capable task.
+        // If it beats the deadline, this turn is fully fresh; if not, it CONTINUES in
+        // the background (every mutation is epoch/serial-guarded or cache-safe) and
+        // this turn injects the last known state.
+        const heavy = (async () => {
         if (s.llmParser) {
             // Primary path: a fast model reads THIS scene and names the characters present.
             //  - "every turn" mode: always (needed if you write names in lowercase).
@@ -2385,7 +2396,6 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 
         // Pinned entities: user-decreed always-present. Ground them (cache absorbs
         // repeats), and let them participate in pair dynamics with the live cast.
-        const pinNames = chatPinNames();
         if (pinNames.length) {
             await groundNames(pinNames, true);
             if (myEpoch !== chatEpoch) return;
@@ -2425,6 +2435,20 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                     }
                 }
             }
+        }
+
+        })();
+        heavy.catch(e => debug(`background canon task failed: ${e.message}`));
+        const blockMs = Math.max(300, Number(s.maxBlockMs) || 2000);
+        const fresh = await Promise.race([
+            heavy.then(() => true),
+            new Promise(r => setTimeout(() => r(false), blockMs)),
+        ]);
+        if (myEpoch !== chatEpoch) return;
+        if (!fresh) {
+            debug(`⏱ canon still resolving in background (>${blockMs}ms) — injecting last known state; next turn is fresh`);
+            if (s.llmParser) cast = pruneStaleCast(visibleLen, scene);
+            else if (lgNames) cast = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
         }
 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
@@ -2682,7 +2706,10 @@ async function addSettingsUI() {
                 <small class="cg-hint">Sends a 3-word test call through your parser backend and reports backend, elapsed time, and the reply (or the exact failure). Diagnoses transport problems without touching your scene.</small>
                 <label>Parser budget (seconds)</label>
                 <input id="cg_budget" class="text_pole" type="number" min="10" max="180" step="5">
-                <small class="cg-hint">How long the cast parser / dossier curator may take. Slow backends (GLM on mobile) need 30–60s — a blown budget silently kills the cast and everything looks dumb.</small>
+                <small class="cg-hint">How long the cast parser / dossier curator may take IN THE BACKGROUND. Slow backends (GLM on mobile) need 30–60s — a blown budget silently kills the cast and everything looks dumb.</small>
+                <label>Max turn wait (seconds)</label>
+                <input id="cg_blockwait" class="text_pole" type="number" min="0.5" max="60" step="0.5">
+                <small class="cg-hint">⏱ The immersion ceiling: your storyteller NEVER waits longer than this for canon. Discovery that misses the window keeps working in the background and lands next turn — stale for one turn beats a frozen reply. 1–2s recommended.</small>
                 <label class="checkbox_label">
                     <input id="cg_llm_every" type="checkbox">
                     <span>Run the parser every turn</span>
@@ -2965,6 +2992,10 @@ async function addSettingsUI() {
     $("#cg_budget").val(Math.round((s.parserBudgetMs || 30000) / 1000)).on("input", function () {
         const v = parseInt($(this).val(), 10);
         if (!isNaN(v) && v >= 10) { s.parserBudgetMs = v * 1000; saveSettingsDebounced(); }
+    });
+    $("#cg_blockwait").val((s.maxBlockMs || 2000) / 1000).on("input", function () {
+        const v = parseFloat($(this).val());
+        if (!isNaN(v) && v >= 0.3) { s.maxBlockMs = Math.round(v * 1000); saveSettingsDebounced(); }
     });
     $("#cg_selftest").on("click", async function () {
         toastr?.info?.("Parser self-test running…");

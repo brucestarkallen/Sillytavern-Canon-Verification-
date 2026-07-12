@@ -56,6 +56,26 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.20.0 (⏱ the immersion ceiling: your storyteller never waits)
+
+Proven by `test/proof.js` (203 assertions) + `test/sim.mjs` (23), all passing.
+
+Latency audit: steady-state turns were already ~0ms; GATED turns could block
+generation on parser (30s budget) + auditor (12s) + first-encounter fetches,
+sequentially. Fixed with stale-while-revalidate:
+
+1. The entire discovery chain (parse → verify → audit → ground → pins → pair
+   dynamics → expansion → self-heal) now runs as ONE background-capable task
+   raced against a hard ceiling — **Max turn wait, default 2s**. Beat the
+   deadline → the turn is fully fresh. Miss it → the task CONTINUES in the
+   background (every mutation is epoch/serial-guarded or cache-safe) and this
+   turn injects the last known state; the next turn is fresh. Stale for one
+   turn beats a frozen storyteller every turn.
+2. Parser budget is now explicitly the BACKGROUND ceiling; the immersion
+   ceiling is what your reply time feels. Both live in 🧠 Character detection.
+3. Already-fast paths unchanged: cached entities, sweep, pins, setting, and
+   prose briefs cost string math; the dossier curator was always background.
+
 ## Changelog — v0.19.0 (📝 prose briefs: written, not pasted)
 
 Proven by `test/proof.js` (203 assertions) + `test/sim.mjs` (23), all passing.
