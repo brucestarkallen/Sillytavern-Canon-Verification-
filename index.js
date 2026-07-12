@@ -87,7 +87,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.13.0";
+const CG_VERSION = "0.14.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -121,7 +121,8 @@ const DEFAULT_PROMPT_PARSER =
         "(b) characters who are NAMED, referred to, remembered, or asked about even if NOT " +
         "physically present — the writer still needs to know who they are to mention them " +
         "correctly (e.g. someone the player asks 'have you seen X?'); (c) places, organizations, " +
-        "groups, or notable lore that are central to what is happening. STRICT EXTRACTION RULE: " +
+        "groups, or notable lore that are central to what is happening — named techniques, magic or " +
+        "power systems, events, and significant items are lore too. STRICT EXTRACTION RULE: " +
         "list ONLY entities the scene text itself refers to — by name, alias, title, or a clear " +
         "description ('the school', 'her older sister'). Your series knowledge is ONLY for " +
         "canonicalizing a reference to its proper wiki name — NEVER for adding characters the " +
@@ -144,7 +145,7 @@ const DEFAULT_PROMPT_DOSSIER =
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
         '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM; ' +
-        '"related": up to 3 canon BACKGROUND entities (their kingdom, order, house, school, organization) essential to understanding them — proper names only}. ' +
+        '"related": up to 3 canon BACKGROUND entities essential to understanding them, each as {\"name\": proper name, \"why\": under 8 words on what it is to them — e.g. their kingdom, their sword school, their order}}. ' +
         "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
         "Never write meta-statements about the wiki or missing information ('no information is provided', 'the source does not mention…') — omit absent things silently. " +
         "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
@@ -1095,7 +1096,8 @@ async function resolveRelated(entries) {
     for (const e of entries || []) {
         for (const r of (e && e.dossier && e.dossier.related) || []) {
             if (wanted.length >= 4) break;
-            if (!cacheEntryFor(String(r).toLowerCase())) wanted.push(r);
+            const rn = typeof r === "string" ? r : r.name;
+            if (rn && !cacheEntryFor(String(rn).toLowerCase())) wanted.push(rn);
         }
     }
     if (wanted.length) await groundNames(wanted, true);
@@ -1555,13 +1557,32 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
             if (voice) lines.push(`  - Voice: ${voice}`);
             if (s.smartExpansion && d.related && d.related.length) {
-                let ctx = 0;
-                for (const rn of d.related) {
-                    if (ctx >= 2) break;
+                // SCENE-CONDITIONAL selection: score each background entity by token
+                // overlap between its name+why and what is IN PLAY (the character's
+                // "Now" focus + the freshest scene text). Matches surface, the rest
+                // stay home — a duel pulls the sword school, a court scene pulls the
+                // kingdom. No match anywhere → only the single anchor entry injects:
+                // smarter means FEWER, better-chosen lines, not more.
+                const inPlay = ((castFocus[nameKey] || "") + " " + lowerMsgs.slice(-2).join(" ")).toLowerCase();
+                const presentNames = new Set(present.map(p => (p.entry.name || "").toLowerCase()));
+                const scored = [];
+                for (const r of d.related) {
+                    const rn = typeof r === "string" ? r : r.name;
+                    const why = typeof r === "string" ? "" : (r.why || "");
+                    if (!rn) continue;
                     const rHit = cacheEntryFor(String(rn).toLowerCase());
                     if (!rHit || isBlocked(rHit.entry, rn)) continue;
+                    if (presentNames.has((rHit.entry.name || "").toLowerCase())) continue; // has its own block
+                    const toks = (rn + " " + why).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 4);
+                    const score = toks.reduce((a, t) => a + (inPlay.includes(t) ? 1 : 0), 0);
+                    scored.push({ rHit, rn, why, score });
+                }
+                scored.sort((a, b) => b.score - a.score);
+                const anyMatch = scored.some(x => x.score > 0);
+                const take = anyMatch ? scored.filter(x => x.score > 0).slice(0, 2) : scored.slice(0, 1);
+                for (const { rHit, why } of take) {
                     const rid = (rHit.entry.dossier && rHit.entry.dossier.identity) || rHit.entry.sections.identity;
-                    if (rid) { lines.push(`  - Context: ${rHit.entry.name} — ${clip(rid, 150)}`); ctx++; }
+                    if (rid) lines.push(`  - Context: ${rHit.entry.name}${why ? ` (${why})` : ""} — ${clip(rid, 150)}`);
                 }
             }
             if (d.secrets.length) lines.push(`  - Secret (unrevealed in-story — guard per KNOWLEDGE SCOPE): ${d.secrets.join("; ")}`);
@@ -1653,9 +1674,18 @@ function parseDossier(text) {
         facts: arr(obj.facts, 6, 200).filter(f => !META_FACT.test(f)),
         secrets: arr(obj.secrets, 4, 200).filter(f => !META_FACT.test(f)),
         voice: arr(obj.voice, 3, 160),
-        related: arr(obj.related, 3, 60),
+        related: [],
         dynamics: {},
     };
+    // related: {name, why} objects preferred; bare strings accepted (older dossiers).
+    if (Array.isArray(obj.related)) {
+        for (const r of obj.related.slice(0, 3)) {
+            if (typeof r === "string" && r.trim()) d.related.push({ name: clip(r.trim(), 60), why: "" });
+            else if (r && typeof r === "object" && typeof r.name === "string" && r.name.trim()) {
+                d.related.push({ name: clip(r.name.trim(), 60), why: typeof r.why === "string" ? clip(r.why.trim(), 80) : "" });
+            }
+        }
+    }
     if (obj.dynamics && typeof obj.dynamics === "object" && !Array.isArray(obj.dynamics)) {
         for (const [k, v] of Object.entries(obj.dynamics).slice(0, 6)) {
             const line = str(v, 300);

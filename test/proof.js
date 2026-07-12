@@ -504,7 +504,7 @@ T("empty override falls back to default again", /\[CANON REFERENCE/.test(api.rel
 
 // ---------------------------------------------------------------- v0.13: lowercase gate + smart expansion
 console.log("[lowercase gate / smart expansion]");
-T("dossier parses related background entities", JSON.stringify(api.parseDossier('{"identity":"Second princess.","related":["Oriana Kingdom","Midgar Academy"]}').related) === '["Oriana Kingdom","Midgar Academy"]');
+T("dossier parses related background entities (string back-compat)", api.parseDossier('{"identity":"Second princess.","related":["Oriana Kingdom","Midgar Academy"]}').related.map(r => r.name).join("|") === "Oriana Kingdom|Midgar Academy");
 sandbox.__settings.cache = {
     "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: [], kind: "character",
               sections: { identity: "Rose Oriana is the second princess of the Oriana Kingdom." }, rel: {},
@@ -521,6 +521,37 @@ sandbox.__settings.smartExpansion = false;
 T("Smarter AI OFF = strict: no Context line", !/- Context:/.test(api.relevantCanonNote(["rose oriana drew her blade"], ["Rose Oriana"])));
 sandbox.__settings.smartExpansion = true;
 T("blocklist beats Context expansion", !/- Context:/.test(api.relevantCanonNote(["rose oriana drew"], ["Rose Oriana"], null, { blockNames: ["Oriana Kingdom"] })));
+
+// ---------------------------------------------------------------- v0.14: scene-conditional context
+console.log("[scene-conditional context]");
+T("related {name,why} parsed; strings back-compat", (function(){
+    const d = api.parseDossier('{"identity":"x is y","related":[{"name":"Oriana Kingdom","why":"her homeland"},"Midgar Academy"]}');
+    return d.related.length === 2 && d.related[0].why === "her homeland" && d.related[1].name === "Midgar Academy" && d.related[1].why === "";
+})());
+sandbox.__settings.cache = {
+    "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: [], kind: "character",
+              sections: { identity: "Rose Oriana is the second princess." }, rel: {},
+              dossier: { identity: "Second princess of the Oriana Kingdom.", facts: [], secrets: [], voice: [],
+                         related: [ { name: "Oriana Kingdom", why: "her homeland and throne" },
+                                    { name: "Oriana Sword Style", why: "her school of swordsmanship" } ], dynamics: {} } },
+    "oriana kingdom": { name: "Oriana Kingdom", found: true, wiki: "w", aliases: [], kind: "place",
+              sections: { identity: "The Oriana Kingdom is a small nation." }, rel: {} },
+    "oriana sword style": { name: "Oriana Sword Style", found: true, wiki: "w", aliases: [], kind: "place",
+              sections: { identity: "The Oriana Sword Style is a royal school of swordsmanship." }, rel: {} },
+};
+api.setEvidence({});
+api.setFocus({ "rose oriana": "locked in a swordsmanship duel" });
+const duel = api.relevantCanonNote(["their blades met in the courtyard"], ["Rose Oriana"]);
+T("duel focus surfaces the SWORD school, not the kingdom", /- Context: Oriana Sword Style \(her school of swordsmanship\)/.test(duel) && !/- Context: Oriana Kingdom/.test(duel));
+api.setFocus({ "rose oriana": "defending her claim to the throne" });
+const court = api.relevantCanonNote(["the court murmured"], ["Rose Oriana"]);
+T("throne focus surfaces the KINGDOM", /- Context: Oriana Kingdom \(her homeland and throne\)/.test(court) && !/Sword Style/.test(court));
+api.setFocus({});
+const idle = api.relevantCanonNote(["she sipped her tea quietly"], ["Rose Oriana"]);
+T("no match anywhere → ONE anchor line only (less, not more)", (idle.match(/- Context:/g) || []).length === 1);
+sandbox.__settings.cache["oriana kingdom"].kind = "place";
+const dedup = api.relevantCanonNote(["she sipped tea"], ["Rose Oriana"], null, { settingKey: "oriana kingdom" });
+T("background entity already present as a block gets NO duplicate Context line", /Oriana Kingdom:/.test(dedup) && !/- Context: Oriana Kingdom/.test(dedup));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

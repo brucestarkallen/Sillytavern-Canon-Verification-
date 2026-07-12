@@ -56,6 +56,25 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.14.0 (Smarter AI tier 2: scene-conditional context)
+
+Proven by `test/proof.js` (188 assertions) + `test/sim.mjs` (23), all passing.
+
+Smarter no longer means MORE — it means the RIGHT lines for THIS moment:
+
+1. **Background entities now carry WHY** ("Oriana Kingdom — her homeland and
+   throne", "Oriana Sword Style — her school of swordsmanship"); bare-string
+   dossiers remain compatible.
+2. **Scene-conditional selection**: each character's Context candidates are
+   scored against what is IN PLAY — the parser's "Now" focus plus the freshest
+   scene text. A duel surfaces the sword school; a succession scene surfaces
+   the kingdom. Matches inject (top 2); with no match anywhere, only the single
+   anchor entry rides — fewer, better-chosen lines is the whole point.
+3. **No duplicates**: a background entity already present as its own block
+   (e.g. the current setting) never gets a redundant Context line.
+4. Parser lore clause widened: named techniques, magic/power systems, events,
+   and significant items count as lore — evidence discipline unchanged.
+
 ## Changelog — v0.13.0 (no capitals needed + Smarter AI 🧠)
 
 Proven by `test/proof.js` (183 assertions) + `test/sim.mjs` (23), all passing.
