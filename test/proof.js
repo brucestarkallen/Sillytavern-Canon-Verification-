@@ -638,6 +638,12 @@ T("no marker sentence over 180 chars", api.extractDistinguishing("A scar " + "x"
 // ---------------------------------------------------------------- v0.21.1: attribute completion
 console.log("[attribute completion]");
 T("prose extractor finds hair phrase (sanity)", /hair: (long )?dark/i.test(api.extractFromProse("Hiyori has long dark hair and violet eyes.")) || /dark hair/i.test(api.extractFromProse("Hiyori has long dark hair and violet eyes.")));
+// ---------------------------------------------------------------- v0.21.2: Hiyori's page, verbatim
+console.log("[hiyori verbatim]");
+const HIYORI = "Hiyori has mid-back length silver hair, which she ties back with black ribbons. She has light purple eyes. She is usually seen wearing her school uniform with grey thigh-high socks and brown loafers.";
+const hp = api.extractFromProse(HIYORI);
+T("silver hair extracted cleanly (not 'length silver')", /hair: silver/.test(hp) && !/length/.test(hp));
+T("modifier kept for eyes", /eyes: light purple/.test(hp));
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

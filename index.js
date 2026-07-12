@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.21.1";
+const CG_VERSION = "0.21.2";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -605,9 +605,19 @@ function extractFromProse(text) {
     if (!text) return "";
     const snippet = text.slice(0, 4000);
 
+    const COLORS = new Set(["silver","black","blonde","blond","blue","violet","purple","pink","white","grey","gray","red","green","brown","crimson","azure","golden","gold","platinum","auburn","chestnut","teal","turquoise","lavender","scarlet","amber","hazel","magenta","indigo","cyan","emerald","ruby","sapphire","raven","snow-white","silver-white"]);
+    const MODIFIERS = new Set(["light","dark","pale","deep","bright","ash","platinum","midnight","dusty","soft","vivid","pastel"]);
     const clean = (words) => {
         let w = words.trim().split(/\s+/);
         while (w.length && PROSE_STOP.has(w[0].toLowerCase())) w.shift();
+        // Prefer the COLOR: "mid-back length silver hair" must yield "silver",
+        // not "length silver"; "light purple eyes" keeps its modifier.
+        for (let i = w.length - 1; i >= 0; i--) {
+            if (COLORS.has(w[i].toLowerCase().replace(/[.,;]$/, ""))) {
+                const mod = i > 0 && MODIFIERS.has(w[i - 1].toLowerCase()) ? w[i - 1] + " " : "";
+                return (mod + w[i]).replace(/[.,;]$/, "");
+            }
+        }
         if (w.length > 2) w = w.slice(-2);
         return w.length ? w.join(" ") : null;
     };

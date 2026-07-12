@@ -56,6 +56,16 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.21.2 (Hiyori's hair, verbatim-tested)
+
+Proven by `test/proof.js` (216 assertions) + `test/sim.mjs` (23), all passing.
+
+The user supplied the actual wiki prose — "mid-back length silver hair … light
+purple eyes" — confirming the completion path fires on re-ground. The prose
+extractor is now COLOR-AWARE so it extracts what a human would: "hair: silver"
+(not "length silver"), "eyes: light purple" (modifier kept). Those two
+sentences are test fixtures verbatim.
+
 ## Changelog — v0.21.1 (hair, guaranteed: core-attribute completion)
 
 Proven by `test/proof.js` (214 assertions) + `test/sim.mjs` (23), all passing.
