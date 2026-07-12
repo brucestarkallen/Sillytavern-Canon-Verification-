@@ -51,7 +51,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
-         parseCast, isDisambiguation, identityLine, isMetaSeriesPage,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -440,6 +440,24 @@ T("blocked entity never injects even when cast AND literally mentioned", /Tsubas
 T("block works by alias too", !/Nishikawa:/.test(api.relevantCanonNote(["nishikawa waved"], ["Ryōko Nishikawa"], null, { blockNames: ["nishikawa"] })));
 T("block outranks a conflicting pin", !/Nishikawa:/.test(api.relevantCanonNote([], [], null, { pinNames: ["Ryōko Nishikawa"], blockNames: ["Ryōko Nishikawa"] })));
 T("block does not touch other sweep entities", /Nanase:/.test(api.relevantCanonNote(["nanase smiled"], [], null, { blockNames: ["Ryōko Nishikawa"] })) || /Tsubasa Nanase:/.test(api.relevantCanonNote(["nanase smiled"], [], null, { blockNames: ["Ryōko Nishikawa"] })));
+
+// ---------------------------------------------------------------- v0.10: evidence verification
+console.log("[evidence verification]");
+const SCENE = "Nanase bowed as they entered the school grounds. \"Welcome,\" she said softly.";
+const RAWCAST = [
+    { name: "Tsubasa Nanase", now: "greeting them", evidence: "Nanase bowed" },
+    { name: "Advanced Nurturing High School", now: "setting", evidence: "the school grounds" },
+    { name: "Ryōko Nishikawa", now: "likely nearby", evidence: "her classmates gathered" },
+    { name: "Kazuomi Hōsen", now: "", evidence: "" },
+];
+const kept = api.verifyCastEvidence(RAWCAST, SCENE);
+T("evidenced entities survive (direct + indirect reference)", kept.length === 2 && kept[0].name === "Tsubasa Nanase" && kept[1].name === "Advanced Nurturing High School");
+T("fabricated evidence (not in scene) drops the entity", !kept.some(c => c.name === "Ryōko Nishikawa"));
+T("no evidence + name not in scene drops the entity", !kept.some(c => c.name === "Kazuomi Hōsen"));
+T("evidence check is case/whitespace-insensitive", api.verifyCastEvidence([{ name: "X", now: "", evidence: "THE   SCHOOL grounds" }], SCENE).length === 1);
+T("evidence-less element kept when its NAME is in the text (compat)", api.verifyCastEvidence([{ name: "Nanase", now: "", evidence: "" }], SCENE).length === 1);
+T("all-fabricated cast verifies to explicit empty", api.verifyCastEvidence([{ name: "Ghost", now: "", evidence: "never said" }], SCENE).length === 0);
+T("parseCast passes evidence through", api.parseCast('[{"name":"Alpha","now":"x","evidence":"quoted words"}]')[0].evidence === "quoted words");
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

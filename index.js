@@ -86,7 +86,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.9.2";
+const CG_VERSION = "0.10.0";
 
 const defaultSettings = {
     enabled: true,
@@ -1694,18 +1694,45 @@ function parseCast(text) {
     const seen = new Set();
     for (const x of arr) {
         let name = "", now = "";
+        let evidence = "";
         if (typeof x === "string") name = x.trim();
         else if (x && typeof x === "object" && typeof x.name === "string") {
             name = x.name.trim();
             if (typeof x.now === "string") now = clip(x.now.trim(), 110);
+            if (typeof x.evidence === "string") evidence = x.evidence.trim();
         }
         if (name.length < 2 || name.length > 50 || !/[A-Za-z]/.test(name)) continue;
         const k = name.toLowerCase();
         if (seen.has(k)) continue;
         seen.add(k);
-        out.push({ name, now });
+        out.push({ name, now, evidence });
     }
     return out;
+}
+
+/**
+ * The Arbiter move: don't trust the parser — VERIFY it. Every element must carry
+ * evidence that is actually findable in the scene text (case- and
+ * whitespace-insensitive). A model that "knows" a famous classmate belongs in
+ * this school cannot quote the scene for them, so the fabrication drops here,
+ * mechanically. Indirect references pass fine — "the school" is a quotable
+ * substring. Elements WITHOUT an evidence field (older outputs, truncation
+ * salvage) fall back to the strictest check available: the name itself must
+ * appear in the text.
+ */
+function verifyCastEvidence(cast, sceneText) {
+    if (!Array.isArray(cast)) return cast;
+    const hay = String(sceneText).toLowerCase().replace(/\s+/g, " ");
+    const inScene = (frag) => {
+        const needle = String(frag || "").toLowerCase().replace(/\s+/g, " ").trim();
+        return needle.length >= 2 && hay.includes(needle);
+    };
+    const kept = [];
+    for (const c of cast) {
+        if (c.evidence ? inScene(c.evidence) : inScene(c.name)) kept.push(c);
+        else debug(`parser listed "${c.name}" with no textual evidence — dropped (knowledge leak)`);
+    }
+    return kept;
 }
 
 /** Names-only view of parseCast — same null / [] / list semantics. */
@@ -1800,24 +1827,30 @@ async function parseSceneCharacters(sceneText) {
         "(b) characters who are NAMED, referred to, remembered, or asked about even if NOT " +
         "physically present — the writer still needs to know who they are to mention them " +
         "correctly (e.g. someone the player asks 'have you seen X?'); (c) places, organizations, " +
-        "groups, or notable lore that are central to what is happening. Use your own knowledge " +
-        "of the series to tell a real canon entity from ordinary description. Give each entity's " +
-        "canonical name (the one the wiki would use). Leave out generic words, everyday objects, " +
-        "and anything invented just for this scene. Never list the series/franchise title itself. "
-        + "Ignore names that appear ONLY in out-of-character notes, author questions to the "
-        + "player, choice menus, or meta commentary — count entities present or referenced "
-        + "inside the fiction. Respond with ONLY a JSON array, most central " +
+        "groups, or notable lore that are central to what is happening. STRICT EXTRACTION RULE: " +
+        "list ONLY entities the scene text itself refers to — by name, alias, title, or a clear " +
+        "description ('the school', 'her older sister'). Your series knowledge is ONLY for " +
+        "canonicalizing a reference to its proper wiki name — NEVER for adding characters the " +
+        "text does not refer to. A famous character who is not referred to in the text is NOT " +
+        "in the scene, no matter how likely their presence feels. Leave out generic words, " +
+        "everyday objects, and anything invented just for this scene. Never list the " +
+        "series/franchise title itself. Ignore names that appear ONLY in out-of-character notes, " +
+        "author questions to the player, choice menus, or meta commentary. " +
+        "Respond with ONLY a JSON array, most central " +
         "first, or [] if none. Each element is {\"name\": \"Canonical Name\", \"now\": \"under 12 " +
-        "words: what about them is in play in THIS scene (a duel, an engagement, a secret at " +
-        "risk…)\"} — plain name strings are also accepted. No other text.";
+        "words: what about them is in play in THIS scene\", \"evidence\": \"the EXACT words " +
+        "from the scene that refer to this entity, copied verbatim\"}. Evidence is mandatory — " +
+        "an entity you cannot quote the scene for must not be listed. No other text.";
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
     const out = await llmCall(systemText, userText, { maxTokens: 800 });
     if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
     const cast = parseCast(out);  // [] only when the model explicitly answered []
     if (cast === null) {
         lastLlmError = `model replied but not with a JSON array — it said: "${clip(stripReasoning(out), 90)}"`;
+        return null;
     }
-    return cast;
+    // Every listed entity must be provable against the scene it was parsed from.
+    return verifyCastEvidence(cast, sceneText);
 }
 
 /**

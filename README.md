@@ -56,6 +56,30 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.10.0 (knowledge leak, root-caused: the parser must prove its cast)
+
+The phantom classmates (Ryōko, Hōsen) were a KNOWLEDGE LEAK, and the old prompt
+invited it: "use your own knowledge of the series…" licensed the model to
+pattern-complete plausible characters into scenes that never referred to them.
+Knowledge-leak failures are reasoning failures — fixed at the mechanism, the
+Arbiter way: don't trust, verify.
+
+1. **Strict extraction prompt**: series knowledge may only CANONICALIZE a
+   reference to its wiki name — never add anyone the text does not refer to.
+   "A famous character who is not referred to in the text is NOT in the scene,
+   no matter how likely their presence feels."
+2. **Mandatory evidence, mechanically checked**: every parsed entity must carry
+   `"evidence": the exact scene words that refer to it` — verified as a real
+   substring of the scene (case/whitespace-insensitive) before the entity may
+   enter the cast. Fabrications cannot quote the scene, so they drop, with a
+   debug line naming the leak. Indirect references pass — "the school" is a
+   quotable substring, so ANHS survives exactly as it should. Evidence-less
+   elements (old outputs, truncation salvage) fall back to name-in-text.
+3. The v0.9.2 blocklist remains as a user-sovereignty control — but it is no
+   longer load-bearing: fabrications now die at the source.
+
+Proven by `test/proof.js` (167 assertions) + `test/sim.mjs` (23), all passing.
+
 ## Changelog — v0.9.2 (v0.9.1 reverted — force-OUT joins force-IN)
 
 v0.9.1's literal-mention filter was a mistake and is REVERTED: it destroyed the
