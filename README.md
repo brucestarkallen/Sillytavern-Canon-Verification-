@@ -56,6 +56,14 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.16.1 (glass-box completeness: Ask Canon's prompt joins 🧾)
+
+The rule is total: EVERY instruction any model receives is visible, editable,
+and individually resettable. The Ask Canon router prompt was the one straggler
+— now the fifth box in 🧾 System instructions, same semantics as the rest
+(unchanged/empty = default so updates propagate; customized = yours forever;
+↺ per box; ♻ resets all five with everything else).
+
 ## Changelog — v0.16.0 (🗣 Ask Canon + wiki.gg)
 
 Proven by `test/proof.js` (194 assertions) + `test/sim.mjs` (23), all passing.

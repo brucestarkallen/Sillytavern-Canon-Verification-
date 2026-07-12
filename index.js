@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.16.0";
+const CG_VERSION = "0.16.1";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -115,6 +115,16 @@ const DEFAULT_PROMPT_HEADER =
         "themselves unless the moment canonically calls for it. Never flatten a " +
         "character to their trait words; show the traits through fresh, " +
         "situation-specific behavior, contradictions included.]\n";
+const DEFAULT_PROMPT_ASK =
+    "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
+    '"ground" (fetch canon for an entity so it can appear), ' +
+    '"pin" (make a character ALWAYS injected in this chat), ' +
+    '"block" (NEVER inject this entity in this chat), ' +
+    '"arc" (set the story position to an arc/chapter), ' +
+    '"note" (remember a user-authored fact/rule for this chat — target is the full text), ' +
+    '"info" (report what is known about an entity). ' +
+    'Respond ONLY with JSON: {"action": "...", "target": "..."}. ' +
+    '"inject X" or "add X" means pin. If the request is a fact or rule rather than a name, use note.';
 const DEFAULT_PROMPT_PARSER =
         "This is a scene from a work of fiction that has published source material with a " +
         "wiki. List the canon entities worth looking up in that wiki so the writer can portray " +
@@ -230,6 +240,7 @@ const defaultSettings = {
     promptDossier: "",
     promptAuditor: "",
     promptHeader: "",
+    promptAsk: "",
     // LLM-curated dossiers: the model reads each grounded page once (background,
     // cached forever) and writes the injection itself — identity, load-bearing
     // facts, secrets-as-secrets, voice, per-person dynamics. Regex sections stay
@@ -1130,16 +1141,7 @@ function parseCanonIntent(text) {
  * are sovereign — no evidence gate applies to what you explicitly order.
  */
 async function askCanon(request) {
-    const systemText =
-        "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
-        '"ground" (fetch canon for an entity so it can appear), ' +
-        '"pin" (make a character ALWAYS injected in this chat), ' +
-        '"block" (NEVER inject this entity in this chat), ' +
-        '"arc" (set the story position to an arc/chapter), ' +
-        '"note" (remember a user-authored fact/rule for this chat — target is the full text), ' +
-        '"info" (report what is known about an entity). ' +
-        'Respond ONLY with JSON: {"action": "...", "target": "..."}. ' +
-        '"inject X" or "add X" means pin. If the request is a fact or rule rather than a name, use note.';
+    const systemText = (settings().promptAsk || "").trim() || DEFAULT_PROMPT_ASK;
     const out = await llmCall(systemText, request, { maxTokens: 120, budgetMs: Math.min(Number(settings().parserBudgetMs) || 30000, 12000) });
     const intent = out && parseCanonIntent(out);
     if (!intent) return { ok: false, msg: lastLlmError || "couldn't understand that — try e.g. \"pin Rose Oriana\" or \"set arc to Lawless City\"" };
@@ -2674,6 +2676,9 @@ async function addSettingsUI() {
                 <label>Cast Auditor 🛡 (judges weak evidence)</label>
                 <textarea id="cg_prompt_auditor" class="text_pole" rows="5"></textarea>
                 <div id="cg_prompt_auditor_reset" class="menu_button" title="Restore default">↺ default</div>
+                <label>🗣 Ask Canon router (maps your words to an action)</label>
+                <textarea id="cg_prompt_ask" class="text_pole" rows="5"></textarea>
+                <div id="cg_prompt_ask_reset" class="menu_button" title="Restore default">↺ default</div>
                 <hr>
                 <div id="cg_factory_reset" class="menu_button" title="Reset every setting and instruction to defaults">♻ Reset ALL settings &amp; instructions to defaults</div>
                 <small class="cg-hint">Restores every setting and every instruction to the best-default state. KEPT through the reset: your saved wiki library, active wiki, parser profile, global pinned canon, and all per-chat state (cache, dossiers, pins, arc). Everything else — every toggle, keyword list, cap, budget, and instruction — returns to the best-tested defaults.</small>
@@ -2737,6 +2742,7 @@ async function addSettingsUI() {
         ["#cg_prompt_parser",  "promptParser",  DEFAULT_PROMPT_PARSER],
         ["#cg_prompt_dossier", "promptDossier", DEFAULT_PROMPT_DOSSIER],
         ["#cg_prompt_auditor", "promptAuditor", DEFAULT_PROMPT_AUDITOR],
+        ["#cg_prompt_ask",     "promptAsk",     DEFAULT_PROMPT_ASK],
     ];
     for (const [sel, key, def] of PROMPTS) {
         $(sel).val((s[key] || "").trim() || def).on("input", function () {
