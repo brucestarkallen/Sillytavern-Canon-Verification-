@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.16.1";
+const CG_VERSION = "0.17.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -234,6 +234,10 @@ const defaultSettings = {
     // Rose Oriana without the Oriana Kingdom is half a character. OFF = strict:
     // only what the scene itself earns.
     smartExpansion: true,
+    // Autonomous story tracking: when the parser sees a canon ARC/EVENT enter the
+    // scene ("the Bushin Festival begins"), the story position advances itself —
+    // grounded with the full plot summary + spoiler guard, superseding the old one.
+    autoArc: true,
     // System-instruction overrides — empty means the built-in default applies
     // (shown in the 🧾 group), so prompt improvements in updates still land.
     promptParser: "",
@@ -1985,6 +1989,10 @@ function parseCast(text) {
  * salvage) fall back to the strictest check available: the name itself must
  * appear in the text.
  */
+// Story-structure/event pages: when one enters the cast, the STORY has moved —
+// autonomously advance the pinned story position instead of treating it as a place.
+const EVENT_WORDS = /\b(arc|saga|festival|exam|examination|tournament|war|battle|incident|trial|ceremony|raid|expedition|invasion|uprising|rebellion|massacre|banquet|gala|election)\b/i;
+
 const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|city|town|village|kingdom|empire|nation|guild|organization|organisation|company|agency|island|castle|palace|temple|church|dungeon|tower|district|region|world|realm|garden)\b/i;
 
 /**
@@ -2273,12 +2281,24 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                         if (names.length) {
                             await groundNames(names, true);   // trusted: model chose these (may be lore)
                             if (myEpoch !== chatEpoch) return;
-                            // A PLACE in the cast becomes the CURRENT SETTING — settings
-                            // persist without prose ("ANS should be there even if it's not
-                            // in the prose"). A later place supersedes it.
+                            // A PLACE in the cast becomes the CURRENT SETTING; an EVENT/ARC
+                            // in the cast ADVANCES THE STORY POSITION — autonomously, with the
+                            // full plot summary + spoiler guard. Events are checked first so a
+                            // "Sports Festival" moves the story instead of becoming a room.
                             for (const n of names) {
                                 const hit = cacheEntryFor(n.toLowerCase());
-                                if (hit && (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name))) {
+                                if (!hit) continue;
+                                if (s.autoArc && EVENT_WORDS.test(hit.entry.name)) {
+                                    const cur = chatArc();
+                                    if (!cur || cur.title !== hit.entry.name) {
+                                        groundArc(hit.entry.name).then(got => {
+                                            if (got) {
+                                                try { toastr?.info?.(`📖 story position → ${got.title}`); } catch (e) {}
+                                                if (renderArcStatus) try { renderArcStatus(); } catch (e) {}
+                                            }
+                                        }).catch(() => {});
+                                    }
+                                } else if (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name)) {
                                     setChatPin("canon_grounding_setting", hit.key);
                                 }
                             }
@@ -2349,6 +2369,25 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
             await resolveRelated([...uniq.values()]);
             if (myEpoch !== chatEpoch) return;
+            // SELF-HEALING KNOWLEDGE: a dossier built before the current shape (no
+            // "related" key) rebuilds itself in the background — one per turn, once
+            // per entity — so old caches upgrade without anyone pressing ✕.
+            if (s.llmDossier) {
+                for (const e of uniq.values()) {
+                    if (e.found && e.dossier && !("related" in e.dossier) && !e.dossierUpTs) {
+                        e.dossierUpTs = Date.now();
+                        (async () => {
+                            try {
+                                const wt = await fetchWikitext(e.wiki, e.name);
+                                if (!wt) return;
+                                const d = await buildDossier(e.name, wt, e.relRaw || "");
+                                if (d) { e.dossier = d; debug(`✦ dossier self-upgraded: ${e.name}`); saveCache(); }
+                            } catch (err) { /* retry never — one attempt per entity */ }
+                        })();
+                        break;
+                    }
+                }
+            }
         }
 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
@@ -2494,6 +2533,11 @@ async function addSettingsUI() {
                     <input id="cg_arc_inject" type="checkbox">
                     <span>Inject story position</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="cg_autoarc" type="checkbox">
+                    <span>Auto-advance story position 📖</span>
+                </label>
+                <small class="cg-hint">When a canon arc/event enters the scene ("the Bushin Festival begins"), the story position advances itself — full plot summary, spoiler guard, supersedes the old pin. Smart autonomous: the story moves, the extension follows.</small>
                 <small class="cg-hint">Adds the arc summary + a spoiler guard ("later events are unknown to every character") on top of the canon note.</small>
                 <hr>
                 <small><b>Pinned canon</b> — your words, always injected, above everything:</small>
@@ -2813,6 +2857,9 @@ async function addSettingsUI() {
     });
     $("#cg_arc_inject").prop("checked", s.arcInject).on("input", function () {
         s.arcInject = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_autoarc").prop("checked", s.autoArc).on("input", function () {
+        s.autoArc = $(this).prop("checked"); saveSettingsDebounced();
     });
     $("#cg_debug").prop("checked", s.debug).on("input", function () {
         s.debug = $(this).prop("checked"); saveSettingsDebounced();

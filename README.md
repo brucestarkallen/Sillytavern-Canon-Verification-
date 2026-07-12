@@ -56,6 +56,22 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.17.0 (smart autonomous: the story moves, the extension follows)
+
+Proven by `test/proof.js` (196 assertions) + `test/sim.mjs` (23), all passing.
+
+1. **📖 Auto-advancing story position.** When the parser sees a canon ARC or
+   EVENT enter the scene ("the Bushin Festival begins"), the story position
+   advances itself — grounded with the full plot summary and spoiler guard,
+   superseding the previous pin, with a toast so you always know where the
+   extension thinks you are. Events are recognized before places, so a
+   festival moves the story instead of becoming a room. Manual pinning and
+   Ask Canon still override; toggleable (on by default).
+2. **Self-healing dossiers.** Entities dossier'd before the current shape
+   (no background-context data) rebuild themselves in the background — one per
+   turn, one attempt per entity — so old caches upgrade to full Smarter-AI
+   capability without anyone pressing ✕.
+
 ## Changelog — v0.16.1 (glass-box completeness: Ask Canon's prompt joins 🧾)
 
 The rule is total: EVERY instruction any model receives is visible, editable,

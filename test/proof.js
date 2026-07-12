@@ -564,6 +564,11 @@ T("intent parsed with fences + chatter", JSON.stringify(api.parseCanonIntent('su
 T("unknown action → null", api.parseCanonIntent('{"action":"summon","target":"X"}') === null);
 T("missing target → null", api.parseCanonIntent('{"action":"pin","target":""}') === null);
 
+// ---------------------------------------------------------------- v0.17: autonomy
+console.log("[autonomy]");
+T("event names detected (arc/festival/exam/war)", ["Bushin Festival", "Lawless City Arc", "Sports Festival", "Special Exam", "Great War"].every(n => /\b(arc|saga|festival|exam|examination|tournament|war|battle|incident|trial|ceremony|raid|expedition|invasion|uprising|rebellion|massacre|banquet|gala|election)\b/i.test(n)));
+T("plain places and people are NOT events", !["Advanced Nurturing High School", "Rose Oriana", "Oriana Kingdom", "Midgar Academy"].some(n => /\b(arc|saga|festival|exam|examination|tournament|war|battle|incident|trial|ceremony|raid|expedition|invasion|uprising|rebellion|massacre|banquet|gala|election)\b/i.test(n)));
+
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));
