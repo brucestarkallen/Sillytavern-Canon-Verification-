@@ -331,7 +331,7 @@ T("dossier voice preferred", /- Voice: "I will protect my kingdom myself\."/.tes
 api.relevantCanonNote(["rose oriana"], ["Rose Oriana"]);
 T("reason marks curated entity with ✦", api.getReasons().some(r => /Rose Oriana/.test(r) && /✦/.test(r)));
 sandbox.__settings.cache["rose"].rel["cid kagenou"] = "Wiki-sliced: cannot meet his eyes since the festival.";
-T("wiki pair slice outranks dossier dynamics", /- With Cid Kagenou: Wiki-sliced: cannot meet his eyes/.test(api.relevantCanonNote(["rose"], ["Rose Oriana", "Cid Kagenou"])));
+T("wiki pair slice outranks dossier dynamics", /- With Cid Kagenou: Wiki-sliced: cannot meet his eyes/.test(api.relevantCanonNote(["rose glanced at cid kagenou"], ["Rose Oriana", "Cid Kagenou"])));
 delete sandbox.__settings.cache["rose"].dossier;
 const lnote = api.relevantCanonNote(["rose oriana"], ["Rose Oriana"]);
 T("legacy path: identity ALWAYS injected (biography off)", /- Identity: Rose Oriana is the second princess of the Oriana Kingdom\./.test(lnote));
@@ -421,6 +421,23 @@ T("series' own page detected as meta", api.isMetaSeriesPage("'''Yōkoso Jitsuryo
 T("character page not flagged as meta", !api.isMetaSeriesPage("'''Rose Oriana''' is the second princess of the Oriana Kingdom."));
 const dmeta = api.parseDossier('{"identity":"A 17-year-old student.","facts":["Her birthday is January 1.","No information about her personality is provided in the source material."],"secrets":["The source does not mention any secrets, not specified further."],"voice":[],"dynamics":{}}');
 T("meta-apology facts filtered out", dmeta.facts.length === 1 && dmeta.facts[0] === "Her birthday is January 1." && dmeta.secrets.length === 0);
+
+// ---------------------------------------------------------------- v0.9.1: mention precision
+console.log("[mention precision]");
+sandbox.__settings.cache = {
+    "nanase": { name: "Tsubasa Nanase", found: true, wiki: "w", aliases: ["Nanase"],
+                sections: { identity: "Tsubasa Nanase is a first-year student." }, rel: {} },
+    "nishikawa": { name: "Ryōko Nishikawa", found: true, wiki: "w", aliases: ["Nishikawa"],
+                sections: { identity: "Ryōko Nishikawa is a student." }, rel: {} },
+};
+api.setFocus({});
+const mp1 = api.relevantCanonNote(["nanase bowed politely and left the room"], ["Tsubasa Nanase", "Ryōko Nishikawa"]);
+T("named-scene window: unmentioned cast member excluded", /Tsubasa Nanase:/.test(mp1) && !/Nishikawa:/.test(mp1));
+const mp2 = api.relevantCanonNote(["she bowed politely and left without a word"], ["Tsubasa Nanase", "Ryōko Nishikawa"]);
+T("pronoun-only window: whole cast rides the grace", /Tsubasa Nanase:/.test(mp2) && /Nishikawa:/.test(mp2));
+const mp3 = api.relevantCanonNote(["nanase bowed"], ["Tsubasa Nanase"], null, { pinNames: ["Ryōko Nishikawa"] });
+T("pinned entity exempt from mention precision", /Nishikawa:/.test(mp3));
+T("alias mention counts as presence", /Nishikawa:/.test(api.relevantCanonNote(["nishikawa laughed at the joke"], ["Tsubasa Nanase", "Ryōko Nishikawa"])));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

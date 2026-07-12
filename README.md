@@ -56,6 +56,19 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.9.1 (mention precision: the grace window stops carrying stragglers)
+
+The cast persists between gated parses (grace window) so pronoun-only scenes
+keep their people. The cost was stale stragglers: an entity parsed turns ago —
+e.g. from a since-fixed OOC question — kept injecting despite ZERO mentions
+anywhere in the visible window. New rule: **if the window names ANY cast
+member, every injected cast member must be named somewhere in it** (name or
+alias). A window that names no one (pure pronoun continuation) still carries
+the whole cast — that ambiguity is exactly what grace is for. Pins are exempt;
+the sweep is unaffected (it's mention-defined). 4 new assertions.
+
+Proven by `test/proof.js` (159 assertions) + `test/sim.mjs` (23), all passing.
+
 ## Changelog — v0.9.0 (big-cast wikis: Classroom of the Elite stress pass)
 
 Proven by `test/proof.js` (155 assertions) + `test/sim.mjs` (23), all passing.

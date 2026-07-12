@@ -86,7 +86,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.9.0";
+const CG_VERSION = "0.9.1";
 
 const defaultSettings = {
     enabled: true,
@@ -1305,13 +1305,30 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         }
     }
     if (castNames && castNames.length) {
-        // Cast-driven: inject the entities identified as present, in centrality order.
+        // Cast-driven: inject the entities identified as present, in centrality order —
+        // but with MENTION PRECISION. The cast persists between gated parses (grace
+        // window) so pronoun-only scenes keep their people; the cost was stale
+        // stragglers: an entity parsed turns ago, never named anywhere in the current
+        // window, still injecting. Rule: if the window names ANY cast member, every
+        // injected cast member must be named somewhere in it. If the window names
+        // no one (pure pronoun continuation), the whole cast rides — that ambiguity
+        // is exactly what the grace window is for.
+        const castHits = [];
         for (const cn of castNames) {
             const found = cacheEntryFor(cn.toLowerCase());
-            if (found && !usedKeysGlobal.has(found.key)) {
-                usedKeysGlobal.add(found.key);
-                present.push({ entry: found.entry, matchedName: cn });
-            }
+            if (!found || usedKeysGlobal.has(found.key)) continue;
+            const names = [found.entry.name, cn, ...(found.entry.aliases || [])]
+                .filter(Boolean).map(n => String(n).toLowerCase());
+            let hit = false;
+            for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.some(n => mentioned(n, lowerMsgs[i]));
+            castHits.push({ found, cn, hit });
+        }
+        const anyMentioned = castHits.some(c => c.hit);
+        for (const { found, cn, hit } of castHits) {
+            if (anyMentioned && !hit) continue;   // named-scene window, this one absent → stale
+            if (usedKeysGlobal.has(found.key)) continue;
+            usedKeysGlobal.add(found.key);
+            present.push({ entry: found.entry, matchedName: cn });
         }
         // SMART SWEEP: the parser's cast is pronoun-proof but gated — it can lag the
         // story (or be down entirely). Any entity we ALREADY KNOW (cached) that is
