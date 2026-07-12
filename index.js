@@ -87,7 +87,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.12.0";
+const CG_VERSION = "0.13.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -143,7 +143,8 @@ const DEFAULT_PROMPT_DOSSIER =
         '"facts": up to 6 short story-relevant facts a narrator must not get wrong; ' +
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
-        '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM}. ' +
+        '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM; ' +
+        '"related": up to 3 canon BACKGROUND entities (their kingdom, order, house, school, organization) essential to understanding them — proper names only}. ' +
         "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
         "Never write meta-statements about the wiki or missing information ('no information is provided', 'the source does not mention…') — omit absent things silently. " +
         "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
@@ -212,6 +213,15 @@ const defaultSettings = {
     // The Cast Auditor: a dedicated referee call that judges weak evidence — does
     // this quote actually REFER to this entity? Fires only when weak items exist.
     castAuditor: true,
+    // Names typed in lowercase ("rose oriana walks in") still open the parser gate:
+    // a pair of adjacent never-seen tokens is treated as a possible name and the
+    // parser + evidence + auditor decide the truth. Learned tokens gate only once.
+    lowercaseNames: true,
+    // Smarter AI 🧠: injecting a character also injects their essential BACKGROUND
+    // entities (kingdom, order, house, organization) as one-line Context entries —
+    // Rose Oriana without the Oriana Kingdom is half a character. OFF = strict:
+    // only what the scene itself earns.
+    smartExpansion: true,
     // System-instruction overrides — empty means the built-in default applies
     // (shown in the 🧾 group), so prompt improvements in updates still land.
     promptParser: "",
@@ -1073,6 +1083,24 @@ async function resolveRelations(entries) {
  * story position. Character lookups reject these titles on purpose (isMediaTitle);
  * here they are the point, so this path does its own exact-then-search resolution.
  */
+/**
+ * Smarter AI 🧠: ground each present character's essential background entities
+ * (from their dossier's "related") so the note can carry one-line Context —
+ * cached once like everything else; capped per turn so a big cast can't stampede.
+ */
+async function resolveRelated(entries) {
+    const s = settings();
+    if (!s.smartExpansion) return;
+    const wanted = [];
+    for (const e of entries || []) {
+        for (const r of (e && e.dossier && e.dossier.related) || []) {
+            if (wanted.length >= 4) break;
+            if (!cacheEntryFor(String(r).toLowerCase())) wanted.push(r);
+        }
+    }
+    if (wanted.length) await groundNames(wanted, true);
+}
+
 async function groundArc(query) {
     const s = settings();
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
@@ -1526,6 +1554,16 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             lines.push(...dynLines());
             const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
             if (voice) lines.push(`  - Voice: ${voice}`);
+            if (s.smartExpansion && d.related && d.related.length) {
+                let ctx = 0;
+                for (const rn of d.related) {
+                    if (ctx >= 2) break;
+                    const rHit = cacheEntryFor(String(rn).toLowerCase());
+                    if (!rHit || isBlocked(rHit.entry, rn)) continue;
+                    const rid = (rHit.entry.dossier && rHit.entry.dossier.identity) || rHit.entry.sections.identity;
+                    if (rid) { lines.push(`  - Context: ${rHit.entry.name} — ${clip(rid, 150)}`); ctx++; }
+                }
+            }
             if (d.secrets.length) lines.push(`  - Secret (unrevealed in-story — guard per KNOWLEDGE SCOPE): ${d.secrets.join("; ")}`);
         } else {
             // Regex-section fallback. Identity is ALWAYS on — a model that knows the
@@ -1615,6 +1653,7 @@ function parseDossier(text) {
         facts: arr(obj.facts, 6, 200).filter(f => !META_FACT.test(f)),
         secrets: arr(obj.secrets, 4, 200).filter(f => !META_FACT.test(f)),
         voice: arr(obj.voice, 3, 160),
+        related: arr(obj.related, 3, 60),
         dynamics: {},
     };
     if (obj.dynamics && typeof obj.dynamics === "object" && !Array.isArray(obj.dynamics)) {
@@ -1935,6 +1974,25 @@ async function auditCastEvidence(sceneText, weak) {
     return kept;
 }
 
+/**
+ * Lowercase first-mention detector: two ADJACENT tokens the pipeline has never
+ * seen (not noise, not stopwords, not learned, not cached) look like a typed-in
+ * name ("rose oriana") regardless of capitals. It only opens the GATE — the
+ * parser, evidence check, and auditor still decide who actually exists. Every
+ * parsed message's tokens are learned afterwards, so a novel pair gates once.
+ */
+function hasNovelLowercasePair(text) {
+    if (!text) return false;
+    const toks = String(text).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
+    const known = (t) =>
+        NOISE_WORDS.has(t) || STOPWORDS.has(t[0].toUpperCase() + t.slice(1)) ||
+        parsedWords.has(t) || !!cacheEntryFor(t);
+    for (let i = 0; i < toks.length - 1; i++) {
+        if (!known(toks[i]) && !known(toks[i + 1])) return true;
+    }
+    return false;
+}
+
 async function parseSceneCharacters(sceneText) {
     const c = getContext();
     const s = settings();
@@ -2021,6 +2079,10 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 // fetch their canon even if that name was seen before.
                 shouldParse = extractCandidateNames(lastUserMsg).some(isUnhandledName);
             }
+            if (!shouldParse && s.lowercaseNames) {
+                // No capitals required: "rose oriana walks in" opens the gate too.
+                shouldParse = hasNovelLowercasePair(lastUserMsg);
+            }
             if (shouldParse) {
                 const mySerial = ++parseSerial;
                 const parsed = await parseSceneCharacters(sceneText);
@@ -2031,6 +2093,9 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 }
                 if (mySerial === parseSerial) {      // a newer parse hasn't superseded this one
                     for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
+                    for (const t of String(lastUserMsg).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+                        if (t.length >= 3) parsedWords.add(t);               // novel words gate once
+                    }
                     if (parsed) {                    // null = call failed → keep the previous cast
                         const names = parsed.map(p => p.name);
                         debug(names.length ? `LLM parser → ${names.join(", ")}` : "LLM parser → (no canon entities present)");
@@ -2119,6 +2184,8 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 await resolveRelations([...uniq.values()]);
                 if (myEpoch !== chatEpoch) return;
             }
+            await resolveRelated([...uniq.values()]);
+            if (myEpoch !== chatEpoch) return;
         }
 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
@@ -2296,6 +2363,16 @@ async function addSettingsUI() {
                     <span>Per-pair dynamics ("With Cid: …")</span>
                 </label>
                 <small class="cg-hint">When two grounded characters share a scene, inject how THIS one acts around THAT one, from the wiki's Relationships subsections (or the X/Relationships subpage). The fix for "stoic on the wiki → stoic with everyone".</small>
+                <label class="checkbox_label">
+                    <input id="cg_smart" type="checkbox">
+                    <span>Smarter AI 🧠 (context expansion)</span>
+                </label>
+                <small class="cg-hint">Injecting a character also injects their essential background as one-line Context — "rose oriana" brings the Oriana Kingdom with her, because her kingdom IS her story. OFF = strict: only what the scene itself earns. (Entities dossier'd before this feature learn their Context on re-ground — ✕ them once.)</small>
+                <label class="checkbox_label">
+                    <input id="cg_lowercase" type="checkbox">
+                    <span>Lowercase names open the gate</span>
+                </label>
+                <small class="cg-hint">"rose oriana walks in" triggers detection with no capitals needed — a pair of never-seen words opens the gate; the parser, evidence check, and Auditor still decide who's real. Learned words gate only once.</small>
                 <label class="checkbox_label">
                     <input id="cg_auditor" type="checkbox">
                     <span>Cast Auditor 🛡</span>
@@ -2478,6 +2555,12 @@ async function addSettingsUI() {
     });
     $("#cg_auditor").prop("checked", s.castAuditor).on("input", function () {
         s.castAuditor = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_smart").prop("checked", s.smartExpansion).on("input", function () {
+        s.smartExpansion = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_lowercase").prop("checked", s.lowercaseNames).on("input", function () {
+        s.lowercaseNames = $(this).prop("checked"); saveSettingsDebounced();
     });
     // 🧾 System instructions: box shows the EFFECTIVE text; saving text identical to
     // the default stores "" so future default improvements still reach this user.

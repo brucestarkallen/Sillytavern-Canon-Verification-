@@ -56,6 +56,27 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.13.0 (no capitals needed + Smarter AI 🧠)
+
+Proven by `test/proof.js` (183 assertions) + `test/sim.mjs` (23), all passing.
+
+1. **Lowercase names open the gate.** "rose oriana walks in" now triggers
+   detection with zero capitals: a pair of adjacent never-seen words (not
+   noise, not stopwords, not learned, not cached) opens the parser gate — the
+   parser, evidence check, and Cast Auditor still decide who is real, so this
+   adds discovery, not junk. Every parsed message's words are learned, so a
+   novel pair gates exactly once and the extension converges back to silence.
+   (Already-cached names always worked lowercase via the sweep — this fixes
+   FIRST mentions.) Toggleable.
+2. **Smarter AI 🧠 (context expansion).** The user's own words: "should I just
+   inject rose Oriana? No — I should include Oriana Kingdom too, because her
+   kingdom background is important." Exactly that: the dossier curator now
+   also extracts up to 3 essential BACKGROUND entities (kingdom, order, house,
+   organization); they ground once like everything else and ride inside the
+   character's block as one-line `Context:` entries. OFF = strict — only what
+   the scene itself earns. Blocklist wins as always. Entities dossier'd before
+   v0.13 learn their Context on re-ground (✕ them once in the cache).
+
 ## Changelog — v0.12.0 (glass box: every instruction visible, editable, resettable)
 
 Proven by `test/proof.js` (179 assertions) + `test/sim.mjs` (23), all passing.

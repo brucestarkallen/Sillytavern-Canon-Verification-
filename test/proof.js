@@ -502,6 +502,26 @@ T("header override replaces the default wholesale", (function(){ const n = api.r
 sandbox.__settings.promptHeader = "";
 T("empty override falls back to default again", /\[CANON REFERENCE/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
 
+// ---------------------------------------------------------------- v0.13: lowercase gate + smart expansion
+console.log("[lowercase gate / smart expansion]");
+T("dossier parses related background entities", JSON.stringify(api.parseDossier('{"identity":"Second princess.","related":["Oriana Kingdom","Midgar Academy"]}').related) === '["Oriana Kingdom","Midgar Academy"]');
+sandbox.__settings.cache = {
+    "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: [], kind: "character",
+              sections: { identity: "Rose Oriana is the second princess of the Oriana Kingdom." }, rel: {},
+              dossier: { identity: "Second princess of the Oriana Kingdom.", facts: [], secrets: [], voice: [],
+                         related: ["Oriana Kingdom"], dynamics: {} } },
+    "oriana kingdom": { name: "Oriana Kingdom", found: true, wiki: "w", aliases: [], kind: "place",
+              sections: { identity: "The Oriana Kingdom is a small nation famed for its sword saints." }, rel: {} },
+};
+api.setFocus({}); api.setEvidence({});
+sandbox.__settings.smartExpansion = true;
+const sx = api.relevantCanonNote(["rose oriana drew her blade"], ["Rose Oriana"]);
+T("Smarter AI ON: Context line carries the kingdom", /- Context: Oriana Kingdom — The Oriana Kingdom is a small nation/.test(sx));
+sandbox.__settings.smartExpansion = false;
+T("Smarter AI OFF = strict: no Context line", !/- Context:/.test(api.relevantCanonNote(["rose oriana drew her blade"], ["Rose Oriana"])));
+sandbox.__settings.smartExpansion = true;
+T("blocklist beats Context expansion", !/- Context:/.test(api.relevantCanonNote(["rose oriana drew"], ["Rose Oriana"], null, { blockNames: ["Oriana Kingdom"] })));
+
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));
