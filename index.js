@@ -60,6 +60,10 @@
  *     play THIS scene) injected under Identity; disambiguation pages skipped;
  *     dossier restricted to provided material; identity sentence-clipped;
  *     settings drawer regrouped into collapsible sections.
+ *   - v0.8: SMART SWEEP — any cached entity named in the recent scene (by the
+ *     user OR the AI) injects with no parser round trip; parser budget is a
+ *     setting (30s default; 15s starved slow backends and silently killed the
+ *     cast); llmCall failures carry a reason and the rescan toast reports it.
  */
 
 import { extension_settings, getContext } from "../../../extensions.js";
@@ -130,6 +134,10 @@ const defaultSettings = {
     arcTitle: "",
     arcNote: null,        // { query, title, wiki, summary, ts }
     arcInject: true,
+    // Parser/dossier time budget. 15s was too tight for slower backends (GLM on
+    // mobile): a blown budget silently kills the cast, and everything downstream
+    // looks "not smart". Raise further if you still see timeouts.
+    parserBudgetMs: 30000,
     // LLM-curated dossiers: the model reads each grounded page once (background,
     // cached forever) and writes the injection itself — identity, load-bearing
     // facts, secrets-as-secrets, voice, per-person dynamics. Regex sections stay
@@ -1265,6 +1273,23 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 present.push({ entry: found.entry, matchedName: cn });
             }
         }
+        // SMART SWEEP: the parser's cast is pronoun-proof but gated — it can lag the
+        // story (or be down entirely). Any entity we ALREADY KNOW (cached) that is
+        // named in the recent scene — including by the AI's own output — injects
+        // immediately, no parser round trip required. The AI saying "Alpha" is all
+        // the evidence needed: she's cached.
+        for (const key of Object.keys(s.cache)) {
+            const entry = s.cache[key];
+            if (!entry.found || !entry.sections || usedKeysGlobal.has(key)) continue;
+            if (usedKeysGlobal.has((entry.name || "").toLowerCase())) continue;
+            const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
+            let hit = "";
+            for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.find(n => mentioned(n, lowerMsgs[i])) || "";
+            if (hit) {
+                usedKeysGlobal.add(key);
+                present.push({ entry, matchedName: hit, swept: true });
+            }
+        }
     } else {
         // Scene-scan fallback (regex mode): grounded names actually in the recent window.
         const lgNames = (!s.llmParser) ? ledgerNames() : null;
@@ -1295,7 +1320,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const reasons = [];
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
-    for (const { entry, matchedName, pinned } of present) {
+    for (const { entry, matchedName, pinned, swept } of present) {
         if (blocks.length >= s.maxCharacters) break;
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
@@ -1367,7 +1392,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         blocks.push(block);
         seenEntities.add(nameKey);
         total += block.length;
-        reasons.push(`${entry.name} ← ${pinned ? "pinned" : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${entry.dossier ? " ✦" : ""}`);
+        reasons.push(`${entry.name} ← ${pinned ? "pinned" : swept ? `named in scene (as "${matchedName}") — no parser needed` : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${entry.dossier ? " ✦" : ""}`);
     }
     lastMatchReasons = reasons;
 
@@ -1499,7 +1524,7 @@ async function buildDossier(name, wikitext, relRaw) {
         "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
         "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
         "Respond with ONLY the JSON object, no other text.";
-    const out = await llmCall(systemText, digest, { maxTokens: 600, budgetMs: 30000 });
+    const out = await llmCall(systemText, digest, { maxTokens: 600, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
     return parseDossier(out);
 }
 
@@ -1574,9 +1599,13 @@ function parseNameArray(text) {
  * callers keep the parser's null-vs-empty discipline. Raced-out promises are always
  * given a rejection handler (Android webviews surface unhandled rejections).
  */
-async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 15000 } = {}) {
+let lastLlmError = "";       // why the last llmCall returned null — surfaced by rescan
+
+async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } = {}) {
     const c = getContext();
     const s = settings();
+    if (!budgetMs) budgetMs = Number(s.parserBudgetMs) || 30000;
+    lastLlmError = "";
     const controller = new AbortController();
     const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, budgetMs);
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1585,21 +1614,31 @@ async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 15000
         : (res && typeof res === "object" ? String(res.content ?? res.text ?? "").trim() : "");
     try {
         let out = "";
+        let usedBackend = false;
         const svc = c.ConnectionManagerRequestService;
         if (s.llmProfileId && svc && typeof svc.sendRequest === "function") {
+            usedBackend = true;
             const messages = [{ role: "system", content: systemText }, { role: "user", content: userText }];
             const req = svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true });
             if (req && typeof req.catch === "function") req.catch(() => {});
             const res = await Promise.race([req, sleep(budgetMs + 250).then(() => null)]);
             out = extract(res);
         } else if (typeof c.generateRaw === "function") {
+            usedBackend = true;
             const req = c.generateRaw({ prompt: userText, systemPrompt: systemText, responseLength: maxTokens });
             if (req && typeof req.catch === "function") req.catch(() => {});
             const res = await Promise.race([req, sleep(budgetMs).then(() => null)]);
             out = extract(res);
         }
-        return out || null;
+        if (!out) {
+            lastLlmError = usedBackend
+                ? `timed out after ${Math.round(budgetMs / 1000)}s — raise "Parser budget" in 🧠 Character detection, or the model returned nothing`
+                : 'no parser backend — pick a Connection Profile in 🧠 Character detection (or update ST so generateRaw exists)';
+            return null;
+        }
+        return out;
     } catch (e) {
+        lastLlmError = `error: ${e.message}`;
         debug(`LLM call failed: ${e.message}`);
         return null;
     } finally {
@@ -1625,7 +1664,7 @@ async function parseSceneCharacters(sceneText) {
         "words: what about them is in play in THIS scene (a duel, an engagement, a secret at " +
         "risk…)\"} — plain name strings are also accepted. No other text.";
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
-    const out = await llmCall(systemText, userText, { maxTokens: 300, budgetMs: 15000 });
+    const out = await llmCall(systemText, userText, { maxTokens: 300 });
     if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
     return parseCast(out);        // [] only when the model explicitly answered []
 }
@@ -1981,6 +2020,9 @@ async function addSettingsUI() {
                     <select id="cg_profile" class="text_pole" style="flex:1;"></select>
                     <div id="cg_profile_refresh" class="menu_button fa-solid fa-rotate" title="Refresh profiles"></div>
                 </div>
+                <label>Parser budget (seconds)</label>
+                <input id="cg_budget" class="text_pole" type="number" min="10" max="180" step="5">
+                <small class="cg-hint">How long the cast parser / dossier curator may take. Slow backends (GLM on mobile) need 30–60s — a blown budget silently kills the cast and everything looks dumb.</small>
                 <label class="checkbox_label">
                     <input id="cg_llm_every" type="checkbox">
                     <span>Run the parser every turn</span>
@@ -2174,6 +2216,11 @@ async function addSettingsUI() {
         s.contextWindow = Number.isFinite(n) && n > 0 ? n : 10;
         saveSettingsDebounced();
     });
+    // budget stored in ms, edited in seconds
+    $("#cg_budget").val(Math.round((s.parserBudgetMs || 30000) / 1000)).on("input", function () {
+        const v = parseInt($(this).val(), 10);
+        if (!isNaN(v) && v >= 10) { s.parserBudgetMs = v * 1000; saveSettingsDebounced(); }
+    });
     const numHandler = (id, key, min, def) => {
         $(id).val(s[key]).on("input", function () {
             const n = parseInt($(this).val(), 10);
@@ -2241,7 +2288,7 @@ async function addSettingsUI() {
                 if (myEpoch !== chatEpoch) return;
                 for (const n of extractCandidateNames(sceneText)) parsedWords.add(n.toLowerCase());
                 if (parsed === null) {
-                    toastr?.warning?.("Parser call failed or timed out — nothing changed.");
+                    toastr?.warning?.(`Parser: ${lastLlmError || "failed"} — nothing changed.`);
                 } else if (mySerial === parseSerial) {
                     const names = parsed.map(p => p.name);
                     lastCast = names;

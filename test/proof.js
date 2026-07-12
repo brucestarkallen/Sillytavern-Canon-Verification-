@@ -370,6 +370,22 @@ T("focus reachable via alias key", /- Now: alias-keyed focus works/.test(api.rel
 api.setFocus({});
 T("no focus → no Now line", !/- Now:/.test(api.relevantCanonNote(["rose"], ["Rose Oriana"])));
 
+// ---------------------------------------------------------------- v0.8: smart sweep
+console.log("[smart sweep]");
+sandbox.__settings.cache = {
+    "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: ["Rose"],
+              sections: { identity: "Rose Oriana is the second princess of the Oriana Kingdom." }, rel: {} },
+    "alpha": { name: "Alpha", found: true, wiki: "w", aliases: [],
+               sections: { identity: "Alpha is the first of the Seven Shadows." }, rel: {} },
+};
+api.setFocus({});
+const snote = api.relevantCanonNote(["alpha watched from the rooftop as they spoke"], ["Rose Oriana"]);
+T("cast entity injected", /Rose Oriana:/.test(snote));
+T("cached entity named in scene injected WITHOUT being in cast", /Alpha:/.test(snote) && /Alpha is the first of the Seven Shadows/.test(snote));
+api.relevantCanonNote(["alpha watched"], ["Rose Oriana"]);
+T("sweep reason says no parser needed", api.getReasons().some(r => /Alpha/.test(r) && /no parser needed/.test(r)));
+T("un-mentioned cached entity NOT swept in", !/Alpha:/.test(api.relevantCanonNote(["rose oriana stood alone"], ["Rose Oriana"])));
+
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

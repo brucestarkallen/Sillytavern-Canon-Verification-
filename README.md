@@ -56,6 +56,25 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.8.0 (the parser can lag or die — the injection can't)
+
+Proven by `test/proof.js` (135 assertions) + `test/sim.mjs` (23), all passing.
+
+1. **Smart sweep.** Cast mode now also injects any CACHED entity named in the
+   recent scene — including by the AI's own output — with zero parser round
+   trips and zero fetches. The AI writing "Alpha" is all the evidence needed:
+   she's cached, she injects. You never again have to say a name yourself just
+   to make the extension notice. "Why these" marks these as
+   `named in scene — no parser needed`.
+2. **Parser budget is a setting (default 30s, was a hardcoded 15s).** Slow
+   backends (GLM on mobile) regularly blew 15s, and a blown budget silently
+   killed the cast — which made everything downstream look dumb. Set it in
+   🧠 Character detection; the dossier curator gets 2×.
+3. **Honest failure toasts.** "Scan current scene now" no longer says a generic
+   "failed or timed out": it tells you WHICH — `timed out after 30s (raise the
+   budget)` vs `no parser backend — pick a Connection Profile` vs the actual
+   error. Diagnosis in one glance.
+
 ## Changelog — v0.7.0 (fandom-master pass: scene focus, accuracy, clean UI)
 
 Proven by `test/proof.js` (131 assertions) + `test/sim.mjs` (21), all passing.

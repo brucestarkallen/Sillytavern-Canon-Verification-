@@ -142,5 +142,14 @@ globalThis.__ctx.chat.push(msg("Alisa smiled warmly at DecayA.", true));
 await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 T("settled pair: zero fetches of ANY kind on later turns", fetchLog.length === settled);
 
+console.log("[7] smart sweep: AI names a cached, un-cast entity");
+// FreshChar was grounded in scenario 1 but is NOT in the current cast. The AI's
+// own reply naming them must be enough — inject with no parser round trip.
+globalThis.__ctx.chat.push(msg("Suddenly FreshChar stepped out of the crowd.", false));
+const sweepFetches = fetchLog.length;
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+T("cached entity named by the AI is injected", /FreshChar:/.test(lastInjection()));
+T("sweep costs zero fetches", fetchLog.length === sweepFetches);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
