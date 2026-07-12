@@ -56,6 +56,15 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.15.1 (factory reset: behavior resets, connections and content survive)
+
+The ♻ reset returns EVERYTHING tunable to the best-tested defaults — all eight
+keyword lists, every toggle, cap, budget, and all four system instructions.
+Newly preserved through it (they are plumbing/content, not tuning): the parser
+Connection Profile (wiping it silently killed parser/dossier/auditor until
+re-picked) and the global pinned canon (your authored words). Also kept, as
+before: saved wiki library, active wiki, and all per-chat state.
+
 ## Changelog — v0.15.0 (chat-scoped canon: each chat is its own universe)
 
 Proven by `test/proof.js` (188 assertions) + `test/sim.mjs` (23), all passing.

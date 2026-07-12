@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.15.0";
+const CG_VERSION = "0.15.1";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -2575,7 +2575,7 @@ async function addSettingsUI() {
                 <div id="cg_prompt_auditor_reset" class="menu_button" title="Restore default">↺ default</div>
                 <hr>
                 <div id="cg_factory_reset" class="menu_button" title="Reset every setting and instruction to defaults">♻ Reset ALL settings &amp; instructions to defaults</div>
-                <small class="cg-hint">Restores every setting and every instruction to the best-default state. Your saved wiki library and all per-chat state (cache, dossiers, pins, arc) are KEPT — those live with each chat now.</small>
+                <small class="cg-hint">Restores every setting and every instruction to the best-default state. KEPT through the reset: your saved wiki library, active wiki, parser profile, global pinned canon, and all per-chat state (cache, dossiers, pins, arc). Everything else — every toggle, keyword list, cap, budget, and instruction — returns to the best-tested defaults.</small>
                 </div>
                 </details>
                 <details class="cg-group">
@@ -2650,7 +2650,10 @@ async function addSettingsUI() {
     }
     $("#cg_factory_reset").on("click", function () {
         if (!confirm("Reset EVERY Canon Grounding setting and instruction to defaults?\nKept: grounded cache, saved wiki library, per-chat pins/arc.")) return;
-        const keep = { savedWikis: s.savedWikis, wikis: s.wikis };  // cache is per-chat now
+        // Behavior resets; CONNECTIONS and USER CONTENT survive: the parser profile
+        // is plumbing (wiping it silently kills parser/dossier/auditor until re-picked),
+        // and the global pin is your authored canon, not a tunable.
+        const keep = { savedWikis: s.savedWikis, wikis: s.wikis, llmProfileId: s.llmProfileId, pinnedGlobal: s.pinnedGlobal };
         for (const k of Object.keys(s)) delete s[k];
         Object.assign(s, structuredClone(defaultSettings), keep, { migrated_v2: true, migrated_v3: true });
         saveSettingsDebounced();
