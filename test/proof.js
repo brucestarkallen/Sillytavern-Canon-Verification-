@@ -32,6 +32,7 @@ const pieces = [
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
     grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
+    grab("const DEFAULT_PROMPT_HEADER", "const DEFAULT_PROMPT_PARSER"),
     grab("function relevantCanonNote", "// ------"),
 ];
 
@@ -492,6 +493,14 @@ api.setEvidence({ "tsubasa nanase": "Nanase bowed" });
 api.relevantCanonNote(["nanase bowed"], ["Tsubasa Nanase"]);
 T("Why-these carries the evidence quote", api.getReasons().some(r => /Tsubasa Nanase/.test(r) && /evidence: "Nanase bowed"/.test(r)));
 api.setEvidence({});
+
+// ---------------------------------------------------------------- v0.12: prompt overrides
+console.log("[prompt overrides]");
+T("default header applies when override empty", /\[CANON REFERENCE/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])) );
+sandbox.__settings.promptHeader = "[MY CUSTOM FRAME]\n";
+T("header override replaces the default wholesale", (function(){ const n = api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"]); return /\[MY CUSTOM FRAME\]/.test(n) && !/\[CANON REFERENCE/.test(n); })());
+sandbox.__settings.promptHeader = "";
+T("empty override falls back to default again", /\[CANON REFERENCE/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

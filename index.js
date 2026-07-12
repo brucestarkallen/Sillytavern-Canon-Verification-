@@ -87,7 +87,76 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.11.1";
+const CG_VERSION = "0.12.0";
+
+// ---------------------------------------------------------------------------
+// DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
+// Visible and editable in the "🧾 System instructions" group; an EMPTY override
+// means these defaults apply, so prompt improvements in updates still reach
+// everyone who hasn't customized.
+const DEFAULT_PROMPT_HEADER =
+            "[CANON REFERENCE — retrieved from the official wiki for this series.\n" +
+        "FACTS (appearance, relations, history, events) are authoritative: they override " +
+        "your own memory and anything else in this prompt that disagrees — use them, do " +
+        "not second-guess, 'correct', or invent alternatives.\n" +
+        "KNOWLEDGE SCOPE: these facts are for YOUR accuracy as the narrator — they are " +
+        "NOT public knowledge inside the story. A character may only know, reveal, or " +
+        "react to what THEY could know in-story right now. Hidden identities, secret " +
+        "affiliations, and unrevealed connections stay hidden: guard them actively, and " +
+        "never let a character's dialogue, thoughts, or behavior betray information " +
+        "sourced from this reference.\n" +
+        "BEHAVIOR is different: each Personality line is that character's public BASELINE, " +
+        "not a script. Real people modulate with company, mood, privacy, and stakes — a " +
+        "commander who is stoic on duty can be warm, petty, or openly devoted in private. " +
+        "When a 'With <name>' line exists and that person is in the scene, THAT dynamic " +
+        "overrides the baseline. Voice lines are STYLE SAMPLES — match their cadence, " +
+        "vocabulary, and attitude in fresh dialogue; never repeat the sample lines " +
+        "themselves unless the moment canonically calls for it. Never flatten a " +
+        "character to their trait words; show the traits through fresh, " +
+        "situation-specific behavior, contradictions included.]\n";
+const DEFAULT_PROMPT_PARSER =
+        "This is a scene from a work of fiction that has published source material with a " +
+        "wiki. List the canon entities worth looking up in that wiki so the writer can portray " +
+        "them accurately. INCLUDE: (a) characters who are present or acting in the scene; " +
+        "(b) characters who are NAMED, referred to, remembered, or asked about even if NOT " +
+        "physically present — the writer still needs to know who they are to mention them " +
+        "correctly (e.g. someone the player asks 'have you seen X?'); (c) places, organizations, " +
+        "groups, or notable lore that are central to what is happening. STRICT EXTRACTION RULE: " +
+        "list ONLY entities the scene text itself refers to — by name, alias, title, or a clear " +
+        "description ('the school', 'her older sister'). Your series knowledge is ONLY for " +
+        "canonicalizing a reference to its proper wiki name — NEVER for adding characters the " +
+        "text does not refer to. A famous character who is not referred to in the text is NOT " +
+        "in the scene, no matter how likely their presence feels. Leave out generic words, " +
+        "everyday objects, and anything invented just for this scene. Never list the " +
+        "series/franchise title itself. Ignore names that appear ONLY in out-of-character notes, " +
+        "author questions to the player, choice menus, or meta commentary. " +
+        "Respond with ONLY a JSON array, most central " +
+        "first, or [] if none. Each element is {\"name\": \"Canonical Name\", \"now\": \"under 12 " +
+        "words: what about them is in play in THIS scene\", \"evidence\": \"the EXACT words " +
+        "from the scene that refer to this entity, copied verbatim\"}. Evidence is mandatory — " +
+        "an entity you cannot quote the scene for must not be listed. No other text.";
+const DEFAULT_PROMPT_DOSSIER =
+        "You curate a compact canon dossier for a roleplay NARRATOR from wiki material. " +
+        "Extract only what matters for portraying this character accurately in scenes. " +
+        "Return JSON with exactly these keys: " +
+        '{"identity": one sentence — who they are (title, role, affiliation); ' +
+        '"facts": up to 6 short story-relevant facts a narrator must not get wrong; ' +
+        '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
+        '"voice": up to 3 short verbatim quotes if any appear; ' +
+        '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM}. ' +
+        "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
+        "Never write meta-statements about the wiki or missing information ('no information is provided', 'the source does not mention…') — omit absent things silently. " +
+        "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
+        "Respond with ONLY the JSON object, no other text.";
+const DEFAULT_PROMPT_AUDITOR =
+        "You are a strict referee for scene-reference claims in fiction. For each entity below, " +
+        "decide whether the quoted evidence genuinely REFERS TO that specific entity AND the entity " +
+        "is part of, or directly relevant to, the CURRENT scene's events — " +
+        "not merely appears near them, and not because the entity plausibly exists in this world. " +
+        "Generic phrases ('her classmates', 'the students', 'everyone') refer to no specific entity. " +
+        "A name appearing only in a roster, class list, cast enumeration, opening summary, or " +
+        "similar catalogue is NOT presence in the scene — answer false for those. " +
+        'Respond with ONLY a JSON object mapping each entity name to true or false. No other text.';
 
 const defaultSettings = {
     enabled: true,
@@ -115,7 +184,7 @@ const defaultSettings = {
     physical: true,       // appearance: hair, eyes, look
     personality: true,    // temperament — injected as a BASELINE, not a script
     relationship: true,   // family and key connections (helps correct invented parents)
-    biography: false,     // role, affiliation, background
+    biography: true,      // infobox bio + history — identity covers the lead separately
     abilities: false,     // powers, skills, weapons
     trivia: true,         // "== Trivia ==" bullets — dense fan-level canon facts
     triviaKeywords: "trivia",
@@ -143,6 +212,12 @@ const defaultSettings = {
     // The Cast Auditor: a dedicated referee call that judges weak evidence — does
     // this quote actually REFER to this entity? Fires only when weak items exist.
     castAuditor: true,
+    // System-instruction overrides — empty means the built-in default applies
+    // (shown in the 🧾 group), so prompt improvements in updates still land.
+    promptParser: "",
+    promptDossier: "",
+    promptAuditor: "",
+    promptHeader: "",
     // LLM-curated dossiers: the model reads each grounded page once (background,
     // cached forever) and writes the injection itself — identity, load-bearing
     // facts, secrets-as-secrets, voice, per-person dynamics. Regex sections stay
@@ -1497,25 +1572,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
 
     if (!blocks.length && !arcBlock && !pinBlock) return "";
     return (
-        "[CANON REFERENCE — retrieved from the official wiki for this series.\n" +
-        "FACTS (appearance, relations, history, events) are authoritative: they override " +
-        "your own memory and anything else in this prompt that disagrees — use them, do " +
-        "not second-guess, 'correct', or invent alternatives.\n" +
-        "KNOWLEDGE SCOPE: these facts are for YOUR accuracy as the narrator — they are " +
-        "NOT public knowledge inside the story. A character may only know, reveal, or " +
-        "react to what THEY could know in-story right now. Hidden identities, secret " +
-        "affiliations, and unrevealed connections stay hidden: guard them actively, and " +
-        "never let a character's dialogue, thoughts, or behavior betray information " +
-        "sourced from this reference.\n" +
-        "BEHAVIOR is different: each Personality line is that character's public BASELINE, " +
-        "not a script. Real people modulate with company, mood, privacy, and stakes — a " +
-        "commander who is stoic on duty can be warm, petty, or openly devoted in private. " +
-        "When a 'With <name>' line exists and that person is in the scene, THAT dynamic " +
-        "overrides the baseline. Voice lines are STYLE SAMPLES — match their cadence, " +
-        "vocabulary, and attitude in fresh dialogue; never repeat the sample lines " +
-        "themselves unless the moment canonically calls for it. Never flatten a " +
-        "character to their trait words; show the traits through fresh, " +
-        "situation-specific behavior, contradictions included.]\n" +
+        ((settings().promptHeader || "").trim() || DEFAULT_PROMPT_HEADER) +
         pinBlock + arcBlock + blocks.join("\n")
     );
 }
@@ -1589,19 +1646,7 @@ async function buildDossier(name, wikitext, relRaw) {
         `TRIVIA: ${extractTrivia(wikitext, ["trivia"], 8, 900)}`,
         `QUOTES: ${extractQuotes(extractSectionRaw(wikitext, ["quotes", "notable quotes"], 4000), 5, 700)}`,
     ].filter(l => !/^[A-Z]+: ?$/.test(l)).join("\n");
-    const systemText =
-        "You curate a compact canon dossier for a roleplay NARRATOR from wiki material. " +
-        "Extract only what matters for portraying this character accurately in scenes. " +
-        "Return JSON with exactly these keys: " +
-        '{"identity": one sentence — who they are (title, role, affiliation); ' +
-        '"facts": up to 6 short story-relevant facts a narrator must not get wrong; ' +
-        '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
-        '"voice": up to 3 short verbatim quotes if any appear; ' +
-        '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM}. ' +
-        "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
-        "Never write meta-statements about the wiki or missing information ('no information is provided', 'the source does not mention…') — omit absent things silently. " +
-        "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
-        "Respond with ONLY the JSON object, no other text.";
+    const systemText = (settings().promptDossier || "").trim() || DEFAULT_PROMPT_DOSSIER;
     const out = await llmCall(systemText, digest, { maxTokens: 1000, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
     return parseDossier(out);
 }
@@ -1877,15 +1922,7 @@ async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } =
 async function auditCastEvidence(sceneText, weak) {
     if (!weak.length) return [];
     const items = weak.map(c => `- ${c.name} :: evidence: "${c.evidence}"`).join("\n");
-    const systemText =
-        "You are a strict referee for scene-reference claims in fiction. For each entity below, " +
-        "decide whether the quoted evidence genuinely REFERS TO that specific entity AND the entity " +
-        "is part of, or directly relevant to, the CURRENT scene's events — " +
-        "not merely appears near them, and not because the entity plausibly exists in this world. " +
-        "Generic phrases ('her classmates', 'the students', 'everyone') refer to no specific entity. " +
-        "A name appearing only in a roster, class list, cast enumeration, opening summary, or " +
-        "similar catalogue is NOT presence in the scene — answer false for those. " +
-        'Respond with ONLY a JSON object mapping each entity name to true or false. No other text.';
+    const systemText = (settings().promptAuditor || "").trim() || DEFAULT_PROMPT_AUDITOR;
     const userText = `<scene>\n${sceneText}\n</scene>\n\n${items}\n\nJSON verdict:`;
     const out = await llmCall(systemText, userText, { maxTokens: 200, budgetMs: Math.min(Number(settings().parserBudgetMs) || 30000, 12000) });
     if (!out) return [];   // auditor unavailable → weak claims do not pass
@@ -1901,27 +1938,7 @@ async function auditCastEvidence(sceneText, weak) {
 async function parseSceneCharacters(sceneText) {
     const c = getContext();
     const s = settings();
-    const systemText =
-        "This is a scene from a work of fiction that has published source material with a " +
-        "wiki. List the canon entities worth looking up in that wiki so the writer can portray " +
-        "them accurately. INCLUDE: (a) characters who are present or acting in the scene; " +
-        "(b) characters who are NAMED, referred to, remembered, or asked about even if NOT " +
-        "physically present — the writer still needs to know who they are to mention them " +
-        "correctly (e.g. someone the player asks 'have you seen X?'); (c) places, organizations, " +
-        "groups, or notable lore that are central to what is happening. STRICT EXTRACTION RULE: " +
-        "list ONLY entities the scene text itself refers to — by name, alias, title, or a clear " +
-        "description ('the school', 'her older sister'). Your series knowledge is ONLY for " +
-        "canonicalizing a reference to its proper wiki name — NEVER for adding characters the " +
-        "text does not refer to. A famous character who is not referred to in the text is NOT " +
-        "in the scene, no matter how likely their presence feels. Leave out generic words, " +
-        "everyday objects, and anything invented just for this scene. Never list the " +
-        "series/franchise title itself. Ignore names that appear ONLY in out-of-character notes, " +
-        "author questions to the player, choice menus, or meta commentary. " +
-        "Respond with ONLY a JSON array, most central " +
-        "first, or [] if none. Each element is {\"name\": \"Canonical Name\", \"now\": \"under 12 " +
-        "words: what about them is in play in THIS scene\", \"evidence\": \"the EXACT words " +
-        "from the scene that refer to this entity, copied verbatim\"}. Evidence is mandatory — " +
-        "an entity you cannot quote the scene for must not be listed. No other text.";
+    const systemText = (settings().promptParser || "").trim() || DEFAULT_PROMPT_PARSER;
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
     const out = await llmCall(systemText, userText, { maxTokens: 800 });
     if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
@@ -2397,6 +2414,27 @@ async function addSettingsUI() {
                 </div>
                 </details>
                 <details class="cg-group">
+                <summary>🧾 System instructions</summary>
+                <div class="cg-group-body">
+                <small class="cg-hint">Every prompt this extension sends, visible and editable. Leave a box UNCHANGED (or empty) to use the built-in default — customized boxes keep your text through updates; ↺ restores one box to default.</small>
+                <label>Injection header (framing above every canon note)</label>
+                <textarea id="cg_prompt_header" class="text_pole" rows="5"></textarea>
+                <div id="cg_prompt_header_reset" class="menu_button" title="Restore default">↺ default</div>
+                <label>Cast parser (who is in the scene)</label>
+                <textarea id="cg_prompt_parser" class="text_pole" rows="5"></textarea>
+                <div id="cg_prompt_parser_reset" class="menu_button" title="Restore default">↺ default</div>
+                <label>Dossier curator (reads each wiki page once)</label>
+                <textarea id="cg_prompt_dossier" class="text_pole" rows="5"></textarea>
+                <div id="cg_prompt_dossier_reset" class="menu_button" title="Restore default">↺ default</div>
+                <label>Cast Auditor 🛡 (judges weak evidence)</label>
+                <textarea id="cg_prompt_auditor" class="text_pole" rows="5"></textarea>
+                <div id="cg_prompt_auditor_reset" class="menu_button" title="Restore default">↺ default</div>
+                <hr>
+                <div id="cg_factory_reset" class="menu_button" title="Reset every setting and instruction to defaults">♻ Reset ALL settings &amp; instructions to defaults</div>
+                <small class="cg-hint">Restores every setting and every instruction to the best-default state. Your grounded cache, saved wiki library, and per-chat pins/arc are KEPT.</small>
+                </div>
+                </details>
+                <details class="cg-group">
                 <summary>🩺 Cache &amp; diagnostics</summary>
                 <div class="cg-group-body">
                 <small><b>Cache</b> — everything grounded so far:</small>
@@ -2440,6 +2478,34 @@ async function addSettingsUI() {
     });
     $("#cg_auditor").prop("checked", s.castAuditor).on("input", function () {
         s.castAuditor = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    // 🧾 System instructions: box shows the EFFECTIVE text; saving text identical to
+    // the default stores "" so future default improvements still reach this user.
+    const PROMPTS = [
+        ["#cg_prompt_header",  "promptHeader",  DEFAULT_PROMPT_HEADER],
+        ["#cg_prompt_parser",  "promptParser",  DEFAULT_PROMPT_PARSER],
+        ["#cg_prompt_dossier", "promptDossier", DEFAULT_PROMPT_DOSSIER],
+        ["#cg_prompt_auditor", "promptAuditor", DEFAULT_PROMPT_AUDITOR],
+    ];
+    for (const [sel, key, def] of PROMPTS) {
+        $(sel).val((s[key] || "").trim() || def).on("input", function () {
+            const v = String($(this).val());
+            s[key] = (v.trim() === def.trim()) ? "" : v;
+            saveSettingsDebounced();
+        });
+        $(sel + "_reset").on("click", function () {
+            s[key] = ""; $(sel).val(def); saveSettingsDebounced();
+            toastr?.info?.("Restored default instruction.");
+        });
+    }
+    $("#cg_factory_reset").on("click", function () {
+        if (!confirm("Reset EVERY Canon Grounding setting and instruction to defaults?\nKept: grounded cache, saved wiki library, per-chat pins/arc.")) return;
+        const keep = { cache: s.cache, savedWikis: s.savedWikis, wikis: s.wikis };
+        for (const k of Object.keys(s)) delete s[k];
+        Object.assign(s, structuredClone(defaultSettings), keep, { migrated_v2: true, migrated_v3: true });
+        saveSettingsDebounced();
+        toastr?.success?.("Defaults restored. Reloading UI…");
+        setTimeout(() => location.reload(), 800);
     });
     $("#cg_pin_global").val(s.pinnedGlobal).on("input", function () {
         s.pinnedGlobal = $(this).val(); saveSettingsDebounced();

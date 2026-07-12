@@ -56,6 +56,25 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.12.0 (glass box: every instruction visible, editable, resettable)
+
+Proven by `test/proof.js` (179 assertions) + `test/sim.mjs` (23), all passing.
+
+1. **🧾 System instructions.** Every prompt this extension sends — the injection
+   header, the cast parser, the dossier curator, the Cast Auditor — is now
+   visible AND editable in its own group. A box left unchanged (or empty) uses
+   the built-in default, so prompt improvements in updates still reach you;
+   a customized box keeps your text through updates. ↺ restores any one box.
+2. **♻ Reset ALL settings & instructions to defaults** — one button, one
+   confirm. Everything returns to the best-default state; your grounded cache,
+   saved wiki library, and per-chat pins/arc are kept.
+3. **Best defaults, finalized**: identity always-on; physical, personality,
+   relationships, per-pair dynamics, dossiers ✦, Cast Auditor 🛡, trivia, voice,
+   and now BIOGRAPHY on (infobox bio + history — identity covers the lead
+   separately); abilities off (verbose, and models half-know them); parser
+   gated (not every-turn), 30s budget; story-position injection on; caps
+   700/4500. The reset button lands anyone on exactly this state.
+
 ## Changelog — v0.11.1 (the last door closes: no evidence, no grandfathering)
 
 The evidence-LESS compat fallback (element without an evidence field → admit if
