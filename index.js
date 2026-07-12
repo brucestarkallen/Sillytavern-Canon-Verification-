@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.21.2";
+const CG_VERSION = "0.22.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1088,6 +1088,14 @@ async function ensureGrounded(name, trusted = false) {
                 // Remember the character's other names (nickname/alias fields) plus the
                 // term we searched with, so any of them match this entry later.
                 const aliases = extractAliases(wikitext, s.aliasKeywords.split(","));
+                // COVERAGE GUARD: the page must account for every meaningful token of
+                // the query — title or aliases. A fuzzy search landing "Miyake Kakeru"
+                // on "Akito Miyake" grounds a hallucinated hybrid onto a real-but-
+                // wrong person; that's a MISS, not a match. ("Alya" → alias passes.)
+                if (!titleCoversQuery(name, title, aliases)) {
+                    debug(`"${title}" does not cover query "${name}" (missing token) — treated as miss`);
+                    continue;   // try the next wiki; negative-caches below if none pan out
+                }
                 if (name && name.toLowerCase() !== title.toLowerCase()) aliases.push(name);
                 // Raw material for per-pair dynamics: the whole Relationships subtree,
                 // subsection headers intact, so relationFor can slice "how A is with B"
@@ -1973,6 +1981,20 @@ async function buildDossier(name, wikitext, relRaw) {
     return parseDossier(out);
 }
 
+/**
+ * A multi-token query must be COVERED by the page it lands on: every meaningful
+ * query token appears in the title or the page's aliases. "Miyake Kakeru"
+ * fuzzy-matching onto "Akito Miyake" (which has no 'kakeru' anywhere) grounded a
+ * hallucinated hybrid onto a real-but-wrong person. "Rose" → "Rose Oriana" and
+ * "Alya" → alias "Alya" both pass; cross-welded names don't.
+ */
+function titleCoversQuery(query, title, aliases) {
+    const hay = [title, ...(aliases || [])].join(" ").toLowerCase();
+    const toks = String(query).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)
+        .filter(t => t.length >= 3 && !NOISE_WORDS.has(t));
+    return toks.every(t => hay.includes(t));
+}
+
 /** Fire-and-forget dossier build with an in-flight/retry guard on the cache entry. */
 function scheduleDossier(key, name, wikitext, relRaw) {
     const s = settings();
@@ -2245,6 +2267,37 @@ async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } =
  * point. Fails safe: if the auditor itself fails, weak items are dropped, never
  * waved through.
  */
+/**
+ * KNOWN-CANON RESOLUTION: a short reference ("Kakeru") is ambiguous, and the
+ * parser expanding it to a canonical is a GUESS — it invented "Miyake Kakeru"
+ * from bare "Kakeru", welding two classmates together. A human GM reading a
+ * short name mid-story thinks of the person ALREADY ON STAGE. So: when a cast
+ * element's evidence is a single token that matches exactly ONE cached, found
+ * entity's name/alias token, the element SNAPS to that known canonical. Two or
+ * more matches = genuinely ambiguous → left for the auditor. The chat's own
+ * established canon outranks fresh canonicalization.
+ */
+function resolveAgainstKnown(cast) {
+    if (!Array.isArray(cast) || !cast.length) return cast;
+    const store = cache();
+    const known = Object.values(store).filter(e => e && e.found && e.name);
+    if (!known.length) return cast;
+    return cast.map(c => {
+        const ev = String(c.evidence || "").trim();
+        if (!ev || /\s/.test(ev)) return c;                       // multi-word evidence: specific enough
+        const tok = ev.toLowerCase();
+        if (tok.length < 3) return c;
+        const matches = known.filter(e =>
+            [e.name, ...(e.aliases || [])].some(n =>
+                String(n).toLowerCase().split(/\s+/).includes(tok)));
+        if (matches.length !== 1) return c;                        // 0 = new person; 2+ = ambiguous
+        const canonical = matches[0].name;
+        if (canonical.toLowerCase() === c.name.toLowerCase()) return c;
+        debug(`"${c.name}" (from bare "${ev}") snapped to known canon: ${canonical}`);
+        return { ...c, name: canonical };
+    });
+}
+
 async function auditCastEvidence(sceneText, weak) {
     if (!weak.length) return [];
     const items = weak.map(c => `- ${c.name} :: evidence: "${c.evidence}"`).join("\n");
@@ -2294,7 +2347,7 @@ async function parseSceneCharacters(sceneText) {
     }
     // Every listed entity must be provable against the scene it was parsed from —
     // and evidence that proves nothing in particular goes to the Cast Auditor.
-    const verified = verifyCastEvidence(cast, sceneText);
+    const verified = resolveAgainstKnown(verifyCastEvidence(cast, sceneText));
     const { strong, weak } = splitEvidenceStrength(verified, sceneText);
     if (!weak.length || !settings().castAuditor) return settings().castAuditor ? strong : verified;
     const confirmed = await auditCastEvidence(sceneText, weak);

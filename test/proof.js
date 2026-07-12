@@ -28,7 +28,8 @@ const pieces = [
     grab("/** Drop everything inside", "// ------"),
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
     grab("function clip(", "/**\n * Build the canon note."),
-    grab("/**\n * Reasoning models", "/**\n * Arbiter-style"),
+    grab("/**\n * Reasoning models", "async function parseSceneCharacters"),
+    grab("/**\n * A multi-token query must be COVERED", "/** Fire-and-forget dossier"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
     grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
@@ -57,7 +58,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setFocus: (m) => { castFocus = m; },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -644,6 +645,24 @@ const HIYORI = "Hiyori has mid-back length silver hair, which she ties back with
 const hp = api.extractFromProse(HIYORI);
 T("silver hair extracted cleanly (not 'length silver')", /hair: silver/.test(hp) && !/length/.test(hp));
 T("modifier kept for eyes", /eyes: light purple/.test(hp));
+// ---------------------------------------------------------------- v0.22: known-canon snap + coverage
+console.log("[known-canon / coverage]");
+sandbox.__settings.cache = {
+    "kakeru ryuen": { name: "Kakeru Ryūen", found: true, wiki: "w", aliases: ["Ryūen"], kind: "character",
+                      sections: { identity: "Leader of Class C." }, rel: {} },
+    "akito miyake": { name: "Akito Miyake", found: true, wiki: "w", aliases: ["Miyake"], kind: "character",
+                      sections: { identity: "A student of Class C." }, rel: {} },
+};
+const snapped = api.resolveAgainstKnown([{ name: "Miyake Kakeru", now: "talking", evidence: "Kakeru" }]);
+T("bare 'Kakeru' snaps the hybrid to the established Kakeru Ryūen", snapped[0].name === "Kakeru Ryūen" && snapped[0].now === "talking");
+sandbox.__settings.cache["kakeru hondo"] = { name: "Kakeru Hondō", found: true, wiki: "w", aliases: [], kind: "character", sections: { identity: "x" }, rel: {} };
+T("two cached Kakerus = ambiguous → untouched", api.resolveAgainstKnown([{ name: "Miyake Kakeru", now: "", evidence: "Kakeru" }])[0].name === "Miyake Kakeru");
+delete sandbox.__settings.cache["kakeru hondo"];
+T("multi-word evidence never snaps", api.resolveAgainstKnown([{ name: "Miyake Kakeru", now: "", evidence: "Kakeru laughed" }])[0].name === "Miyake Kakeru");
+T("coverage: hybrid query rejected by wrong page", api.titleCoversQuery("Miyake Kakeru", "Akito Miyake", []) === false);
+T("coverage: expansion allowed (Rose → Rose Oriana)", api.titleCoversQuery("Rose", "Rose Oriana", []) === true);
+T("coverage: nickname passes via alias (Alya)", api.titleCoversQuery("Alya", "Alisa Mikhailovna Kujou", ["Alya"]) === true);
+
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

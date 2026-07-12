@@ -56,6 +56,29 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.22.0 (short names resolve to YOUR canon, not a guess)
+
+Proven by `test/proof.js` (222 assertions) + `test/sim.mjs` (23), all passing.
+
+Typing bare "Kakeru" injected Akito Miyake as "Miyake Kakeru" — a three-layer
+failure, each layer fixed at the root:
+
+1. **Known-canon resolution.** The parser expanding a short reference to a
+   canonical is a GUESS — it welded two classmates into "Miyake Kakeru". Now:
+   a cast element whose evidence is a single token matching exactly ONE cached
+   entity's name/alias token SNAPS to that established canonical — a human GM
+   reading "Kakeru" mid-story thinks of the Kakeru already on stage. Two
+   matches = genuinely ambiguous → left alone for the auditor.
+2. **Self-certifying anchors closed.** The hybrid name contained the evidence
+   token, so it anchored itself as strong. The snap runs BEFORE strength
+   split, so the anchor now certifies the true canonical.
+3. **Query-coverage guard on grounding.** Fuzzy search landed "Miyake Kakeru"
+   on Akito Miyake's real page. A chosen page must now account for EVERY
+   meaningful query token via its title or aliases — "Rose"→"Rose Oriana"
+   and "Alya"→alias both pass; cross-welded hybrids are a miss.
+
+Note: the wrong "miyake kakeru" cache entry in that chat should be ✕'d once.
+
 ## Changelog — v0.21.2 (Hiyori's hair, verbatim-tested)
 
 Proven by `test/proof.js` (216 assertions) + `test/sim.mjs` (23), all passing.
