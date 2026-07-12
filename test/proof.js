@@ -30,7 +30,7 @@ const pieces = [
     grab("function clip(", "/**\n * Build the canon note."),
     grab("/**\n * Reasoning models", "/**\n * Arbiter-style"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
-    grab("/**\n * The identity line", "function extractLead"),
+    grab("/**\n * Distinguishing physical details", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
     grab("function apiBase", "async function"),
     grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
@@ -57,7 +57,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setFocus: (m) => { castFocus = m; },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -626,6 +626,14 @@ T("over-budget drops WHOLE trailing lines, never amputates mid-fact", !/…/.tes
 T("appearance line survives the budget squeeze", /- Appearance: haircolor: Blue; eyecolor: Magenta/.test(wb));
 T("name + brief always ride", /Ryōtarō Hondō:\n  BBBB/.test(wb));
 sandbox.__settings.maxCharsPerChar = 1100;
+
+// ---------------------------------------------------------------- v0.21: full-body appearance
+console.log("[full-body appearance]");
+T("distinguishing prose extracted (Gamma's mole)", api.extractDistinguishing("Gamma is a tall, beautiful woman. She has a beauty mark under her left eye. Her hair reaches her waist.") === "She has a beauty mark under her left eye.");
+T("build sentences count as distinguishing", /slender but deceptively strong/.test(api.extractDistinguishing("She appears slender but deceptively strong in close combat.")));
+T("cap at 2 sentences", api.extractDistinguishing("A scar marks his brow, old and pale. A tattoo winds down his arm in black ink. A mole sits at his jaw for good measure.").split(". ").length <= 2 + 1);
+T("plain description yields nothing", api.extractDistinguishing("He has brown hair and wears the school uniform neatly.") === "");
+T("no marker sentence over 180 chars", api.extractDistinguishing("A scar " + "x".repeat(200) + ".") === "");
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

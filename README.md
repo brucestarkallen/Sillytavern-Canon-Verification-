@@ -56,6 +56,24 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.21.0 (the whole body: builds, marks, and Gamma's mole)
+
+Proven by `test/proof.js` (213 assertions) + `test/sim.mjs` (23), all passing.
+
+Appearance grows beyond hair and eyes, in both lanes:
+
+1. **Infobox**: the default field list now also matches height, build, body,
+   skin, complexion, and distinguishing feature/mark fields (one-time
+   migration upgrades untouched defaults only).
+2. **Prose**: distinguishing details live in the Appearance SECTION, not the
+   infobox — "a beauty mark under her left eye", "a scar across his brow",
+   "slender but deceptively strong". Up to two such sentences are mined and
+   ALWAYS appended (`…; notably: …`) — previously prose only ran when the
+   infobox was empty, which is exactly how Gamma's mole never made it in.
+3. **The dossier curator now reads the Appearance section too**, so prose
+   briefs can weave physicality naturally instead of leaving it to the
+   verbatim line alone.
+
 ## Changelog — v0.20.1 (hair restored + no more mid-fact amputation)
 
 Proven by `test/proof.js` (208 assertions) + `test/sim.mjs` (23), all passing.

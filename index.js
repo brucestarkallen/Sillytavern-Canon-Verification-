@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.20.1";
+const CG_VERSION = "0.21.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -180,7 +180,7 @@ const defaultSettings = {
     savedWikis: [],
     // Which infobox fields count as "physical" facts. Kept to hair/eyes on purpose:
     // other fields (height, age) collide with infobox image-sizing params and add noise.
-    fields: "hair,haircolor,hair color,eyes,eye color,eyecolor",
+    fields: "hair,haircolor,hair color,eyes,eye color,eyecolor,height,build,body,skin,complexion,feature,features,mark,birthmark",
     // Keyword lists that say WHERE each category lives — matched (as substrings) against
     // BOTH infobox field names AND prose section headers. Defaults cover Fandom's common
     // templates (Marvel/DC/anime), so most wikis work with no editing. Editable below.
@@ -338,6 +338,15 @@ function settings() {
         if (st.maxCharsPerChar === 700) st.maxCharsPerChar = 1100;
         if (st.maxTotalChars === 4500) st.maxTotalChars = 6000;
         st.migrated_v5 = true;
+        saveSettingsDebounced();
+    }
+    if (!st.migrated_v6) {
+        // Appearance grows beyond hair/eyes — build, height, skin, distinguishing
+        // features. Only upgrades the untouched default keyword list.
+        if (st.fields === "hair,haircolor,hair color,eyes,eye color,eyecolor") {
+            st.fields = "hair,haircolor,hair color,eyes,eye color,eyecolor,height,build,body,skin,complexion,feature,features,mark,birthmark";
+        }
+        st.migrated_v6 = true;
         saveSettingsDebounced();
     }
     return st;
@@ -851,6 +860,26 @@ function extractQuotes(sectionRaw, maxQuotes = 3, maxLen = 420) {
 
 /** Lead (intro) paragraph of the article, before the first section header. */
 /**
+ * Distinguishing physical details live in the Appearance PROSE, not the infobox —
+ * "a beauty mark under her left eye", "a scar across his brow", "slender but
+ * deceptively strong". Pull up to 2 short sentences containing distinctive
+ * markers, so Gamma's mole makes it into Appearance alongside hair and eyes.
+ */
+const DISTINGUISH_RE = /\b(mole|beauty mark|beauty spot|scar|scars|tattoo|birthmark|freckle|freckles|heterochrom\w*|eyepatch|fang|fangs|pointed ears|slender|petite|muscular|voluptuous|curvaceous|lithe|stocky|towering|diminutive|androgynous|ample|well[- ]built|delicate features)\b/i;
+function extractDistinguishing(prose, maxSentences = 2) {
+    if (!prose) return "";
+    const out = [];
+    for (const sRaw of String(prose).split(/(?<=[.!?])\s+/)) {
+        const sent = sRaw.trim();
+        if (sent.length < 15 || sent.length > 180) continue;
+        if (!DISTINGUISH_RE.test(sent)) continue;
+        out.push(sent);
+        if (out.length >= maxSentences) break;
+    }
+    return out.join(" ");
+}
+
+/**
  * The identity line: the lead, cut at a SENTENCE boundary (≤300) instead of
  * mid-clause — "…is the second princess of the Oriana Kingdom." not "…of the Ori…".
  */
@@ -966,14 +995,18 @@ async function ensureGrounded(name, trusted = false) {
             // the lead) — the old code always made a second network round trip for the
             // full plain-text extract, which on mobile added 100-500ms per new entity
             // and pulled entire articles. The extract fetch remains only as a last resort.
+            const appearanceProse = cleanWikitext(
+                extractSectionRaw(wikitext, ["appearance", "physical appearance", "physical description", "looks"], 4000)
+            );
             let physical = extractInfoboxFields(wikitext, s.fields.split(","));
             if (!physical) {
-                physical = extractFromProse(
-                    extractSection(wikitext, ["appearance", "physical appearance", "physical description", "looks"], 1500)
-                    || extractLead(wikitext, 1200)
-                );
+                physical = extractFromProse(appearanceProse || extractLead(wikitext, 1200));
                 if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
             }
+            // Distinguishing details from the prose ALWAYS append — the infobox has
+            // colors, the prose has the mole, the scar, the build.
+            const notable = extractDistinguishing(appearanceProse);
+            if (notable) physical = physical ? `${physical}; notably: ${notable}` : notable;
 
             // For the other categories, look in BOTH infobox fields and prose sections,
             // using the keyword lists — so family in an infobox "Relatives" field is found.
@@ -1908,6 +1941,7 @@ async function buildDossier(name, wikitext, relRaw) {
     const digest = [
         `PAGE: ${name}`,
         `LEAD: ${extractLead(wikitext, 700)}`,
+        `APPEARANCE: ${sampleSection(cleanWikitext(extractSectionRaw(wikitext, ["appearance", "physical appearance"], 4000)), 1200)}`,
         `PERSONALITY: ${sampleSection(extractSection(wikitext, ["personality"], 6000), 2500)}`,
         `RELATIONSHIPS: ${sampleSection(cleanWikitext(relRaw || extractSectionRaw(wikitext, ["relationships", "relationship"], 6000)), 3000)}`,
         `HISTORY: ${sampleSection(extractSection(wikitext, ["history", "biography", "background", "plot", "synopsis"], 8000), 2500)}`,
