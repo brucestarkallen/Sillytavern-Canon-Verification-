@@ -24,7 +24,7 @@ const pieces = [
     grab("function extractCandidateNames", "// ------"),
     grab("function isMediaTitle", "async function findPageTitle"),
     grab("const PROSE_STOP", "// ------"),
-    grab("function cleanWikitext", "// ------"),
+    grab("/** Drop everything inside", "// ------"),
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
     grab("function clip(", "/**\n * Build the canon note."),
     grab("/**\n * Reasoning models", "/**\n * Arbiter-style"),
@@ -51,7 +51,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
-         parseCast, isDisambiguation, identityLine,
+         parseCast, isDisambiguation, identityLine, isMetaSeriesPage,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -408,6 +408,19 @@ T("cut right after a comma salvages cleanly", api.parseCast('[{"name":"Alpha","n
 T("truncated bare-string array salvages", api.parseCast('["Alpha", "Beta", "Ci').length === 2);
 T("nothing complete → still null", api.parseCast('[{"name": "Al') === null);
 T("full arrays untouched by salvage path", api.parseCast('[{"name":"Alpha","now":"complete"}]')[0].now === "complete");
+
+// ---------------------------------------------------------------- v0.9: big-wiki template dialects
+console.log("[big-wiki dialects]");
+const COTE = `{{Character/Y3\n|LNImageY1 = \n|MAImageY1 = \n|ANImageY1 = Hondo Anime.png\n|name = Ryōtarō Hondō\n|kanji = 本堂遼太郎\n|status = Active\n|status2 = Active\n|Y1occupation = Student\n|Y2occupation = Student\n|haircolor = Blue\n|if = {{#if: {{{x|}}} | a | b}}\n}}\n'''Ryōtarō Hondō''' is a student of Class 1-B.\n== Appearance ==\nBlue hair.`;
+T("triple-brace infobox never leaks into identity", api.identityLine(COTE) === "Ryōtarō Hondō is a student of Class 1-B.");
+T("cleanWikitext drops the whole exotic infobox", !/LNImageY1|MAImage/.test(api.cleanWikitext(COTE)));
+T("identity junk-guard rejects param soup", api.identityLine("{{Broken\n'''X''' |LNImageY1 = |name = X |kanji = 本") === "");
+const cif = api.extractInfoboxFields(COTE, ["status", "occupation"]);
+T("year-prefixed keys normalized + deduped (one occupation, one status)", (cif.match(/occupation:/g) || []).length === 1 && (cif.match(/status:/g) || []).length === 1 && !/Y1|status2/.test(cif));
+T("series' own page detected as meta", api.isMetaSeriesPage("'''Yōkoso Jitsuryoku''' , abbreviated You-Zitsu, is a Japanese light novel series written by Shōgo Kinugasa."));
+T("character page not flagged as meta", !api.isMetaSeriesPage("'''Rose Oriana''' is the second princess of the Oriana Kingdom."));
+const dmeta = api.parseDossier('{"identity":"A 17-year-old student.","facts":["Her birthday is January 1.","No information about her personality is provided in the source material."],"secrets":["The source does not mention any secrets, not specified further."],"voice":[],"dynamics":{}}');
+T("meta-apology facts filtered out", dmeta.facts.length === 1 && dmeta.facts[0] === "Her birthday is January 1." && dmeta.secrets.length === 0);
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

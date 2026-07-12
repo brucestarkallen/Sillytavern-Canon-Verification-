@@ -56,6 +56,30 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.9.0 (big-cast wikis: Classroom of the Elite stress pass)
+
+Proven by `test/proof.js` (155 assertions) + `test/sim.mjs` (23), all passing.
+
+1. **Raw infobox soup in Identity — killed at the root.** Template dialects like
+   `{{Character/Y3 |LNImageY1=…}}` contain `{{{param|}}}` triple-braces that left
+   a stray brace inside, so the old regex loop could never remove the outer box —
+   its naked body flowed into "Identity" as `|LNImageY1 = |…` junk. Templates are
+   now removed by a real depth walker (stray-brace immune; an unclosed template
+   drops to end-of-input — better nothing than raw markup). A junk-guard also
+   rejects any identity that still looks like param soup, and dangling LIST
+   openers (`{{Plainlist|` beheaded by an infobox value terminator) keep their
+   content.
+2. **The series' own page is meta, not canon** — "…is a Japanese light novel
+   series written by…" pages are now detected and skipped like disambiguations,
+   and the parser prompt forbids listing the franchise title.
+3. **OOC ≠ scene**: the parser now ignores names appearing only in author
+   questions, choice menus, and out-of-character notes — the source of phantom
+   "present in scene" characters no one wrote into the prose.
+4. **No meta-apologies as facts**: "No information about her personality is
+   provided in the source material" is filtered at the prompt AND at parse time.
+5. **Year-versioned infobox keys normalized**: `Y1occupation/Y2occupation/
+   status/status2` collapse to one clean `occupation:` / `status:` each.
+
 ## Changelog — v0.8.3 (the model was right — the token ceiling wasn't)
 
 The v0.8.2 toast did its job on the very first try: the model's reply was a

@@ -86,7 +86,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.8.3";
+const CG_VERSION = "0.9.0";
 
 const defaultSettings = {
     enabled: true,
@@ -502,6 +502,18 @@ function extractFromProse(text) {
 // ---------------------------------------------------------------------------
 
 /** Strip common wiki markup down to readable prose. */
+/** Drop everything inside {{ … }} at any nesting, stray braces included. */
+function stripTemplates(text) {
+    let out = "";
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === "{" && text[i + 1] === "{") { depth++; i++; continue; }
+        if (text[i] === "}" && text[i + 1] === "}") { if (depth > 0) { depth--; i++; continue; } i++; continue; }
+        if (depth === 0) out += text[i];
+    }
+    return out;
+}
+
 function cleanWikitext(wt) {
     if (!wt) return "";
     let s = wt;
@@ -514,11 +526,20 @@ function cleanWikitext(wt) {
     s = s.replace(/<br\s*\/?>/gi, ", ");
     // Keep the content of common list templates instead of deleting them.
     s = s.replace(/\{\{\s*(?:plainlist|unbulleted list|ubl|flatlist|hlist|bulleted list|cslist)\s*\|([\s\S]*?)\}\}/gi, "$1");
-    for (let i = 0; i < 4; i++) s = s.replace(/\{\{[^{}]*\}\}/g, ""); // remaining templates (nested)
-    // A multi-line list template whose close was cut off upstream (value ends at the
-    // "\n}}" terminator) leaves a dangling "{{Plainlist|" opener — unwrap it, then
-    // purge any stray brace runs so raw markup can never reach the model.
-    s = s.replace(/\{\{[^{}|\n]*\|/g, "").replace(/[{}]{2,}/g, " ");
+    // An infobox VALUE often ends at the "\n}}" terminator, beheading its list
+    // template's close — the opener then dangles and the depth walker below would
+    // drop the names inside to end-of-input. Strip dangling LIST openers so their
+    // content survives; any other unclosed template is junk and SHOULD drop.
+    s = s.replace(/\{\{\s*(?:plainlist|unbulleted list|ubl|flatlist|hlist|bulleted list|cslist)\s*\|/gi, "");
+    // Remove remaining templates with a real DEPTH WALKER. The old regex loop
+    // could never match an outer template whose body held a stray brace (the
+    // {{{param|}}} triple-brace pattern in big infoboxes like Classroom of the
+    // Elite's {{Character/Y3 …}}) — the naked infobox body then flowed straight
+    // into "Identity" as |LNImageY1 = |… junk. Depth counting is immune: while
+    // inside any {{ … }}, characters are dropped; a template left unclosed drops
+    // to end-of-input (better no text than raw markup).
+    s = stripTemplates(s);
+    s = s.replace(/[{}]{2,}/g, " ");
     return s
         .replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "")
         .replace(/<ref[^>]*\/>/gi, "")
@@ -550,6 +571,11 @@ function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
         const rawKey = m[1].trim();
         const key = rawKey.toLowerCase();
         if (!kw.some(k => key.includes(k))) continue;
+        // Big wikis version their fields per school year / season: Y1occupation,
+        // Y2affiliation, status2… Normalize the LABEL (strip year prefixes and
+        // trailing counters) and dedupe on it — one clean "occupation: Student"
+        // instead of a Y1/Y2/Y3 parade of the same value.
+        const label = rawKey.replace(/^[YySs]\d+\s*/, "").replace(/\d+$/, "").trim() || rawKey;
         // Guard: on inline infoboxes the value regex can over-run into the next
         // "| NextField =" on the same line — cut it off there. A value can also never
         // legitimately contain a section header, so cut at "\n==" too; the hard length
@@ -568,10 +594,10 @@ function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
             }
         }
         const val = cleanWikitext(raw);
-        if (!val || seen.has(key)) continue;
+        if (!val || seen.has(label.toLowerCase())) continue;
         if (/^\d+\s*px$/i.test(val) || /\.(png|jpe?g|gif|webp|svg)$/i.test(val) || /^\d+$/.test(val)) continue;
-        seen.add(key);
-        out.push(`${rawKey}: ${val}`);
+        seen.add(label.toLowerCase());
+        out.push(`${label}: ${val}`);
     }
     return out.join("; ").slice(0, maxLen);
 }
@@ -698,11 +724,24 @@ function extractQuotes(sectionRaw, maxQuotes = 3, maxLen = 420) {
 function identityLine(wikitext) {
     const lead = extractLead(wikitext, 340);
     if (!lead) return "";
+    // If markup still leaked (exotic template dialects), an identity that looks
+    // like "Name/ |Param = |Param2 =" is worse than none — the dossier identity
+    // or the model's own knowledge covers better than raw junk.
+    if (/\|\s*[A-Za-z0-9_]+\s*=/.test(lead) || /^[\w/'-]+\s*\|/.test(lead)) return "";
     if (lead.length <= 300) return lead;
     const cut = lead.slice(0, 300);
     const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "),
                           cut.endsWith(".") ? cut.length - 1 : -1);
     return stop >= 80 ? cut.slice(0, stop + 1) : clip(lead, 300);
+}
+
+/**
+ * The series' own page ("…is a light novel series written by…") is meta, not
+ * canon — injecting it tells the model about the FRANCHISE, not the world.
+ */
+function isMetaSeriesPage(wikitext) {
+    const lead = extractLead(wikitext, 500);
+    return /\bis an?\s+(?:japanese\s+)?(?:light novel|web novel|manga|anime|novel|visual novel|video game|television|tv)\s+(?:series|franchise)\b/i.test(lead);
 }
 
 /** A disambiguation page injected as canon is pure wrong-info — detect and skip. */
@@ -1473,10 +1512,11 @@ function parseDossier(text) {
     const str = (v, n) => (typeof v === "string" ? clip(v.trim(), n) : "");
     const arr = (v, count, n) => (Array.isArray(v) ? v : (typeof v === "string" && v ? [v] : []))
         .map(x => str(x, n)).filter(Boolean).slice(0, count);
+    const META_FACT = /source material|\bno (?:further |other )?(?:information|details?)\b|not (?:specified|provided|mentioned|stated|given)\b/i;
     const d = {
         identity: str(obj.identity, 300),
-        facts: arr(obj.facts, 6, 200),
-        secrets: arr(obj.secrets, 4, 200),
+        facts: arr(obj.facts, 6, 200).filter(f => !META_FACT.test(f)),
+        secrets: arr(obj.secrets, 4, 200).filter(f => !META_FACT.test(f)),
         voice: arr(obj.voice, 3, 160),
         dynamics: {},
     };
@@ -1519,6 +1559,7 @@ async function buildDossier(name, wikitext, relRaw) {
         '"voice": up to 3 short verbatim quotes if any appear; ' +
         '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM}. ' +
         "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
+        "Never write meta-statements about the wiki or missing information ('no information is provided', 'the source does not mention…') — omit absent things silently. " +
         "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
         "Respond with ONLY the JSON object, no other text.";
     const out = await llmCall(systemText, digest, { maxTokens: 1000, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
@@ -1740,7 +1781,10 @@ async function parseSceneCharacters(sceneText) {
         "groups, or notable lore that are central to what is happening. Use your own knowledge " +
         "of the series to tell a real canon entity from ordinary description. Give each entity's " +
         "canonical name (the one the wiki would use). Leave out generic words, everyday objects, " +
-        "and anything invented just for this scene. Respond with ONLY a JSON array, most central " +
+        "and anything invented just for this scene. Never list the series/franchise title itself. "
+        + "Ignore names that appear ONLY in out-of-character notes, author questions to the "
+        + "player, choice menus, or meta commentary — count entities present or referenced "
+        + "inside the fiction. Respond with ONLY a JSON array, most central " +
         "first, or [] if none. Each element is {\"name\": \"Canonical Name\", \"now\": \"under 12 " +
         "words: what about them is in play in THIS scene (a duel, an engagement, a secret at " +
         "risk…)\"} — plain name strings are also accepted. No other text.";
