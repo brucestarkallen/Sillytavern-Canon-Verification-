@@ -56,6 +56,24 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.9.2 (v0.9.1 reverted — force-OUT joins force-IN)
+
+v0.9.1's literal-mention filter was a mistake and is REVERTED: it destroyed the
+parser's core value — catching entities the prose references indirectly ("the
+school" → Advanced Nurturing High School). The parser's judgment stands again;
+stale entries decay via the grace window as before.
+
+The right primitive for wrong entries is now explicit: **"Never inject (this
+chat)"** — a per-chat blocklist mirroring the always-present pins. Names (or
+aliases) on it never appear in the canon note, whatever brought them in:
+parser, sweep, even a conflicting pin (the block is the later, sharper
+instruction). The cache entry survives; only injection is forbidden. One field,
+deterministic, no heuristics — "stop injecting Ryōko" is now one comma-name,
+forever, for that chat.
+
+Proven by `test/proof.js` (160 assertions, incl. a revert-lock: parser-cast
+entities inject WITHOUT a literal mention) + `test/sim.mjs` (23), all passing.
+
 ## Changelog — v0.9.1 (mention precision: the grace window stops carrying stragglers)
 
 The cast persists between gated parses (grace window) so pronoun-only scenes

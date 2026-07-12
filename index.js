@@ -86,7 +86,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.9.1";
+const CG_VERSION = "0.9.2";
 
 const defaultSettings = {
     enabled: true,
@@ -1065,6 +1065,12 @@ function chatArc() {
 function chatPin() {
     try { return getContext().chatMetadata?.canon_grounding_pin || ""; } catch (e) { return ""; }
 }
+function chatBlockNames() {
+    try {
+        const raw = getContext().chatMetadata?.canon_grounding_block || "";
+        return String(raw).split(",").map(n => n.trim()).filter(Boolean);
+    } catch (e) { return []; }
+}
 function chatPinNames() {
     try {
         const raw = getContext().chatMetadata?.canon_grounding_pin_names || "";
@@ -1278,6 +1284,16 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const msgs = sceneMsgs || [];
     const lowerMsgs = msgs.map(m => m.toLowerCase());
     const pinNames = (extras.pinNames || []).filter(Boolean);
+    // Force-OUT by decree: any entity whose name/alias matches the blocklist never
+    // injects — whatever brought it in (parser, sweep, even a conflicting pin; the
+    // block is the later, sharper instruction). The cache keeps the entry; only
+    // injection is forbidden.
+    const blockSet = new Set((extras.blockNames || []).map(n => String(n).trim().toLowerCase()).filter(Boolean));
+    const isBlocked = (entry, matched) => {
+        if (!blockSet.size) return false;
+        const names = [entry.name, matched, ...(entry.aliases || [])].filter(Boolean).map(n => String(n).toLowerCase());
+        return names.some(n => blockSet.has(n));
+    };
     const labels = {
         physical: "Appearance",
         relationship: "Relationships",
@@ -1305,30 +1321,18 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         }
     }
     if (castNames && castNames.length) {
-        // Cast-driven: inject the entities identified as present, in centrality order —
-        // but with MENTION PRECISION. The cast persists between gated parses (grace
-        // window) so pronoun-only scenes keep their people; the cost was stale
-        // stragglers: an entity parsed turns ago, never named anywhere in the current
-        // window, still injecting. Rule: if the window names ANY cast member, every
-        // injected cast member must be named somewhere in it. If the window names
-        // no one (pure pronoun continuation), the whole cast rides — that ambiguity
-        // is exactly what the grace window is for.
-        const castHits = [];
+        // Cast-driven: inject the entities identified as present, in centrality order.
+        // The parser's judgment STANDS — it exists to catch entities the prose
+        // references indirectly ("the school" → Advanced Nurturing High School), so
+        // no literal-mention filter is applied here (v0.9.1 tried; it destroyed
+        // exactly that value). Wrong entries are removed by decree via the
+        // "Never inject" blocklist, not by string heuristics.
         for (const cn of castNames) {
             const found = cacheEntryFor(cn.toLowerCase());
-            if (!found || usedKeysGlobal.has(found.key)) continue;
-            const names = [found.entry.name, cn, ...(found.entry.aliases || [])]
-                .filter(Boolean).map(n => String(n).toLowerCase());
-            let hit = false;
-            for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.some(n => mentioned(n, lowerMsgs[i]));
-            castHits.push({ found, cn, hit });
-        }
-        const anyMentioned = castHits.some(c => c.hit);
-        for (const { found, cn, hit } of castHits) {
-            if (anyMentioned && !hit) continue;   // named-scene window, this one absent → stale
-            if (usedKeysGlobal.has(found.key)) continue;
-            usedKeysGlobal.add(found.key);
-            present.push({ entry: found.entry, matchedName: cn });
+            if (found && !usedKeysGlobal.has(found.key)) {
+                usedKeysGlobal.add(found.key);
+                present.push({ entry: found.entry, matchedName: cn });
+            }
         }
         // SMART SWEEP: the parser's cast is pronoun-proof but gated — it can lag the
         // story (or be down entirely). Any entity we ALREADY KNOW (cached) that is
@@ -1379,6 +1383,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     let total = 0;
     for (const { entry, matchedName, pinned, swept } of present) {
         if (blocks.length >= s.maxCharacters) break;
+        if (isBlocked(entry, matchedName)) continue;
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
         const lines = [];
@@ -1972,6 +1977,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // recomputed sceneMessages a second time for nothing).
         const note = relevantCanonNote(scene, cast, chatArc(), {
             pinNames,
+            blockNames: chatBlockNames(),
             chatPin: chatPin(),
             globalPin: settings().pinnedGlobal,
         });
@@ -2107,6 +2113,9 @@ async function addSettingsUI() {
                 <label>Always-present characters (this chat)</label>
                 <input id="cg_pin_names" class="text_pole" type="text" placeholder="e.g. Rose Oriana, Alpha">
                 <small class="cg-hint">Comma-separated names, grounded and injected EVERY turn regardless of who the parser thinks is on screen. The hammer for "the AI doesn't know X".</small>
+                <label>Never inject (this chat)</label>
+                <input id="cg_block_names" class="text_pole" type="text" placeholder="e.g. Ryōko Nishikawa">
+                <small class="cg-hint">Comma-separated names (aliases count) that must NEVER appear in the canon note — whatever the parser, sweep, or even a pin says. The hammer for "stop injecting X". The cache entry stays; only injection is forbidden.</small>
                 </div>
                 </details>
                 <details class="cg-group">
@@ -2293,11 +2302,13 @@ async function addSettingsUI() {
     const renderChatPins = () => {
         $("#cg_pin_chat").val(chatPin());
         try { $("#cg_pin_names").val(getContext().chatMetadata?.canon_grounding_pin_names || ""); } catch (e) {}
+        try { $("#cg_block_names").val(getContext().chatMetadata?.canon_grounding_block || ""); } catch (e) {}
     };
     renderChatPins();
     renderChatScoped = () => { renderChatPins(); };
     $("#cg_pin_chat").on("input", function () { setChatPin("canon_grounding_pin", $(this).val()); });
     $("#cg_pin_names").on("input", function () { setChatPin("canon_grounding_pin_names", $(this).val()); });
+    $("#cg_block_names").on("input", function () { setChatPin("canon_grounding_block", $(this).val()); });
     // Story position (arc/chapter grounding).
     const renderArc = () => {
         const a = chatArc();
@@ -2395,7 +2406,8 @@ async function addSettingsUI() {
             const scene = sceneMessages(ctx, s.contextWindow);
             const cast = pruneStaleCast((ctx.chat || []).filter(m => !m.is_system).length, scene);
             const note = relevantCanonNote(scene, cast, chatArc(), {
-                pinNames: chatPinNames(), chatPin: chatPin(), globalPin: s.pinnedGlobal,
+                pinNames: chatPinNames(), blockNames: chatBlockNames(),
+                chatPin: chatPin(), globalPin: s.pinnedGlobal,
             });
             lastInjection = note;
             lastInjectionAt = Date.now();

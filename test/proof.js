@@ -422,22 +422,24 @@ T("character page not flagged as meta", !api.isMetaSeriesPage("'''Rose Oriana'''
 const dmeta = api.parseDossier('{"identity":"A 17-year-old student.","facts":["Her birthday is January 1.","No information about her personality is provided in the source material."],"secrets":["The source does not mention any secrets, not specified further."],"voice":[],"dynamics":{}}');
 T("meta-apology facts filtered out", dmeta.facts.length === 1 && dmeta.facts[0] === "Her birthday is January 1." && dmeta.secrets.length === 0);
 
-// ---------------------------------------------------------------- v0.9.1: mention precision
-console.log("[mention precision]");
+// ---------------------------------------------------------------- v0.9.2: parser judgment + blocklist
+console.log("[blocklist / parser judgment]");
 sandbox.__settings.cache = {
     "nanase": { name: "Tsubasa Nanase", found: true, wiki: "w", aliases: ["Nanase"],
                 sections: { identity: "Tsubasa Nanase is a first-year student." }, rel: {} },
+    "ans": { name: "Advanced Nurturing High School", found: true, wiki: "w", aliases: ["ANHS"],
+                sections: { identity: "Advanced Nurturing High School is a government-established institution." }, rel: {} },
     "nishikawa": { name: "Ryōko Nishikawa", found: true, wiki: "w", aliases: ["Nishikawa"],
                 sections: { identity: "Ryōko Nishikawa is a student." }, rel: {} },
 };
 api.setFocus({});
-const mp1 = api.relevantCanonNote(["nanase bowed politely and left the room"], ["Tsubasa Nanase", "Ryōko Nishikawa"]);
-T("named-scene window: unmentioned cast member excluded", /Tsubasa Nanase:/.test(mp1) && !/Nishikawa:/.test(mp1));
-const mp2 = api.relevantCanonNote(["she bowed politely and left without a word"], ["Tsubasa Nanase", "Ryōko Nishikawa"]);
-T("pronoun-only window: whole cast rides the grace", /Tsubasa Nanase:/.test(mp2) && /Nishikawa:/.test(mp2));
-const mp3 = api.relevantCanonNote(["nanase bowed"], ["Tsubasa Nanase"], null, { pinNames: ["Ryōko Nishikawa"] });
-T("pinned entity exempt from mention precision", /Nishikawa:/.test(mp3));
-T("alias mention counts as presence", /Nishikawa:/.test(api.relevantCanonNote(["nishikawa laughed at the joke"], ["Tsubasa Nanase", "Ryōko Nishikawa"])));
+const pj = api.relevantCanonNote(["nanase bowed as they entered the school grounds"], ["Tsubasa Nanase", "Advanced Nurturing High School"]);
+T("REVERT LOCK: parser-cast entity injects without a literal mention ('the school')", /Advanced Nurturing High School:/.test(pj));
+const bl = api.relevantCanonNote(["nanase and nishikawa laughed together"], ["Tsubasa Nanase", "Ryōko Nishikawa"], null, { blockNames: ["Ryōko Nishikawa"] });
+T("blocked entity never injects even when cast AND literally mentioned", /Tsubasa Nanase:/.test(bl) && !/Nishikawa:/.test(bl));
+T("block works by alias too", !/Nishikawa:/.test(api.relevantCanonNote(["nishikawa waved"], ["Ryōko Nishikawa"], null, { blockNames: ["nishikawa"] })));
+T("block outranks a conflicting pin", !/Nishikawa:/.test(api.relevantCanonNote([], [], null, { pinNames: ["Ryōko Nishikawa"], blockNames: ["Ryōko Nishikawa"] })));
+T("block does not touch other sweep entities", /Nanase:/.test(api.relevantCanonNote(["nanase smiled"], [], null, { blockNames: ["Ryōko Nishikawa"] })) || /Tsubasa Nanase:/.test(api.relevantCanonNote(["nanase smiled"], [], null, { blockNames: ["Ryōko Nishikawa"] })));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
