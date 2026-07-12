@@ -56,9 +56,10 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
+         setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -662,6 +663,20 @@ T("multi-word evidence never snaps", api.resolveAgainstKnown([{ name: "Miyake Ka
 T("coverage: hybrid query rejected by wrong page", api.titleCoversQuery("Miyake Kakeru", "Akito Miyake", []) === false);
 T("coverage: expansion allowed (Rose → Rose Oriana)", api.titleCoversQuery("Rose", "Rose Oriana", []) === true);
 T("coverage: nickname passes via alias (Alya)", api.titleCoversQuery("Alya", "Alisa Mikhailovna Kujou", ["Alya"]) === true);
+
+// ---------------------------------------------------------------- v0.23: first-meeting wait
+console.log("[first-meeting wait]");
+sandbox.__settings.cache = { "rose oriana": { name: "Rose Oriana", found: true, wiki: "w", aliases: ["Rose"], kind: "character", sections: { identity: "x" }, rel: {} } };
+sandbox.__settings.lowercaseNames = true;
+api.setParsedWords([]);
+T("uncached capitalized name in user msg → wait", api.needsFirstMeetWait("You meet Alexia Midgar at the gate") === true);
+T("cached name → no wait", api.needsFirstMeetWait("You greet Rose Oriana warmly") === false);
+T("novel lowercase pair → wait", api.needsFirstMeetWait("you meet alexia midgar quietly") === true);
+api.setParsedWords(["alexia", "midgar"]);
+T("learned words never re-trigger (converges)", api.needsFirstMeetWait("you meet alexia midgar quietly", ["earlier you meet people quietly all the time"]) === false);
+T("conversation vocabulary counts as known (verbs never gate)", api.needsFirstMeetWait("you embrace rose oriana warmly", ["you embrace people warmly often"]) === false);
+api.setParsedWords([]);
+T("empty message → no wait", api.needsFirstMeetWait("") === false);
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

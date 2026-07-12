@@ -56,6 +56,26 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.23.0 (⏱🤝 first meetings wait — introductions are never wrong)
+
+Proven by `test/proof.js` (228 assertions) + `test/sim.mjs` (23), all passing.
+
+v0.20's immersion ceiling had one blind spot: "you meet rose oriana" opened the
+gate, discovery needed ~3–5s, the 2s ceiling fired, and the introduction went
+out UNGROUNDED — black hair invented, canon arriving one turn too late. Stale-
+for-one-turn is fine for returning cast; for someone YOU just summoned there is
+no stale state — only nothing.
+
+1. **First-meeting wait.** When YOUR message references an entity with zero
+   cache presence, the ceiling extends (default 12s, its own setting) so the
+   canon is present in the very first reply about them. A wrong-haired
+   introduction costs more immersion than a short pause.
+2. **Precise detection, conversation-aware.** Partial references to known
+   people ("Oriana" when Rose Oriana is cached) never wait; alias tokens
+   count; ordinary words already used in the conversation ("you meet …")
+   never gate; learned words converge — each new name waits exactly once.
+3. Routine turns keep the tight ceiling; nothing else changes.
+
 ## Changelog — v0.22.0 (short names resolve to YOUR canon, not a guess)
 
 Proven by `test/proof.js` (222 assertions) + `test/sim.mjs` (23), all passing.

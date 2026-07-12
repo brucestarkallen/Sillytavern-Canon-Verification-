@@ -64,7 +64,7 @@ extension_settings.canon_grounding = {
     personalityKeywords: "personality", abilitiesKeywords: "power", aliasKeywords: "alias",
     physical: true, personality: false, relationship: false, biography: false, abilities: false,
     contextWindow: 10, maxCharacters: 8, maxCharsPerChar: 400, maxTotalChars: 3000,
-    debug: false, llmParser: true, llmProfileId: "p1", parserEveryTurn: false, llmDossier: false, castAuditor: false, lowercaseNames: false, maxBlockMs: 30000,
+    debug: false, llmParser: true, llmProfileId: "p1", parserEveryTurn: false, llmDossier: false, castAuditor: false, lowercaseNames: false, maxBlockMs: 30000, firstMeetWaitMs: 30000,
     useLedger: false, groundFromReplies: true, cache: {}, migrated_v2: true,
 };
 await import(pathToFileURL(path.join(extDir, "index.js")).href);

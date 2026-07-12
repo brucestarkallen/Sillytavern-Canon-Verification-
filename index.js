@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.22.0";
+const CG_VERSION = "0.23.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -227,6 +227,11 @@ const defaultSettings = {
     // Discovery that misses the window keeps running in the background and lands
     // next turn — stale for one turn beats a frozen storyteller every turn.
     maxBlockMs: 2000,
+    // ⏱🤝 FIRST-MEETING WAIT: when YOUR message names someone with zero cache
+    // presence, there is no "last known state" to inject — blocking briefly is
+    // correct, because a wrong-haired introduction costs more immersion than a
+    // short pause. Routine turns still use maxBlockMs.
+    firstMeetWaitMs: 12000,
     // The Cast Auditor: a dedicated referee call that judges weak evidence — does
     // this quote actually REFER to this entity? Fires only when weak items exist.
     castAuditor: true,
@@ -2333,6 +2338,50 @@ function hasNovelLowercasePair(text) {
     return false;
 }
 
+/**
+ * FIRST-MEETING DETECTION: does the user's CURRENT message reference an entity
+ * with zero cache presence? If yes, the immersion ceiling extends — for a brand
+ * -new character there is nothing stale to inject, and their canon must be in
+ * the very first reply about them. Converges: once parsed/grounded (or learned
+ * as a non-name), the same words never trigger the wait again.
+ */
+function tokenCoveredByCache(tok) {
+    if (cacheEntryFor(tok)) return true;
+    for (const e of Object.values(cache())) {
+        if (!e || !e.found || !e.name) continue;
+        for (const n of [e.name, ...(e.aliases || [])]) {
+            if (String(n).toLowerCase().split(/\s+/).includes(tok)) return true;
+        }
+    }
+    return false;
+}
+function needsFirstMeetWait(lastUserMsg, priorMsgs) {
+    if (!lastUserMsg) return false;
+    const prior = new Set();
+    for (const m of priorMsgs || []) {
+        for (const t of String(m).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+            if (t.length >= 3) prior.add(t);
+        }
+    }
+    for (const n of extractCandidateNames(lastUserMsg)) {
+        const lc = n.toLowerCase();
+        if (cacheEntryFor(lc)) continue;
+        // "Oriana" alone is covered by cached "Rose Oriana" — partial references
+        // to known people are NOT first meetings.
+        if (lc.split(/\s+/).every(t => parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t))) continue;
+        return true;
+    }
+    if (settings().lowercaseNames) {
+        const toks = String(lastUserMsg).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
+        const known = (t) => NOISE_WORDS.has(t) || STOPWORDS.has(t[0].toUpperCase() + t.slice(1))
+            || parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t);
+        for (let i = 0; i < toks.length - 1; i++) {
+            if (!known(toks[i]) && !known(toks[i + 1])) return true;
+        }
+    }
+    return false;
+}
+
 async function parseSceneCharacters(sceneText) {
     const c = getContext();
     const s = settings();
@@ -2567,7 +2616,13 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 
         })();
         heavy.catch(e => debug(`background canon task failed: ${e.message}`));
-        const blockMs = Math.max(300, Number(s.maxBlockMs) || 2000);
+        let blockMs = Math.max(300, Number(s.maxBlockMs) || 2000);
+        if (needsFirstMeetWait(lastUserMsg, scene.slice(0, -1))) {
+            // You just summoned someone new: their canon belongs in THIS reply.
+            const meet = Math.max(blockMs, Number(s.firstMeetWaitMs) || 12000);
+            debug(`⏱🤝 first meeting in your message — extending wait ${blockMs}ms → ${meet}ms so the introduction is grounded`);
+            blockMs = meet;
+        }
         const fresh = await Promise.race([
             heavy.then(() => true),
             new Promise(r => setTimeout(() => r(false), blockMs)),
@@ -2838,6 +2893,9 @@ async function addSettingsUI() {
                 <label>Max turn wait (seconds)</label>
                 <input id="cg_blockwait" class="text_pole" type="number" min="0.5" max="60" step="0.5">
                 <small class="cg-hint">⏱ The immersion ceiling: your storyteller NEVER waits longer than this for canon. Discovery that misses the window keeps working in the background and lands next turn — stale for one turn beats a frozen reply. 1–2s recommended.</small>
+                <label>First-introduction wait (seconds)</label>
+                <input id="cg_meetwait" class="text_pole" type="number" min="2" max="60" step="1">
+                <small class="cg-hint">⏱🤝 When YOUR message names someone brand-new (nothing cached), the extension may wait up to this long so their canon is present in the very first reply about them — a wrong-haired introduction is worse than a short pause. Routine turns still use the ceiling above. Converges: each new name waits once.</small>
                 <label class="checkbox_label">
                     <input id="cg_llm_every" type="checkbox">
                     <span>Run the parser every turn</span>
@@ -3124,6 +3182,10 @@ async function addSettingsUI() {
     $("#cg_blockwait").val((s.maxBlockMs || 2000) / 1000).on("input", function () {
         const v = parseFloat($(this).val());
         if (!isNaN(v) && v >= 0.3) { s.maxBlockMs = Math.round(v * 1000); saveSettingsDebounced(); }
+    });
+    $("#cg_meetwait").val((s.firstMeetWaitMs || 12000) / 1000).on("input", function () {
+        const v = parseFloat($(this).val());
+        if (!isNaN(v) && v >= 2) { s.firstMeetWaitMs = Math.round(v * 1000); saveSettingsDebounced(); }
     });
     $("#cg_selftest").on("click", async function () {
         toastr?.info?.("Parser self-test running…");
