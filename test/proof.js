@@ -30,7 +30,7 @@ const pieces = [
     grab("function clip(", "/**\n * Build the canon note."),
     grab("/**\n * Reasoning models", "/**\n * Arbiter-style"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
-    grab("/**\n * Distinguishing physical details", "function extractLead"),
+    grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
     grab("function apiBase", "async function"),
     grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
