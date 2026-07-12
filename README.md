@@ -56,6 +56,22 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.8.3 (the model was right — the token ceiling wasn't)
+
+The v0.8.2 toast did its job on the very first try: the model's reply was a
+PERFECT JSON array — cut off mid-string by the extension's own `maxTokens: 300`
+cap, which stopped fitting once every element carried a "now" phrase. The
+extractor then (correctly) found no complete array and reported a shape error.
+Not a model problem, not a reasoning problem — a ceiling problem.
+
+1. Cast parse ceiling 300 → 800 tokens; dossier 600 → 1000.
+2. **Truncation salvage**: a reply cut by ANY token limit now walks back to the
+   last complete element, closes the array, and keeps everything that survived —
+   partial cast beats no cast, and surviving elements are byte-exact as the
+   model wrote them. Locked by 6 assertions.
+
+Proven by `test/proof.js` (148 assertions) + `test/sim.mjs` (23), all passing.
+
 ## Changelog — v0.8.2 (reasoning models: the parser was never broken — the extractor was)
 
 Root cause of "Parser: failed" with a green self-test: `glm-5.2-fast` is a

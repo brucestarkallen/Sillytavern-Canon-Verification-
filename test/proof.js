@@ -398,6 +398,17 @@ const DTHOUGHT = "<think>The page mentions {her role} and {secrets}.</think>```j
 T("dossier survives think-block braces", api.parseDossier(DTHOUGHT).identity === "First of the Seven Shadows.");
 T("brackets inside JSON strings don't break balance", api.parseCast('[{"name":"Alpha","now":"quoting [redacted] orders"}]')[0].now === "quoting [redacted] orders");
 
+// ---------------------------------------------------------------- v0.8.3: truncation salvage
+console.log("[truncation salvage]");
+const TRUNC = '```json\n[{"name": "Cid Kagenou", "now": "Confronted by Alpha about woman in his"}, {"name": "Alpha", "now": "demanding answers"}, {"name": "Beta", "now": "watching from the doo';
+const sal = api.parseCast(TRUNC);
+T("token-ceiling cutoff keeps every complete element", sal.length === 2 && sal[0].name === "Cid Kagenou" && sal[1].name === "Alpha");
+T("complete element data intact after salvage", sal[0].now === "Confronted by Alpha about woman in his" && sal[1].now === "demanding answers");
+T("cut right after a comma salvages cleanly", api.parseCast('[{"name":"Alpha","now":"x"},').length === 1);
+T("truncated bare-string array salvages", api.parseCast('["Alpha", "Beta", "Ci').length === 2);
+T("nothing complete → still null", api.parseCast('[{"name": "Al') === null);
+T("full arrays untouched by salvage path", api.parseCast('[{"name":"Alpha","now":"complete"}]')[0].now === "complete");
+
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

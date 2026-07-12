@@ -86,7 +86,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.8.2";
+const CG_VERSION = "0.8.3";
 
 const defaultSettings = {
     enabled: true,
@@ -1521,7 +1521,7 @@ async function buildDossier(name, wikitext, relRaw) {
         "Use ONLY facts stated in the provided material — if it is not in the text, it does not go in the dossier; never fill gaps from memory. " +
         "Prefer concrete, unusual, load-bearing detail over generic praise. Empty string/array/object for anything absent. " +
         "Respond with ONLY the JSON object, no other text.";
-    const out = await llmCall(systemText, digest, { maxTokens: 600, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
+    const out = await llmCall(systemText, digest, { maxTokens: 1000, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
     return parseDossier(out);
 }
 
@@ -1578,6 +1578,31 @@ function balancedSlices(text, open, close) {
     return out;
 }
 
+/**
+ * A reply cut off by a token ceiling has a perfect array that simply never
+ * closes. Walk back to the last COMPLETE element boundary, close the array,
+ * and keep everything that survived — partial cast beats no cast, and the
+ * elements that made it through are exactly as the model wrote them.
+ */
+function salvageTruncatedArray(text) {
+    const t = stripReasoning(String(text).replace(/```(?:json)?/gi, ""));
+    const start = t.indexOf("[");
+    if (start === -1) return null;
+    const body = t.slice(start);
+    let end = body.length;
+    while (end > 1) {
+        const cut = body.slice(0, end).replace(/,\s*$/, "");
+        const boundary = Math.max(cut.lastIndexOf("}"), cut.lastIndexOf('"'));
+        if (boundary <= 0) return null;
+        try {
+            const v = JSON.parse(cut.slice(0, boundary + 1) + "]");
+            if (Array.isArray(v) && v.length) return v;
+        } catch (e) { /* trim further back */ }
+        end = boundary;
+    }
+    return null;
+}
+
 /** Try candidates LAST-first (final answer sits at the end of the output). */
 function parseJsonCandidates(text, open, close, want) {
     const t = stripReasoning(String(text).replace(/```(?:json)?/gi, ""));
@@ -1600,7 +1625,7 @@ function parseJsonCandidates(text, open, close, want) {
  */
 function parseCast(text) {
     if (!text) return null;
-    const arr = parseJsonCandidates(text, "[", "]", Array.isArray);
+    const arr = parseJsonCandidates(text, "[", "]", Array.isArray) || salvageTruncatedArray(text);
     if (!arr) return null;
     const out = [];
     const seen = new Set();
@@ -1720,7 +1745,7 @@ async function parseSceneCharacters(sceneText) {
         "words: what about them is in play in THIS scene (a duel, an engagement, a secret at " +
         "risk…)\"} — plain name strings are also accepted. No other text.";
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
-    const out = await llmCall(systemText, userText, { maxTokens: 300 });
+    const out = await llmCall(systemText, userText, { maxTokens: 800 });
     if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
     const cast = parseCast(out);  // [] only when the model explicitly answered []
     if (cast === null) {
