@@ -635,6 +635,9 @@ T("cap at 2 sentences", api.extractDistinguishing("A scar marks his brow, old an
 T("plain description yields nothing", api.extractDistinguishing("He has brown hair and wears the school uniform neatly.") === "");
 T("no marker sentence over 180 chars", api.extractDistinguishing("A scar " + "x".repeat(200) + ".") === "");
 
+// ---------------------------------------------------------------- v0.21.1: attribute completion
+console.log("[attribute completion]");
+T("prose extractor finds hair phrase (sanity)", /hair: (long )?dark/i.test(api.extractFromProse("Hiyori has long dark hair and violet eyes.")) || /dark hair/i.test(api.extractFromProse("Hiyori has long dark hair and violet eyes.")));
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

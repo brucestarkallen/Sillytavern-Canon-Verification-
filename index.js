@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.21.0";
+const CG_VERSION = "0.21.1";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1002,6 +1002,16 @@ async function ensureGrounded(name, trusted = false) {
             if (!physical) {
                 physical = extractFromProse(appearanceProse || extractLead(wikitext, 1200));
                 if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
+            }
+            // CORE-ATTRIBUTE COMPLETION — dialect-proof: whatever exotic template or
+            // field layout the infobox used, if the page's Appearance prose mentions
+            // hair or eyes and the extracted line doesn't carry that attribute, mine
+            // the prose for it. Hair can never again vanish to an infobox quirk.
+            const proseBits = extractFromProse(appearanceProse) || "";
+            for (const attr of ["hair", "eye"]) {
+                if (physical && new RegExp(attr, "i").test(physical)) continue;
+                const bit = proseBits.split(/;\s*/).find(p => new RegExp(attr, "i").test(p));
+                if (bit) physical = physical ? `${physical}; ${bit.trim()}` : bit.trim();
             }
             // Distinguishing details from the prose ALWAYS append — the infobox has
             // colors, the prose has the mole, the scar, the build.

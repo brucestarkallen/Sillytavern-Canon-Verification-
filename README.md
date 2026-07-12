@@ -56,6 +56,18 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.21.1 (hair, guaranteed: core-attribute completion)
+
+Proven by `test/proof.js` (214 assertions) + `test/sim.mjs` (23), all passing.
+
+Hair was still vanishing on some wikis after the {{Color}} fix — some infobox
+dialect this side can't inspect eats it. So the guarantee moves up a level:
+**core-attribute completion**. After infobox extraction, if the Appearance line
+lacks "hair" or "eye" but the page's Appearance PROSE mentions it, the prose
+phrase is mined and appended. Whatever exotic template, field name, or layout
+the infobox uses, hair can no longer go missing as long as the page describes
+it anywhere — dialect-proof by construction, not by whack-a-mole.
+
 ## Changelog — v0.21.0 (the whole body: builds, marks, and Gamma's mole)
 
 Proven by `test/proof.js` (213 assertions) + `test/sim.mjs` (23), all passing.
