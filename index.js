@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.17.0";
+const CG_VERSION = "0.18.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -152,7 +152,7 @@ const DEFAULT_PROMPT_DOSSIER =
         "Extract only what matters for portraying this character accurately in scenes. " +
         "Return JSON with exactly these keys: " +
         '{"identity": one sentence — who they are (title, role, affiliation); ' +
-        '"facts": up to 6 short story-relevant facts a narrator must not get wrong; ' +
+        '"facts": up to 8 short story-relevant facts a narrator must not get wrong; ' +
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
         '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM; ' +
@@ -1688,7 +1688,18 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             const nf = focusLine(); if (nf) lines.push(nf);
             if (s.physical && entry.sections.physical) lines.push(`  - Appearance: ${entry.sections.physical}`);
             const idLc = (identity || "").toLowerCase();
-            const facts = d.facts.filter(f => !idLc.includes(f.toLowerCase().replace(/[.?!]$/, "")));
+            const pool = d.facts.filter(f => !idLc.includes(f.toLowerCase().replace(/[.?!]$/, "")));
+            // Scene-conditional selection, same trick as Now/Context: score each fact
+            // against what is IN PLAY; matched facts surface first (up to 5), and an
+            // idle scene shows only the 3 anchors — curation once, selection free.
+            const inPlayF = ((castFocus[nameKey] || "") + " " + lowerMsgs.slice(-2).join(" ")).toLowerCase();
+            const scoredF = pool.map(f => ({
+                f,
+                score: f.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 4)
+                        .reduce((a, t) => a + (inPlayF.includes(t) ? 1 : 0), 0),
+            }));
+            const hot = scoredF.filter(x => x.score > 0).sort((a, b) => b.score - a.score).map(x => x.f);
+            const facts = hot.length ? [...hot, ...pool.filter(f => !hot.includes(f))].slice(0, 5) : pool.slice(0, 3);
             if (facts.length) lines.push(`  - Facts: ${facts.join("; ")}`);
             lines.push(...dynLines());
             const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
@@ -1808,7 +1819,7 @@ function parseDossier(text) {
     const META_FACT = /source material|\bno (?:further |other )?(?:information|details?)\b|not (?:specified|provided|mentioned|stated|given)\b/i;
     const d = {
         identity: str(obj.identity, 300),
-        facts: arr(obj.facts, 6, 200).filter(f => !META_FACT.test(f)),
+        facts: arr(obj.facts, 8, 200).filter(f => !META_FACT.test(f)),
         secrets: arr(obj.secrets, 4, 200).filter(f => !META_FACT.test(f)),
         voice: arr(obj.voice, 3, 160),
         related: [],
@@ -1842,15 +1853,29 @@ function parseDossier(text) {
  * upgrades the entry for every turn after. Failure leaves regex sections in charge
  * and retries after the negative TTL.
  */
+/**
+ * Long wiki sections are CHRONOLOGICAL — the character's late-story development
+ * lives at the BOTTOM, which a naive top-slice amputates before the curator ever
+ * reads it. Sample head + tail with a seam so both ends inform the dossier.
+ */
+function sampleSection(text, cap) {
+    const t = String(text || "");
+    if (t.length <= cap) return t;
+    const head = Math.floor(cap * 0.6), tail = cap - head;
+    return t.slice(0, head) + " […] " + t.slice(t.length - tail);
+}
+
 async function buildDossier(name, wikitext, relRaw) {
+    // Once-per-entity background work: generous caps + head/tail sampling — the
+    // curator should read the WHOLE character, not the top of each section.
     const digest = [
         `PAGE: ${name}`,
         `LEAD: ${extractLead(wikitext, 700)}`,
-        `PERSONALITY: ${extractSection(wikitext, ["personality"], 900)}`,
-        `RELATIONSHIPS: ${clip(cleanWikitext(relRaw || extractSectionRaw(wikitext, ["relationships", "relationship"], 3500)), 1600)}`,
-        `HISTORY: ${extractSection(wikitext, ["history", "biography", "background", "plot", "synopsis"], 1200)}`,
-        `TRIVIA: ${extractTrivia(wikitext, ["trivia"], 8, 900)}`,
-        `QUOTES: ${extractQuotes(extractSectionRaw(wikitext, ["quotes", "notable quotes"], 4000), 5, 700)}`,
+        `PERSONALITY: ${sampleSection(extractSection(wikitext, ["personality"], 6000), 2500)}`,
+        `RELATIONSHIPS: ${sampleSection(cleanWikitext(relRaw || extractSectionRaw(wikitext, ["relationships", "relationship"], 6000)), 3000)}`,
+        `HISTORY: ${sampleSection(extractSection(wikitext, ["history", "biography", "background", "plot", "synopsis"], 8000), 2500)}`,
+        `TRIVIA: ${extractTrivia(wikitext, ["trivia"], 10, 1200)}`,
+        `QUOTES: ${extractQuotes(extractSectionRaw(wikitext, ["quotes", "notable quotes"], 5000), 6, 800)}`,
     ].filter(l => !/^[A-Z]+: ?$/.test(l)).join("\n");
     const systemText = (settings().promptDossier || "").trim() || DEFAULT_PROMPT_DOSSIER;
     const out = await llmCall(systemText, digest, { maxTokens: 1000, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });

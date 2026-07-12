@@ -569,6 +569,23 @@ console.log("[autonomy]");
 T("event names detected (arc/festival/exam/war)", ["Bushin Festival", "Lawless City Arc", "Sports Festival", "Special Exam", "Great War"].every(n => /\b(arc|saga|festival|exam|examination|tournament|war|battle|incident|trial|ceremony|raid|expedition|invasion|uprising|rebellion|massacre|banquet|gala|election)\b/i.test(n)));
 T("plain places and people are NOT events", !["Advanced Nurturing High School", "Rose Oriana", "Oriana Kingdom", "Midgar Academy"].some(n => /\b(arc|saga|festival|exam|examination|tournament|war|battle|incident|trial|ceremony|raid|expedition|invasion|uprising|rebellion|massacre|banquet|gala|election)\b/i.test(n)));
 
+// ---------------------------------------------------------------- v0.18: curated selection
+console.log("[curated selection]");
+sandbox.__settings.cache = {
+    "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: [], kind: "character",
+              sections: { identity: "Rose Oriana is the second princess." }, rel: {},
+              dossier: { identity: "Second princess of the Oriana Kingdom.",
+                         facts: ["Her birthday is in spring.", "She wields the Oriana sword style in duels.",
+                                 "She once trained under the royal instructor.", "Her favorite tea is chamomile."],
+                         secrets: [], voice: [], related: [], dynamics: {} } },
+};
+api.setEvidence({});
+api.setFocus({ "rose oriana": "locked in a sword duel" });
+const hotf = api.relevantCanonNote(["their duel began in earnest"], ["Rose Oriana"]);
+T("duel scene surfaces the sword fact FIRST", /- Facts: She wields the Oriana sword style in duels\./.test(hotf));
+api.setFocus({});
+const coldf = api.relevantCanonNote(["she hummed a tune"], ["Rose Oriana"]);
+T("idle scene shows only 3 anchor facts", ((coldf.match(/- Facts: [^\n]*/) || [""])[0].match(/;/g) || []).length === 2 && !/chamomile/.test(coldf));
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

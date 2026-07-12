@@ -56,6 +56,29 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.18.0 (curation once, selection free — no more top-of-the-wiki bias)
+
+Proven by `test/proof.js` (199 assertions) + `test/sim.mjs` (23), all passing.
+
+The verbatim-from-the-top problem, root-caused twice over:
+
+1. **The curator now reads the WHOLE character.** Wiki sections are
+   chronological — late-story development lives at the BOTTOM, which the old
+   top-slice amputated before the dossier model ever read it. Digest sections
+   are now head+tail sampled (60/40 with a seam) under much larger caps
+   (personality 900→2500, history 1200→2500, relationships →3000): once-per-
+   entity background work, so generosity costs nothing per turn.
+2. **Facts are scene-selected, not dumped.** The dossier stores up to 8 fact
+   atoms; each turn they're scored against what is IN PLAY (Now-focus +
+   freshest scene text) — the duel surfaces the sword fact first (up to 5),
+   an idle scene shows only 3 anchors. Same free mechanism as Now/Context:
+   curation happens ONCE in the slow background lane, selection happens every
+   turn in string math. Zero added latency, zero added calls.
+
+Where a dossier exists, verbatim wiki sections were already suppressed
+(v0.6); this release fixes the bias in what the curator READ and makes its
+output breathe with the scene.
+
 ## Changelog — v0.17.0 (smart autonomous: the story moves, the extension follows)
 
 Proven by `test/proof.js` (196 assertions) + `test/sim.mjs` (23), all passing.
