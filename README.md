@@ -56,6 +56,26 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.15.0 (chat-scoped canon: each chat is its own universe)
+
+Proven by `test/proof.js` (188 assertions) + `test/sim.mjs` (23), all passing.
+
+The grounded cache — entities, dossiers ✦, pair dynamics, negatives — now lives
+in CHAT METADATA (like Summaryception), not global settings:
+
+1. **No cross-universe bleed, ever.** A CotE chat cannot sweep-match, inject,
+   or Context-expand entities grounded in an Eminence chat. Switching stories
+   is a clean universe automatically — no more "Clear all" between fandoms.
+2. **Branches inherit everything.** ST copies chat metadata on branch, so a
+   branched chat carries its full grounded cache, dossiers, pins, blocklist,
+   arc, and current setting — exactly like Summaryception state.
+3. All access flows through one `cache()` accessor (legacy global store remains
+   only as a fallback for contexts without chat metadata), and cache writes
+   persist via debounced `saveMetadata` instead of rewriting settings.
+4. Honest trade-off, chosen deliberately: the same fandom re-grounds per chat
+   (wiki fetches are cheap and once-per-chat; dossiers are one call per entity
+   per chat). Story isolation is worth it.
+
 ## Changelog — v0.14.0 (Smarter AI tier 2: scene-conditional context)
 
 Proven by `test/proof.js` (188 assertions) + `test/sim.mjs` (23), all passing.

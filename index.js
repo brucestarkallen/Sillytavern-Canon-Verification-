@@ -84,10 +84,11 @@ let lastCastLen = 0;        // visible-chat length when lastCast was last confir
 let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
 let renderArcStatus = null;  // set by the settings UI; called on CHAT_CHANGED
 let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
+let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.14.0";
+const CG_VERSION = "0.15.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -871,7 +872,8 @@ const NEGATIVE_TTL = 1000 * 60 * 60 * 24; // don't re-search a "not found" for 2
 async function ensureGrounded(name, trusted = false) {
     const s = settings();
     const key = name.toLowerCase();
-    const existing = s.cache[key];
+    const c = cache();
+    const existing = c[key];
     if (existing && existing.sections) {
         if (existing.found) return existing;                       // already grounded
         if (Date.now() - existing.ts < NEGATIVE_TTL) {
@@ -997,14 +999,14 @@ async function ensureGrounded(name, trusted = false) {
                 // at note time for exactly the pair that's on screen.
                 const relRaw = extractSectionRaw(wikitext, ["relationships", "relationship"], 4000);
                 const kind = (charSignal || charSection) ? "character" : "place";
-                s.cache[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, kind, found: true, ts: Date.now() };
+                c[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, kind, found: true, ts: Date.now() };
                 // LLM curation runs in the BACKGROUND — this turn ships the regex
                 // sections immediately, the dossier upgrades every turn after.
                 if (s.llmDossier && (charSignal || charSection)) scheduleDossier(key, title, wikitext, relRaw);
-                saveSettingsDebounced();
+                saveCache();
                 const got = Object.entries(sections).filter(([, v]) => v).map(([k]) => k).join(", ");
                 debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${physical || "(no appearance)"} [have: ${got}]`);
-                return s.cache[key];
+                return c[key];
             }
             missReason = "no-facts";
             debug(`⚠ found page "${title}" on ${wiki} but no usable sections`);
@@ -1019,11 +1021,11 @@ async function ensureGrounded(name, trusted = false) {
     // prevents re-fetching the same dead end every turn. Transient network errors are NOT
     // locked in (hadError skips this), and the 24h TTL lets it retry later.
     if (!hadError) {
-        s.cache[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, ts: Date.now() };
-        saveSettingsDebounced();
+        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, ts: Date.now() };
+        saveCache();
         debug(`✕ no usable wiki page for "${name}" on: ${s.wikis}`);
     }
-    return s.cache[key] || { name, sections: {}, found: false };
+    return c[key] || { name, sections: {}, found: false };
 }
 
 async function groundNames(names, trusted = false) {
@@ -1076,7 +1078,7 @@ async function resolveRelations(entries) {
             if (!a.wiki || a.relPageRaw !== undefined) a.rel[bKey] = "";
         }
     }
-    saveSettingsDebounced();
+    saveCache();
 }
 
 /**
@@ -1175,6 +1177,39 @@ function chatArc() {
 function chatPin() {
     try { return getContext().chatMetadata?.canon_grounding_pin || ""; } catch (e) { return ""; }
 }
+/**
+ * THE CANON CACHE IS CHAT-SCOPED (like Summaryception): each chat is its own
+ * universe — grounded entities, dossiers, pair dynamics all live in chat
+ * metadata, so switching stories never bleeds canon across universes and
+ * BRANCHES INHERIT everything (ST copies chat metadata on branch). Falls back
+ * to the legacy global store only when no chat metadata exists (very old ST,
+ * or test sandboxes without a context).
+ */
+function cache() {
+    try {
+        const md = getContext().chatMetadata;
+        if (md) {
+            if (!md.canon_grounding_cache) md.canon_grounding_cache = {};
+            return md.canon_grounding_cache;
+        }
+    } catch (e) { /* no context */ }
+    const s = settings();
+    if (!s.cache) s.cache = {};
+    return s.cache;
+}
+let saveCacheT = null;
+function saveCache() {
+    try {
+        const ctx = getContext();
+        if (ctx.chatMetadata && typeof ctx.saveMetadata === "function") {
+            clearTimeout(saveCacheT);
+            saveCacheT = setTimeout(() => { try { ctx.saveMetadata(); } catch (e) {} }, 400);
+            return;
+        }
+    } catch (e) { /* fall through */ }
+    saveSettingsDebounced();
+}
+
 function chatSettingKey() {
     try { return getContext().chatMetadata?.canon_grounding_setting || ""; } catch (e) { return ""; }
 }
@@ -1328,10 +1363,11 @@ function relationFor(relWikitext, otherNames, maxLen = 350) {
 /** Find the cached, grounded entry for a name (by key, then title/alias). */
 function cacheEntryFor(nameLc) {
     const s = settings();
-    if (s.cache[nameLc] && s.cache[nameLc].found && s.cache[nameLc].sections) {
-        return { key: nameLc, entry: s.cache[nameLc] };
+    const c = cache();
+    if (c[nameLc] && c[nameLc].found && c[nameLc].sections) {
+        return { key: nameLc, entry: c[nameLc] };
     }
-    for (const [k, e] of Object.entries(s.cache)) {
+    for (const [k, e] of Object.entries(c)) {
         if (!e.found || !e.sections) continue;
         const names = [e.name && e.name.toLowerCase(), k, ...(e.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
         if (names.includes(nameLc)) return { key: k, entry: e };
@@ -1379,7 +1415,7 @@ function pruneStaleCast(visibleLen, sceneMsgs) {
 function isUnhandledName(n) {
     const lc = n.toLowerCase();
     if (cacheEntryFor(lc)) return false;                                        // grounded (any name/alias)
-    const neg = settings().cache[lc];
+    const neg = cache()[lc];
     if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)) return false; // fresh miss
     return true;
 }
@@ -1437,9 +1473,10 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // is where the scene happens, not something the prose must keep naming. Set by
     // the parser whenever a place enters the cast; superseded by the next place;
     // removable via the blocklist.
-    if (extras.settingKey && s.cache[extras.settingKey] && !usedKeysGlobal.has(extras.settingKey)) {
+    const store = cache();
+    if (extras.settingKey && store[extras.settingKey] && !usedKeysGlobal.has(extras.settingKey)) {
         usedKeysGlobal.add(extras.settingKey);
-        present.push({ entry: s.cache[extras.settingKey], matchedName: s.cache[extras.settingKey].name, setting: true });
+        present.push({ entry: store[extras.settingKey], matchedName: store[extras.settingKey].name, setting: true });
     }
 
     if (castNames && castNames.length) {
@@ -1461,8 +1498,8 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         // named in the recent scene — including by the AI's own output — injects
         // immediately, no parser round trip required. The AI saying "Alpha" is all
         // the evidence needed: she's cached.
-        for (const key of Object.keys(s.cache)) {
-            const entry = s.cache[key];
+        for (const key of Object.keys(store)) {
+            const entry = store[key];
             if (!entry.found || !entry.sections || usedKeysGlobal.has(key)) continue;
             if (usedKeysGlobal.has((entry.name || "").toLowerCase())) continue;
             const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
@@ -1478,8 +1515,8 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         const lgNames = (!s.llmParser) ? ledgerNames() : null;
         const ledger = lgNames ? new Set(lgNames.map(n => n.toLowerCase())) : null;
         const scored = [];
-        for (const key of Object.keys(s.cache)) {
-            const entry = s.cache[key];
+        for (const key of Object.keys(store)) {
+            const entry = store[key];
             if (!entry.found || !entry.sections) continue;
             const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())]
                 .filter(Boolean);
@@ -1723,18 +1760,18 @@ async function buildDossier(name, wikitext, relRaw) {
 /** Fire-and-forget dossier build with an in-flight/retry guard on the cache entry. */
 function scheduleDossier(key, name, wikitext, relRaw) {
     const s = settings();
-    const entry = s.cache[key];
+    const entry = cache()[key];
     if (!entry || entry.dossier) return;
     if (entry.dossierTs && Date.now() - entry.dossierTs < NEGATIVE_TTL) return;  // in flight / recent failure
     entry.dossierTs = Date.now();
     buildDossier(name, wikitext, relRaw).then(d => {
-        const e = settings().cache[key];
+        const e = cache()[key];
         if (!e) return;
         if (d) {
             e.dossier = d;
             debug(`✦ dossier ready: ${name}`);
         }
-        saveSettingsDebounced();
+        saveCache();
     }).catch(() => { /* retry after TTL */ });
 }
 
@@ -2538,15 +2575,15 @@ async function addSettingsUI() {
                 <div id="cg_prompt_auditor_reset" class="menu_button" title="Restore default">↺ default</div>
                 <hr>
                 <div id="cg_factory_reset" class="menu_button" title="Reset every setting and instruction to defaults">♻ Reset ALL settings &amp; instructions to defaults</div>
-                <small class="cg-hint">Restores every setting and every instruction to the best-default state. Your grounded cache, saved wiki library, and per-chat pins/arc are KEPT.</small>
+                <small class="cg-hint">Restores every setting and every instruction to the best-default state. Your saved wiki library and all per-chat state (cache, dossiers, pins, arc) are KEPT — those live with each chat now.</small>
                 </div>
                 </details>
                 <details class="cg-group">
                 <summary>🩺 Cache &amp; diagnostics</summary>
                 <div class="cg-group-body">
-                <small><b>Cache</b> — everything grounded so far:</small>
+                <small><b>Cache</b> — everything grounded so far <b>in this chat</b> (each chat is its own universe; branches inherit):</small>
                 <div id="cg_cache_list" class="cg-cache"></div>
-                <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry. An entry HERE does not mean it injects — "Why each was injected" below is the truth of what entered the note.</small>
+                <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry. An entry HERE does not mean it injects — "Why each was injected" below is the truth of what entered the note. Switching to another story/chat starts a clean universe automatically — no more clearing between fandoms.</small>
                 <div style="margin-top:6px;">
                     <input id="cg_rescan" class="menu_button" type="button" value="Scan current scene now">
                     <input id="cg_preview" class="menu_button" type="button" value="👁 Preview injection">
@@ -2613,7 +2650,7 @@ async function addSettingsUI() {
     }
     $("#cg_factory_reset").on("click", function () {
         if (!confirm("Reset EVERY Canon Grounding setting and instruction to defaults?\nKept: grounded cache, saved wiki library, per-chat pins/arc.")) return;
-        const keep = { cache: s.cache, savedWikis: s.savedWikis, wikis: s.wikis };
+        const keep = { savedWikis: s.savedWikis, wikis: s.wikis };  // cache is per-chat now
         for (const k of Object.keys(s)) delete s[k];
         Object.assign(s, structuredClone(defaultSettings), keep, { migrated_v2: true, migrated_v3: true });
         saveSettingsDebounced();
@@ -2630,6 +2667,7 @@ async function addSettingsUI() {
     };
     renderChatPins();
     renderChatScoped = () => { renderChatPins(); };
+    renderCacheHook = renderCacheList;
     $("#cg_pin_chat").on("input", function () { setChatPin("canon_grounding_pin", $(this).val()); });
     $("#cg_pin_names").on("input", function () { setChatPin("canon_grounding_pin_names", $(this).val()); });
     $("#cg_block_names").on("input", function () { setChatPin("canon_grounding_block", $(this).val()); });
@@ -2789,7 +2827,9 @@ async function addSettingsUI() {
         renderLastInjection();
     });
     $("#cg_clear").on("click", function () {
-        s.cache = {}; saveSettingsDebounced();
+        const st = cache();
+        for (const k of Object.keys(st)) delete st[k];
+        saveCache();
         parsedWords = new Set();   // let the parser re-evaluate every name again
         lastCast = [];
         lastCastLen = 0;
@@ -2911,10 +2951,11 @@ function renderSavedWikis() {
 function renderCacheList() {
     const s = settings();
     const $box = $("#cg_cache_list").empty();
-    const keys = Object.keys(s.cache || {});
+    const cc = cache();
+    const keys = Object.keys(cc);
     if (!keys.length) { $box.append('<span class="cg-empty">Cache is empty.</span>'); return; }
     for (const key of keys) {
-        const e = s.cache[key];
+        const e = cc[key];
         let label;
         if (e && e.found) {
             const cats = e.sections
@@ -2927,7 +2968,7 @@ function renderCacheList() {
         const $row = $('<div class="cg-cache-row"></div>');
         $('<span class="cg-cache-label"></span>').text(label).appendTo($row);
         $('<span class="cg-cache-x">×</span>').on("click", () => {
-            delete s.cache[key]; saveSettingsDebounced(); renderCacheList();
+            delete cc[key]; saveCache(); renderCacheList();
         }).appendTo($row);
         $box.append($row);
     }
@@ -2962,6 +3003,7 @@ jQuery(async () => {
             renderLastInjection();
             try { if (renderArcStatus) renderArcStatus(); } catch (e) { /* UI optional */ }
             try { if (renderChatScoped) renderChatScoped(); } catch (e) { /* UI optional */ }
+            try { if (renderCacheHook) renderCacheHook(); } catch (e) { /* UI optional */ }
         });
     }
     console.log(`[CanonGrounding] v${CG_VERSION} loaded.`);

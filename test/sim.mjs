@@ -119,7 +119,8 @@ T("mentioned entity survives decay", /DecayA-colored/.test(lastInjection()));
 T("off-screen entity dropped by decay", !/DecayB-colored/.test(lastInjection()));
 
 console.log("[5] alias dedupe, zero refetch");
-extension_settings.canon_grounding.cache["alya"] = { name: "Alisa Mikhailovna Kujou", sections: { physical: "hair: silver" }, aliases: ["Alya"], wiki: "testwiki", found: true, ts: Date.now() };
+globalThis.__ctx.chatMetadata.canon_grounding_cache = globalThis.__ctx.chatMetadata.canon_grounding_cache || {};
+globalThis.__ctx.chatMetadata.canon_grounding_cache["alya"] = { name: "Alisa Mikhailovna Kujou", sections: { physical: "hair: silver" }, aliases: ["Alya"], wiki: "testwiki", found: true, ts: Date.now() };
 const before = fetchLog.length;
 globalThis.__ctx.chat.push(msg("have you seen Alisa Mikhailovna Kujou?", true));
 const run5 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
