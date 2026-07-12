@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.20.0";
+const CG_VERSION = "0.20.1";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -330,6 +330,14 @@ function settings() {
         if (st.maxCharsPerChar === 400) st.maxCharsPerChar = 700;
         if (st.maxTotalChars === 3000) st.maxTotalChars = 4500;
         st.migrated_v3 = true;
+        saveSettingsDebounced();
+    }
+    if (!st.migrated_v5) {
+        // v0.19 prose briefs grew every block; v0.20.1 grows the vessel to match —
+        // untouched caps only, user-set values are respected.
+        if (st.maxCharsPerChar === 700) st.maxCharsPerChar = 1100;
+        if (st.maxTotalChars === 4500) st.maxTotalChars = 6000;
+        st.migrated_v5 = true;
         saveSettingsDebounced();
     }
     return st;
@@ -651,6 +659,11 @@ function cleanWikitext(wt) {
     // drop the names inside to end-of-input. Strip dangling LIST openers so their
     // content survives; any other unclosed template is junk and SHOULD drop.
     s = s.replace(/\{\{\s*(?:plainlist|unbulleted list|ubl|flatlist|hlist|bulleted list|cslist)\s*\|/gi, "");
+    // Inline TEXT-CARRYING templates — {{Color|#hex|Royal Blue}}, {{nowrap|X}},
+    // {{small|X}}, {{tooltip|term|text}} — must yield their text, not vanish: the
+    // depth walker deleting them whole is exactly how "haircolor" disappears while
+    // a plain "eyecolor" survives. Keep the LAST parameter (the display text).
+    s = s.replace(/\{\{\s*(?:colou?r|font ?colou?r|nowrap|small|big|tt|abbr|tooltip)\s*\|(?:[^{}]*\|)?([^{}|]*)\}\}/gi, "$1");
     // Remove remaining templates with a real DEPTH WALKER. The old regex loop
     // could never match an outer template whose body held a stray brace (the
     // {{{param|}}} triple-brace pattern in big infoboxes like Classroom of the
@@ -1760,7 +1773,15 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             }
         }
         if (!lines.length) continue;
-        let block = clip(`${entry.name}:\n${lines.join("\n")}`, s.maxCharsPerChar);
+        // Budget by WHOLE LINES: the name + first line always ride; each further
+        // line rides only if it fits. Mid-sentence amputation ("…; Engineered.")
+        // told the model half a fact — worse than no fact. clip() remains only as
+        // the belt for a single monstrous opening line.
+        let block = clip(`${entry.name}:\n${lines[0] || ""}`, s.maxCharsPerChar);
+        for (let li = 1; li < lines.length; li++) {
+            if (block.length + 1 + lines[li].length > s.maxCharsPerChar) continue;
+            block += "\n" + lines[li];
+        }
         if (total + block.length > s.maxTotalChars) {
             if (blocks.length === 0) block = clip(block, s.maxTotalChars); // always fit at least one
             else break;
@@ -2878,7 +2899,7 @@ async function addSettingsUI() {
         // and the global pin is your authored canon, not a tunable.
         const keep = { savedWikis: s.savedWikis, wikis: s.wikis, llmProfileId: s.llmProfileId, pinnedGlobal: s.pinnedGlobal };
         for (const k of Object.keys(s)) delete s[k];
-        Object.assign(s, structuredClone(defaultSettings), keep, { migrated_v2: true, migrated_v3: true });
+        Object.assign(s, structuredClone(defaultSettings), keep, { migrated_v2: true, migrated_v3: true, migrated_v5: true });
         saveSettingsDebounced();
         toastr?.success?.("Defaults restored. Reloading UI…");
         setTimeout(() => location.reload(), 800);
@@ -3033,8 +3054,8 @@ async function addSettingsUI() {
         });
     };
     numHandler("#cg_maxchars", "maxCharacters", 1, 8);
-    numHandler("#cg_maxper", "maxCharsPerChar", 80, 700);
-    numHandler("#cg_maxtotal", "maxTotalChars", 200, 4500);
+    numHandler("#cg_maxper", "maxCharsPerChar", 80, 1100);
+    numHandler("#cg_maxtotal", "maxTotalChars", 200, 6000);
 
     $("#cg_reset_kw").on("click", function () {
         for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords", "quoteKeywords"]) {

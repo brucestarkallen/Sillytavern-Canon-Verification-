@@ -607,6 +607,26 @@ sandbox.__settings.proseBriefs = true;
 delete sandbox.__settings.cache["rose"].dossier.brief;
 T("brief-less dossier falls back to Identity line", /- Identity: Second princess/.test(api.relevantCanonNote(["rose entered"], ["Rose Oriana"])));
 
+// ---------------------------------------------------------------- v0.20.1: hair survives + whole-line budget
+console.log("[hair / whole-line budget]");
+T("{{Color|#hex|Royal Blue}} yields its text", api.extractInfoboxFields("{{X\n|haircolor = {{Color|#4169e1|Royal Blue}}\n|eyecolor = Magenta\n}}", ["hair","eye"]) === "haircolor: Royal Blue; eyecolor: Magenta");
+T("{{nowrap}}/{{small}} unwrap too", api.cleanWikitext("Height: {{nowrap|175 cm}} tall, {{small|approx.}}") === "Height: 175 cm tall, approx.");
+sandbox.__settings.cache = {
+    "hondo": { name: "Ryōtarō Hondō", found: true, wiki: "w", aliases: [], kind: "character",
+              sections: { identity: "A student of Class 1-B.", physical: "haircolor: Blue; eyecolor: Magenta" }, rel: {},
+              dossier: { identity: "A student of Class 1-B.",
+                         brief: "B".repeat(400),
+                         facts: ["F1 " + "x".repeat(120) + " end.", "F2 " + "y".repeat(120) + " end.", "F3 short."],
+                         secrets: [], voice: [], related: [], dynamics: {} } },
+};
+api.setEvidence({}); api.setFocus({});
+sandbox.__settings.maxCharsPerChar = 620;
+const wb = api.relevantCanonNote(["hondō spoke"], ["Ryōtarō Hondō"]);
+T("over-budget drops WHOLE trailing lines, never amputates mid-fact", !/…/.test(wb.split("Ryōtarō Hondō:")[1] || "") || !/- Facts: [^\n]*…/.test(wb));
+T("appearance line survives the budget squeeze", /- Appearance: haircolor: Blue; eyecolor: Magenta/.test(wb));
+T("name + brief always ride", /Ryōtarō Hondō:\n  BBBB/.test(wb));
+sandbox.__settings.maxCharsPerChar = 1100;
+
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

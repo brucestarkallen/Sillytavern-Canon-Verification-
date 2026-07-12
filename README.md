@@ -56,6 +56,25 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.20.1 (hair restored + no more mid-fact amputation)
+
+Proven by `test/proof.js` (208 assertions) + `test/sim.mjs` (23), all passing.
+
+Two root causes behind "Appearance suddenly missing / Facts cut mid-sentence":
+
+1. **Inline text templates were deleted whole.** Wikis wrap colors as
+   `{{Color|#4169e1|Royal Blue}}` — the depth walker (correctly nuking layout
+   templates) also ate these, so a templated `haircolor` vanished while a plain
+   `eyecolor` survived — exactly the observed pattern. Text-carrying inline
+   templates ({{Color}}, {{nowrap}}, {{small}}, {{tt}}, {{abbr}}, {{tooltip}})
+   now yield their display text.
+2. **Whole-line block budgeting.** v0.19's prose briefs grew every block past
+   the 700-char vessel, and clip() amputated mid-fact ("…; Engineered.") —
+   half a fact is worse than none. Blocks now budget by WHOLE lines: name +
+   brief always ride, each further line rides only if it fits, and caps grow
+   to match the brief era (per-character 700→1100, total 4500→6000; one-time
+   migration touching untouched values only).
+
 ## Changelog — v0.20.0 (⏱ the immersion ceiling: your storyteller never waits)
 
 Proven by `test/proof.js` (203 assertions) + `test/sim.mjs` (23), all passing.
