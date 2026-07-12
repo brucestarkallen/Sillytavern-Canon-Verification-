@@ -86,6 +86,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
+const CG_VERSION = "0.8.1";
 
 const defaultSettings = {
     enabled: true,
@@ -1600,6 +1601,7 @@ function parseNameArray(text) {
  * given a rejection handler (Android webviews surface unhandled rejections).
  */
 let lastLlmError = "";       // why the last llmCall returned null — surfaced by rescan
+let lastParseFailToastAt = 0; // throttle for background-failure toasts (silence was the bug)
 
 async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } = {}) {
     const c = getContext();
@@ -1619,7 +1621,13 @@ async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } =
         if (s.llmProfileId && svc && typeof svc.sendRequest === "function") {
             usedBackend = true;
             const messages = [{ role: "system", content: systemText }, { role: "user", content: userText }];
-            const req = svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true });
+            let req;
+            try {
+                req = svc.sendRequest(s.llmProfileId, messages, maxTokens, { signal: controller.signal, extractData: true });
+            } catch (e) {
+                lastLlmError = `profile request threw immediately: ${e.message} — re-pick the Connection Profile`;
+                return null;
+            }
             if (req && typeof req.catch === "function") req.catch(() => {});
             const res = await Promise.race([req, sleep(budgetMs + 250).then(() => null)]);
             out = extract(res);
@@ -1629,6 +1637,15 @@ async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } =
             if (req && typeof req.catch === "function") req.catch(() => {});
             const res = await Promise.race([req, sleep(budgetMs).then(() => null)]);
             out = extract(res);
+            if (!out && c.generateRaw.length >= 2) {
+                // Older ST builds take positional args (prompt, api, instructOverride,
+                // quietToLoud, systemPrompt, responseLength) — the object call above
+                // silently produced garbage there. Try the legacy convention once.
+                const req2 = c.generateRaw(userText, null, false, false, systemText, maxTokens);
+                if (req2 && typeof req2.catch === "function") req2.catch(() => {});
+                const res2 = await Promise.race([req2, sleep(budgetMs).then(() => null)]);
+                out = extract(res2);
+            }
         }
         if (!out) {
             lastLlmError = usedBackend
@@ -1690,7 +1707,12 @@ function setInjection(text) {
     }
 }
 
+let interceptAnnounced = false;
 globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, type) {
+    if (!interceptAnnounced) {
+        interceptAnnounced = true;
+        console.log(`[CanonGrounding] v${CG_VERSION} interceptor active — if you never see this line, ST is not calling the interceptor at all.`);
+    }
     // Only real user-facing generations. Skipping quiet/impersonate also prevents our
     // own parser generateRaw call (a quiet generation) from re-entering this interceptor.
     const genType = type || "normal";
@@ -1733,6 +1755,10 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 const mySerial = ++parseSerial;
                 const parsed = await parseSceneCharacters(sceneText);
                 if (myEpoch !== chatEpoch) return;   // chat switched mid-parse: old-chat results must not apply
+                if (parsed === null && Date.now() - lastParseFailToastAt > 300000) {
+                    lastParseFailToastAt = Date.now();
+                    try { toastr?.warning?.(`Canon parser failing in background: ${lastLlmError || "unknown"}. Sweep/pins still inject.`); } catch (e) {}
+                }
                 if (mySerial === parseSerial) {      // a newer parse hasn't superseded this one
                     for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
                     if (parsed) {                    // null = call failed → keep the previous cast
@@ -1904,7 +1930,7 @@ async function addSettingsUI() {
     <div class="canon-grounding-settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Canon Grounding</b>
+                <b>Canon Grounding <span style="opacity:.6">v${CG_VERSION}</span></b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
@@ -2020,6 +2046,10 @@ async function addSettingsUI() {
                     <select id="cg_profile" class="text_pole" style="flex:1;"></select>
                     <div id="cg_profile_refresh" class="menu_button fa-solid fa-rotate" title="Refresh profiles"></div>
                 </div>
+                <div class="cg-row" style="display:flex; gap:4px;">
+                    <input id="cg_selftest" class="menu_button" type="button" value="🔬 Parser self-test">
+                </div>
+                <small class="cg-hint">Sends a 3-word test call through your parser backend and reports backend, elapsed time, and the reply (or the exact failure). Diagnoses transport problems without touching your scene.</small>
                 <label>Parser budget (seconds)</label>
                 <input id="cg_budget" class="text_pole" type="number" min="10" max="180" step="5">
                 <small class="cg-hint">How long the cast parser / dossier curator may take. Slow backends (GLM on mobile) need 30–60s — a blown budget silently kills the cast and everything looks dumb.</small>
@@ -2094,6 +2124,7 @@ async function addSettingsUI() {
                 <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry.</small>
                 <div style="margin-top:6px;">
                     <input id="cg_rescan" class="menu_button" type="button" value="Scan current scene now">
+                    <input id="cg_preview" class="menu_button" type="button" value="👁 Preview injection">
                     <input id="cg_refresh" class="menu_button" type="button" value="Refresh">
                     <input id="cg_clear" class="menu_button" type="button" value="Clear all">
                 </div>
@@ -2220,6 +2251,32 @@ async function addSettingsUI() {
     $("#cg_budget").val(Math.round((s.parserBudgetMs || 30000) / 1000)).on("input", function () {
         const v = parseInt($(this).val(), 10);
         if (!isNaN(v) && v >= 10) { s.parserBudgetMs = v * 1000; saveSettingsDebounced(); }
+    });
+    $("#cg_selftest").on("click", async function () {
+        toastr?.info?.("Parser self-test running…");
+        const t0 = Date.now();
+        const out = await llmCall("You are a connectivity test. Reply with exactly: ok", "Reply with exactly: ok", { maxTokens: 8 });
+        const ms = Date.now() - t0;
+        if (out) toastr?.success?.(`Parser backend OK in ${ms}ms — replied: "${clip(out, 40)}"`);
+        else toastr?.error?.(`Parser backend FAILED in ${ms}ms — ${lastLlmError || "unknown"}`);
+    });
+    $("#cg_preview").on("click", function () {
+        try {
+            const ctx = getContext();
+            const scene = sceneMessages(ctx, s.contextWindow);
+            const cast = pruneStaleCast((ctx.chat || []).filter(m => !m.is_system).length, scene);
+            const note = relevantCanonNote(scene, cast, chatArc(), {
+                pinNames: chatPinNames(), chatPin: chatPin(), globalPin: s.pinnedGlobal,
+            });
+            lastInjection = note;
+            lastInjectionAt = Date.now();
+            renderLastInjection();
+            toastr?.[note ? "success" : "warning"]?.(note
+                ? `Preview built: ${lastMatchReasons.length} entr${lastMatchReasons.length === 1 ? "y" : "ies"} — see "Last injection" below.`
+                : "Preview is EMPTY: nothing cached is named in the scene window, cast is empty, and no pins/arc are set.");
+        } catch (e) {
+            toastr?.error?.(`Preview failed: ${e.message}`);
+        }
     });
     const numHandler = (id, key, min, def) => {
         $(id).val(s[key]).on("input", function () {
@@ -2436,5 +2493,5 @@ jQuery(async () => {
             try { if (renderChatScoped) renderChatScoped(); } catch (e) { /* UI optional */ }
         });
     }
-    console.log("[CanonGrounding] loaded.");
+    console.log(`[CanonGrounding] v${CG_VERSION} loaded.`);
 });

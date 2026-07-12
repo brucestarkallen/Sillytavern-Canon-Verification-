@@ -56,6 +56,27 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.8.1 (diagnosis kit: nothing fails silently, nothing hides its version)
+
+1. **Version everywhere.** The drawer header, the load line, and a one-time
+   console line when the interceptor first runs (`v0.8.1 interceptor active`).
+   If that interceptor line never appears in the console, ST is not calling the
+   extension at all (update didn't land / needs a full reload) — decisive in
+   one glance.
+2. **🔬 Parser self-test** (🧠 Character detection): a 3-word test call through
+   your backend; reports backend, elapsed ms, and the reply or the exact
+   failure. Separates "transport is broken" from "scene/prompt problem".
+3. **👁 Preview injection** (🩺 Cache & diagnostics): builds the note for the
+   current scene RIGHT NOW — sweep, pins, arc, cast — without a generation
+   turn, and shows it in "Last injection".
+4. **Background parser deaths are loud**: a throttled toast (max 1 / 5 min)
+   with the exact reason. Silent death was the original sin.
+5. **Legacy `generateRaw` compat**: old ST builds take positional args; the
+   object call silently produced garbage there. Auto-retries the legacy
+   convention.
+6. `sendRequest` sync throws now carry their message ("re-pick the Connection
+   Profile") instead of a generic failure.
+
 ## Changelog — v0.8.0 (the parser can lag or die — the injection can't)
 
 Proven by `test/proof.js` (135 assertions) + `test/sim.mjs` (23), all passing.
