@@ -586,6 +586,27 @@ T("duel scene surfaces the sword fact FIRST", /- Facts: She wields the Oriana sw
 api.setFocus({});
 const coldf = api.relevantCanonNote(["she hummed a tune"], ["Rose Oriana"]);
 T("idle scene shows only 3 anchor facts", ((coldf.match(/- Facts: [^\n]*/) || [""])[0].match(/;/g) || []).length === 2 && !/chamomile/.test(coldf));
+// ---------------------------------------------------------------- v0.19: prose briefs
+console.log("[prose briefs]");
+T("dossier parses the brief", api.parseDossier('{"identity":"x","brief":"A composed princess who hides steel beneath courtesy, she measures every room before she speaks."}').brief.startsWith("A composed princess"));
+sandbox.__settings.cache = {
+    "rose": { name: "Rose Oriana", found: true, wiki: "w", aliases: [], kind: "character",
+              sections: { identity: "Rose Oriana is the second princess.", physical: "hair: blond" }, rel: {},
+              dossier: { identity: "Second princess of the Oriana Kingdom.",
+                         brief: "A composed princess who hides steel beneath courtesy, Rose measures every room before she speaks and bleeds for her kingdom in private.",
+                         facts: ["She wields the Oriana sword style."], secrets: [], voice: [], related: [], dynamics: {} } },
+};
+api.setEvidence({}); api.setFocus({});
+sandbox.__settings.proseBriefs = true;
+const pn = api.relevantCanonNote(["rose entered"], ["Rose Oriana"]);
+T("brief opens the block as prose (no Identity label)", /Rose Oriana:\n  A composed princess who hides steel/.test(pn) && !/- Identity:/.test(pn));
+T("appearance stays verbatim beneath the brief", /- Appearance: hair: blond/.test(pn));
+sandbox.__settings.proseBriefs = false;
+T("toggle off → labeled Identity returns", /- Identity: Second princess of the Oriana Kingdom\./.test(api.relevantCanonNote(["rose entered"], ["Rose Oriana"])));
+sandbox.__settings.proseBriefs = true;
+delete sandbox.__settings.cache["rose"].dossier.brief;
+T("brief-less dossier falls back to Identity line", /- Identity: Second princess/.test(api.relevantCanonNote(["rose entered"], ["Rose Oriana"])));
+
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
 T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"));

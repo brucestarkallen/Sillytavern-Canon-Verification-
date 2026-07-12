@@ -56,6 +56,21 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.19.0 (📝 prose briefs: written, not pasted)
+
+Proven by `test/proof.js` (203 assertions) + `test/sim.mjs` (23), all passing.
+
+The injection's FORM catches up with its content: the dossier curator now also
+WRITES each character — one flowing 60–100-word paragraph (who they are, their
+manner, what defines them) that opens the block as prose instead of
+"Identity: … Facts: a; b; c" fragments. Better flow, fewer label/separator
+tokens. Deliberately still verbatim: Appearance (exact hair/eye facts) and
+Voice quotes (verbatim is their function). Scene-conditional lines — Now,
+scored Facts, With-X, Context, Secrets — stay atomic beneath the brief,
+because atoms are what per-turn selection needs. Toggleable (📝, on by
+default); brief-less dossiers fall back to the labeled Identity line and
+self-heal in the background like everything else.
+
 ## Changelog — v0.18.0 (curation once, selection free — no more top-of-the-wiki bias)
 
 Proven by `test/proof.js` (199 assertions) + `test/sim.mjs` (23), all passing.

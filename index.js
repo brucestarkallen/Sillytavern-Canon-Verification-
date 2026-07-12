@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.18.0";
+const CG_VERSION = "0.19.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -152,6 +152,7 @@ const DEFAULT_PROMPT_DOSSIER =
         "Extract only what matters for portraying this character accurately in scenes. " +
         "Return JSON with exactly these keys: " +
         '{"identity": one sentence — who they are (title, role, affiliation); ' +
+        '"brief": one flowing paragraph, 60–100 words, third person present tense, weaving who they are, their manner, and what defines them — natural prose a narrator absorbs in one read; no lists, no headers; ' +
         '"facts": up to 8 short story-relevant facts a narrator must not get wrong; ' +
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
@@ -238,6 +239,11 @@ const defaultSettings = {
     // scene ("the Bushin Festival begins"), the story position advances itself —
     // grounded with the full plot summary + spoiler guard, superseding the old one.
     autoArc: true,
+    // 📝 Prose briefs: the character's block opens with the curator's WRITTEN
+    // paragraph instead of labeled fragments — a narrator's briefing, not a
+    // database row. Scene-conditional lines (Now, Facts, With, Voice, Secrets)
+    // stay atomic below it, because atoms are what per-turn selection needs.
+    proseBriefs: true,
     // System-instruction overrides — empty means the built-in default applies
     // (shown in the 🧾 group), so prompt improvements in updates still land.
     promptParser: "",
@@ -1684,7 +1690,12 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             // LLM-curated path: the model read the page and chose what matters.
             const d = entry.dossier;
             const identity = d.identity || entry.sections.identity;
-            if (identity) lines.push(`  - Identity: ${identity}`);
+            if (s.proseBriefs && d.brief) {
+                // The curator's WRITTEN briefing — prose, not a database row.
+                lines.push(`  ${d.brief}`);
+            } else if (identity) {
+                lines.push(`  - Identity: ${identity}`);
+            }
             const nf = focusLine(); if (nf) lines.push(nf);
             if (s.physical && entry.sections.physical) lines.push(`  - Appearance: ${entry.sections.physical}`);
             const idLc = (identity || "").toLowerCase();
@@ -1819,6 +1830,7 @@ function parseDossier(text) {
     const META_FACT = /source material|\bno (?:further |other )?(?:information|details?)\b|not (?:specified|provided|mentioned|stated|given)\b/i;
     const d = {
         identity: str(obj.identity, 300),
+        brief: str(obj.brief, 750),
         facts: arr(obj.facts, 8, 200).filter(f => !META_FACT.test(f)),
         secrets: arr(obj.secrets, 4, 200).filter(f => !META_FACT.test(f)),
         voice: arr(obj.voice, 3, 160),
@@ -2399,7 +2411,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             // per entity — so old caches upgrade without anyone pressing ✕.
             if (s.llmDossier) {
                 for (const e of uniq.values()) {
-                    if (e.found && e.dossier && !("related" in e.dossier) && !e.dossierUpTs) {
+                    if (e.found && e.dossier && (!("related" in e.dossier) || !("brief" in e.dossier)) && !e.dossierUpTs) {
                         e.dossierUpTs = Date.now();
                         (async () => {
                             try {
@@ -2603,6 +2615,11 @@ async function addSettingsUI() {
                 </label>
                 <small class="cg-hint">When two grounded characters share a scene, inject how THIS one acts around THAT one, from the wiki's Relationships subsections (or the X/Relationships subpage). The fix for "stoic on the wiki → stoic with everyone".</small>
                 <label class="checkbox_label">
+                    <input id="cg_prose" type="checkbox">
+                    <span>Prose briefs 📝</span>
+                </label>
+                <small class="cg-hint">Each character's block opens with the curator's written paragraph instead of "Identity: … Facts: a; b; c" fragments — better flow, fewer label tokens. Appearance and Voice quotes stay verbatim on purpose (exactness is their job). Scene lines (Now/Facts/With/Secrets) stay atomic below.</small>
+                <label class="checkbox_label">
                     <input id="cg_smart" type="checkbox">
                     <span>Smarter AI 🧠 (context expansion)</span>
                 </label>
@@ -2800,6 +2817,9 @@ async function addSettingsUI() {
     });
     $("#cg_smart").prop("checked", s.smartExpansion).on("input", function () {
         s.smartExpansion = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_prose").prop("checked", s.proseBriefs).on("input", function () {
+        s.proseBriefs = $(this).prop("checked"); saveSettingsDebounced();
     });
     $("#cg_lowercase").prop("checked", s.lowercaseNames).on("input", function () {
         s.lowercaseNames = $(this).prop("checked"); saveSettingsDebounced();
