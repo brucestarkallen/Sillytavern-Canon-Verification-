@@ -56,6 +56,27 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.11.1 (the last door closes: no evidence, no grandfathering)
+
+The evidence-LESS compat fallback (element without an evidence field → admit if
+the name appears anywhere in the window) was a dodge route: the model omits
+what it cannot quote, and a name sitting in a greeting roster / class list —
+text the storyteller never wrote — grandfathered in, unaudited and unexplained
+(the missing evidence suffix in "Why these" was the fingerprint). Closed:
+
+1. Evidence-less elements are UNPROVEN → routed to the Cast Auditor as weak,
+   with the name itself as the claim under judgment. Admitted ones now show
+   `evidence: "<their name>"` in Why-these — the receipt says exactly why.
+2. The auditor's mandate now explicitly rules that a name appearing only in a
+   roster, class list, cast enumeration, or opening summary is NOT presence.
+3. Latency, engineered and honest: the auditor fires ONLY when unproven items
+   exist (fully-anchored turns add ZERO time), and its budget is capped at
+   min(parser budget, 12s) — it is a tiny verdict call, typically ~1–3s on a
+   fast backend, and only on the turns that need judging. Toggle: 🛡 in
+   Character detection.
+
+Proven by `test/proof.js` (176 assertions) + `test/sim.mjs` (23), all passing.
+
 ## Changelog — v0.11.0 (the Cast Auditor — your referee — and settings that persist)
 
 Proven by `test/proof.js` (175 assertions) + `test/sim.mjs` (23), all passing.

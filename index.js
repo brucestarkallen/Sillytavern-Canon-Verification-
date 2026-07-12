@@ -87,7 +87,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.11.0";
+const CG_VERSION = "0.11.1";
 
 const defaultSettings = {
     enabled: true,
@@ -1751,7 +1751,14 @@ const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|
 function splitEvidenceStrength(cast, sceneText) {
     const strong = [], weak = [];
     for (const c of cast) {
-        if (!c.evidence) { strong.push(c); continue; }   // passed via name-in-text fallback
+        if (!c.evidence) {
+            // No evidence supplied = UNPROVEN, not grandfathered. The name does sit
+            // somewhere in the window (that's how it passed verify) — but "somewhere"
+            // includes greeting rosters and cast lists the storyteller never wrote.
+            // The auditor rules; the name itself becomes the claim under judgment.
+            weak.push({ ...c, evidence: c.name });
+            continue;
+        }
         const ev = c.evidence.toLowerCase();
         const tokens = String(c.name).toLowerCase().split(/\s+/).filter(t => t.length >= 3);
         const anchored = tokens.some(t => ev.includes(t))
@@ -1872,12 +1879,15 @@ async function auditCastEvidence(sceneText, weak) {
     const items = weak.map(c => `- ${c.name} :: evidence: "${c.evidence}"`).join("\n");
     const systemText =
         "You are a strict referee for scene-reference claims in fiction. For each entity below, " +
-        "decide whether the quoted evidence genuinely REFERS TO that specific entity in this scene — " +
+        "decide whether the quoted evidence genuinely REFERS TO that specific entity AND the entity " +
+        "is part of, or directly relevant to, the CURRENT scene's events — " +
         "not merely appears near them, and not because the entity plausibly exists in this world. " +
         "Generic phrases ('her classmates', 'the students', 'everyone') refer to no specific entity. " +
+        "A name appearing only in a roster, class list, cast enumeration, opening summary, or " +
+        "similar catalogue is NOT presence in the scene — answer false for those. " +
         'Respond with ONLY a JSON object mapping each entity name to true or false. No other text.';
     const userText = `<scene>\n${sceneText}\n</scene>\n\n${items}\n\nJSON verdict:`;
-    const out = await llmCall(systemText, userText, { maxTokens: 200 });
+    const out = await llmCall(systemText, userText, { maxTokens: 200, budgetMs: Math.min(Number(settings().parserBudgetMs) || 30000, 12000) });
     if (!out) return [];   // auditor unavailable → weak claims do not pass
     const verdict = parseJsonCandidates(out, "{", "}", v => v && typeof v === "object" && !Array.isArray(v));
     if (!verdict) return [];

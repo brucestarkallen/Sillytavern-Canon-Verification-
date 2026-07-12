@@ -473,8 +473,9 @@ const split = api.splitEvidenceStrength([
 ], SC2);
 T("name-token evidence is strong", split.strong.some(c => c.name === "Tsubasa Nanase"));
 T("place-name + place-evidence pair is strong (ANS survives)", split.strong.some(c => c.name === "Advanced Nurturing High School"));
-T("generic evidence is WEAK → goes to the auditor, not the cast", split.weak.length === 1 && split.weak[0].name === "Ryōko Nishikawa");
-T("name-in-text fallback (no evidence) counts strong", split.strong.some(c => c.name === "Kakeru Ryūen"));
+T("generic evidence is WEAK → goes to the auditor, not the cast", split.weak.some(c => c.name === "Ryōko Nishikawa"));
+T("evidence-less element is UNPROVEN: routed weak with the name as the claim", split.weak.some(c => c.name === "Kakeru Ryūen" && c.evidence === "Kakeru Ryūen"));
+T("generic + evidence-less both queue for the auditor", split.weak.length === 2);
 sandbox.__settings.cache = {
     "ans": { name: "Advanced Nurturing High School", found: true, wiki: "w", aliases: ["ANHS"], kind: "place",
              sections: { identity: "Advanced Nurturing High School is a government-established institution." }, rel: {} },
