@@ -27,7 +27,7 @@ const pieces = [
     grab("function cleanWikitext", "// ------"),
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
     grab("function clip(", "/**\n * Build the canon note."),
-    grab("/**\n * Parse the cast parser", "/**\n * Arbiter-style"),
+    grab("/**\n * Reasoning models", "/**\n * Arbiter-style"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
     grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
@@ -385,6 +385,18 @@ T("cached entity named in scene injected WITHOUT being in cast", /Alpha:/.test(s
 api.relevantCanonNote(["alpha watched"], ["Rose Oriana"]);
 T("sweep reason says no parser needed", api.getReasons().some(r => /Alpha/.test(r) && /no parser needed/.test(r)));
 T("un-mentioned cached entity NOT swept in", !/Alpha:/.test(api.relevantCanonNote(["rose oriana stood alone"], ["Rose Oriana"])));
+
+// ---------------------------------------------------------------- v0.8.2: reasoning-model output
+console.log("[reasoning models]");
+const THOUGHT = "<think>Let me check who is present. The scene shows [Alpha] and someone at index [0]. I should list them.</think>\n[{\"name\":\"Alpha\",\"now\":\"issuing orders\"}]";
+T("think-block brackets no longer poison the array slice", api.parseCast(THOUGHT)[0].name === "Alpha" && api.parseCast(THOUGHT)[0].now === "issuing orders");
+T("unclosed/stray think close handled", api.parseCast("reasoning noise with [junk] here</think>[\"Beta\"]")[0].name === "Beta");
+T("prose bracket before real array skipped", api.parseCast('I see [several] people. Final answer: ["Cid Kagenou"]')[0].name === "Cid Kagenou");
+T("cast [] still explicit-empty after strip", Array.isArray(api.parseCast("<think>nobody [relevant]</think>[]")) && api.parseCast("<think>nobody [relevant]</think>[]").length === 0);
+T("garbage still null", api.parseCast("<think>hmm [x]</think>no array follows") === null);
+const DTHOUGHT = "<think>The page mentions {her role} and {secrets}.</think>```json\n{\"identity\":\"First of the Seven Shadows.\",\"facts\":[],\"secrets\":[],\"voice\":[],\"dynamics\":{}}\n```";
+T("dossier survives think-block braces", api.parseDossier(DTHOUGHT).identity === "First of the Seven Shadows.");
+T("brackets inside JSON strings don't break balance", api.parseCast('[{"name":"Alpha","now":"quoting [redacted] orders"}]')[0].now === "quoting [redacted] orders");
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

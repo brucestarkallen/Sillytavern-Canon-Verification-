@@ -86,7 +86,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.8.1";
+const CG_VERSION = "0.8.2";
 
 const defaultSettings = {
     enabled: true,
@@ -1468,12 +1468,8 @@ function getProfiles() {
  */
 function parseDossier(text) {
     if (!text) return null;
-    let t = String(text).replace(/```(?:json)?/gi, "").trim();
-    const a = t.indexOf("{"), b = t.lastIndexOf("}");
-    if (a === -1 || b <= a) return null;
-    let obj;
-    try { obj = JSON.parse(t.slice(a, b + 1)); } catch (e) { return null; }
-    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    const obj = parseJsonCandidates(text, "{", "}", v => v && typeof v === "object" && !Array.isArray(v));
+    if (!obj) return null;
     const str = (v, n) => (typeof v === "string" ? clip(v.trim(), n) : "");
     const arr = (v, count, n) => (Array.isArray(v) ? v : (typeof v === "string" && v ? [v] : []))
         .map(x => str(x, n)).filter(Boolean).slice(0, count);
@@ -1548,6 +1544,54 @@ function scheduleDossier(key, name, wikitext, relRaw) {
 }
 
 /**
+ * Reasoning models (GLM, DeepSeek-R1, o-series…) wrap answers in <think>…</think>
+ * blocks whose prose can contain brackets/braces — a naive first-[ … last-] slice
+ * spans reasoning + answer and JSON.parse dies on it EVERY time. Strip the
+ * reasoning, then scan for BALANCED candidates and try them last-first (the final
+ * answer is at the end).
+ */
+function stripReasoning(text) {
+    let t = String(text);
+    t = t.replace(/<(think|thinking|reasoning|thought)>[\s\S]*?<\/\1>/gi, "");
+    // Unclosed-open or stray-close variants: keep only what follows the LAST close tag.
+    const lastClose = Math.max(t.lastIndexOf("</think>"), t.lastIndexOf("</thinking>"), t.lastIndexOf("</reasoning>"));
+    if (lastClose !== -1) t = t.slice(t.indexOf(">", lastClose) + 1);
+    return t.trim();
+}
+
+/** All top-level balanced `open…close` substrings, in order of appearance. */
+function balancedSlices(text, open, close) {
+    const out = [];
+    let depth = 0, start = -1, inStr = false, esc = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (ch === "\\") esc = true;
+            else if (ch === '"') inStr = false;
+            continue;
+        }
+        if (ch === '"') { if (depth > 0) inStr = true; continue; }
+        if (ch === open) { if (depth === 0) start = i; depth++; }
+        else if (ch === close && depth > 0) { depth--; if (depth === 0 && start !== -1) { out.push(text.slice(start, i + 1)); start = -1; } }
+    }
+    return out;
+}
+
+/** Try candidates LAST-first (final answer sits at the end of the output). */
+function parseJsonCandidates(text, open, close, want) {
+    const t = stripReasoning(String(text).replace(/```(?:json)?/gi, ""));
+    const cands = balancedSlices(t, open, close);
+    for (let i = cands.length - 1; i >= 0; i--) {
+        try {
+            const v = JSON.parse(cands[i]);
+            if (want(v)) return v;
+        } catch (e) { /* try earlier candidate */ }
+    }
+    return null;
+}
+
+/**
  * Parse the cast parser's output: a JSON array whose elements are either name
  * strings or {"name": …, "now": "≤12 words on what about them is in play in THIS
  * scene"}. Returns [{name, now}] (deduped by name), [] for an explicit empty
@@ -1556,13 +1600,8 @@ function scheduleDossier(key, name, wikitext, relRaw) {
  */
 function parseCast(text) {
     if (!text) return null;
-    const cleaned = String(text).replace(/```(?:json)?/gi, "");
-    const start = cleaned.indexOf("[");
-    const end = cleaned.lastIndexOf("]");
-    if (start < 0 || end <= start) return null;
-    let arr;
-    try { arr = JSON.parse(cleaned.slice(start, end + 1)); } catch (e) { return null; }
-    if (!Array.isArray(arr)) return null;
+    const arr = parseJsonCandidates(text, "[", "]", Array.isArray);
+    if (!arr) return null;
     const out = [];
     const seen = new Set();
     for (const x of arr) {
@@ -1683,7 +1722,11 @@ async function parseSceneCharacters(sceneText) {
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
     const out = await llmCall(systemText, userText, { maxTokens: 300 });
     if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
-    return parseCast(out);        // [] only when the model explicitly answered []
+    const cast = parseCast(out);  // [] only when the model explicitly answered []
+    if (cast === null) {
+        lastLlmError = `model replied but not with a JSON array — it said: "${clip(stripReasoning(out), 90)}"`;
+    }
+    return cast;
 }
 
 /**

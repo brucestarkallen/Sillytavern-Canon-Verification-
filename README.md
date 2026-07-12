@@ -56,6 +56,25 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.8.2 (reasoning models: the parser was never broken — the extractor was)
+
+Root cause of "Parser: failed" with a green self-test: `glm-5.2-fast` is a
+REASONING model. It wraps every answer in `<think>…</think>`, and the old
+extractor sliced from the FIRST `[` to the LAST `]` — when the thinking prose
+contained any bracket, the slice spanned reasoning + answer and JSON.parse died.
+Every scan, every background parse, silently. The self-test passed because it
+never needed JSON.
+
+1. Reasoning blocks (`<think>/<thinking>/<reasoning>`, closed, unclosed, or
+   stray-close) are stripped before extraction.
+2. Extraction now scans for BALANCED JSON candidates (string-aware, so brackets
+   inside quoted values don't break it) and tries them LAST-first — the final
+   answer sits at the end. Applies to the cast parser AND the dossier curator.
+3. When the model replies but not with a JSON array, the toast now shows what it
+   actually said — this exact bug would have self-reported in one glance.
+
+Proven by `test/proof.js` (142 assertions) + `test/sim.mjs` (23), all passing.
+
 ## Changelog — v0.8.1 (diagnosis kit: nothing fails silently, nothing hides its version)
 
 1. **Version everywhere.** The drawer header, the load line, and a one-time
