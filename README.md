@@ -56,6 +56,31 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.11.0 (the Cast Auditor — your referee — and settings that persist)
+
+Proven by `test/proof.js` (175 assertions) + `test/sim.mjs` (23), all passing.
+
+1. **Cast Auditor 🛡 (user-requested: "a dedicated AI that checks who is injected
+   and why").** v0.10's evidence check verifies a quote is IN the scene — it
+   cannot judge whether the quote is ABOUT the entity. "Her classmates gathered"
+   is real prose that refers to no one; a fabricated classmate rode it in.
+   Evidence is now split by STRENGTH: anchored (contains a token of the entity's
+   name, or place↔place pair) passes mechanically; weak evidence goes to a tiny
+   referee call with one narrow job — "does this quote refer to THIS entity in
+   THIS scene?" Unconfirmed = dropped; if the auditor itself fails, weak claims
+   never pass. Fires only when weak items exist.
+2. **Settings persist without prose.** "ANS should be there even if it's not in
+   the prose" — correct, that's what a setting IS. Entities now carry a
+   kind (character/place) at ground time; when a place enters the cast it
+   becomes the chat's CURRENT SETTING and injects every turn with zero mentions
+   required, until a new place supersedes it (blocklist still wins). Reason
+   line: `current setting (persists without mention)`.
+3. **"Why these" now shows the evidence** that put each cast entity in —
+   `— evidence: "Nanase bowed"` — so a wrong injection carries its own
+   explanation instead of demanding another debugging round.
+4. Cache panel now states plainly: an entry in the cache does NOT mean it
+   injects — "Why each was injected" is the truth of the note.
+
 ## Changelog — v0.10.0 (knowledge leak, root-caused: the parser must prove its cast)
 
 The phantom classmates (Ryōko, Hōsen) were a KNOWLEDGE LEAK, and the old prompt

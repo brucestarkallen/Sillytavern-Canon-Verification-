@@ -79,6 +79,7 @@ let parsedWords = new Set(); // lowercased candidate words already shown to the 
 let cgInFlight = false;      // guard: don't run two interceptor passes at once
 let lastCast = [];          // entities the parser last judged present (reused between gated runs)
 let castFocus = {};          // name-lc → "what about them is in play NOW" (latest parse)
+let castEvidence = {};       // name-lc → the scene words that put them in the cast
 let lastCastLen = 0;        // visible-chat length when lastCast was last confirmed (drives decay)
 let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
 let renderArcStatus = null;  // set by the settings UI; called on CHAT_CHANGED
@@ -86,7 +87,7 @@ let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.10.0";
+const CG_VERSION = "0.11.0";
 
 const defaultSettings = {
     enabled: true,
@@ -139,6 +140,9 @@ const defaultSettings = {
     // mobile): a blown budget silently kills the cast, and everything downstream
     // looks "not smart". Raise further if you still see timeouts.
     parserBudgetMs: 30000,
+    // The Cast Auditor: a dedicated referee call that judges weak evidence — does
+    // this quote actually REFER to this entity? Fires only when weak items exist.
+    castAuditor: true,
     // LLM-curated dossiers: the model reads each grounded page once (background,
     // cached forever) and writes the injection itself — identity, load-bearing
     // facts, secrets-as-secrets, voice, per-person dynamics. Regex sections stay
@@ -906,7 +910,8 @@ async function ensureGrounded(name, trusted = false) {
                 // subsection headers intact, so relationFor can slice "how A is with B"
                 // at note time for exactly the pair that's on screen.
                 const relRaw = extractSectionRaw(wikitext, ["relationships", "relationship"], 4000);
-                s.cache[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, found: true, ts: Date.now() };
+                const kind = (charSignal || charSection) ? "character" : "place";
+                s.cache[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, kind, found: true, ts: Date.now() };
                 // LLM curation runs in the BACKGROUND — this turn ships the regex
                 // sections immediately, the dossier upgrades every turn after.
                 if (s.llmDossier && (charSignal || charSection)) scheduleDossier(key, title, wikitext, relRaw);
@@ -1064,6 +1069,9 @@ function chatArc() {
 }
 function chatPin() {
     try { return getContext().chatMetadata?.canon_grounding_pin || ""; } catch (e) { return ""; }
+}
+function chatSettingKey() {
+    try { return getContext().chatMetadata?.canon_grounding_setting || ""; } catch (e) { return ""; }
 }
 function chatBlockNames() {
     try {
@@ -1320,6 +1328,15 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             present.push({ entry: found.entry, matchedName: pn, pinned: true });
         }
     }
+    // CURRENT SETTING: the location the story is in persists WITHOUT mention — it
+    // is where the scene happens, not something the prose must keep naming. Set by
+    // the parser whenever a place enters the cast; superseded by the next place;
+    // removable via the blocklist.
+    if (extras.settingKey && s.cache[extras.settingKey] && !usedKeysGlobal.has(extras.settingKey)) {
+        usedKeysGlobal.add(extras.settingKey);
+        present.push({ entry: s.cache[extras.settingKey], matchedName: s.cache[extras.settingKey].name, setting: true });
+    }
+
     if (castNames && castNames.length) {
         // Cast-driven: inject the entities identified as present, in centrality order.
         // The parser's judgment STANDS — it exists to catch entities the prose
@@ -1381,7 +1398,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const reasons = [];
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
-    for (const { entry, matchedName, pinned, swept } of present) {
+    for (const { entry, matchedName, pinned, swept, setting } of present) {
         if (blocks.length >= s.maxCharacters) break;
         if (isBlocked(entry, matchedName)) continue;
         const nameKey = (entry.name || "").toLowerCase();
@@ -1454,7 +1471,8 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         blocks.push(block);
         seenEntities.add(nameKey);
         total += block.length;
-        reasons.push(`${entry.name} ← ${pinned ? "pinned" : swept ? `named in scene (as "${matchedName}") — no parser needed` : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${entry.dossier ? " ✦" : ""}`);
+        const ev = castEvidence[(entry.name || "").toLowerCase()] || castEvidence[(matchedName || "").toLowerCase()];
+        reasons.push(`${entry.name} ← ${setting ? "current setting (persists without mention)" : pinned ? "pinned" : swept ? `named in scene (as "${matchedName}") — no parser needed` : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${ev ? ` — evidence: "${clip(ev, 60)}"` : ""}${entry.dossier ? " ✦" : ""}`);
     }
     lastMatchReasons = reasons;
 
@@ -1720,6 +1738,29 @@ function parseCast(text) {
  * salvage) fall back to the strictest check available: the name itself must
  * appear in the text.
  */
+const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|city|town|village|kingdom|empire|nation|guild|organization|organisation|company|agency|island|castle|palace|temple|church|dungeon|tower|district|region|world|realm|garden)\b/i;
+
+/**
+ * Split verified cast by evidence STRENGTH. Strong = the evidence (or name-in-text
+ * fallback) is anchored to the entity itself: it contains a token of the entity's
+ * name, or entity and evidence are both place-flavored ("…High School" ↔ "the
+ * school grounds"). Weak = the evidence is real scene text but nothing ties it to
+ * THIS entity — "her classmates gathered" is in the prose and refers to no one in
+ * particular. Weak items are exactly what the Cast Auditor exists to judge.
+ */
+function splitEvidenceStrength(cast, sceneText) {
+    const strong = [], weak = [];
+    for (const c of cast) {
+        if (!c.evidence) { strong.push(c); continue; }   // passed via name-in-text fallback
+        const ev = c.evidence.toLowerCase();
+        const tokens = String(c.name).toLowerCase().split(/\s+/).filter(t => t.length >= 3);
+        const anchored = tokens.some(t => ev.includes(t))
+            || (PLACE_WORDS.test(c.name) && PLACE_WORDS.test(ev));
+        (anchored ? strong : weak).push(c);
+    }
+    return { strong, weak };
+}
+
 function verifyCastEvidence(cast, sceneText) {
     if (!Array.isArray(cast)) return cast;
     const hay = String(sceneText).toLowerCase().replace(/\s+/g, " ");
@@ -1817,6 +1858,36 @@ async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } =
     }
 }
 
+/**
+ * THE CAST AUDITOR — a dedicated referee with one narrow, verifiable job: for each
+ * entity whose evidence is real scene text but not anchored to them, decide whether
+ * that evidence actually REFERS to that entity in this scene. Substring checks
+ * cannot judge reference; a model can, and it only ever sees the weak cases, so the
+ * call is tiny and rare. Anything it cannot confirm is dropped — strictness is the
+ * point. Fails safe: if the auditor itself fails, weak items are dropped, never
+ * waved through.
+ */
+async function auditCastEvidence(sceneText, weak) {
+    if (!weak.length) return [];
+    const items = weak.map(c => `- ${c.name} :: evidence: "${c.evidence}"`).join("\n");
+    const systemText =
+        "You are a strict referee for scene-reference claims in fiction. For each entity below, " +
+        "decide whether the quoted evidence genuinely REFERS TO that specific entity in this scene — " +
+        "not merely appears near them, and not because the entity plausibly exists in this world. " +
+        "Generic phrases ('her classmates', 'the students', 'everyone') refer to no specific entity. " +
+        'Respond with ONLY a JSON object mapping each entity name to true or false. No other text.';
+    const userText = `<scene>\n${sceneText}\n</scene>\n\n${items}\n\nJSON verdict:`;
+    const out = await llmCall(systemText, userText, { maxTokens: 200 });
+    if (!out) return [];   // auditor unavailable → weak claims do not pass
+    const verdict = parseJsonCandidates(out, "{", "}", v => v && typeof v === "object" && !Array.isArray(v));
+    if (!verdict) return [];
+    const norm = {};
+    for (const [k, v] of Object.entries(verdict)) norm[String(k).trim().toLowerCase()] = v === true;
+    const kept = weak.filter(c => norm[c.name.toLowerCase()] === true);
+    for (const c of weak) if (!kept.includes(c)) debug(`auditor rejected "${c.name}" — evidence doesn't refer to them`);
+    return kept;
+}
+
 async function parseSceneCharacters(sceneText) {
     const c = getContext();
     const s = settings();
@@ -1849,8 +1920,13 @@ async function parseSceneCharacters(sceneText) {
         lastLlmError = `model replied but not with a JSON array — it said: "${clip(stripReasoning(out), 90)}"`;
         return null;
     }
-    // Every listed entity must be provable against the scene it was parsed from.
-    return verifyCastEvidence(cast, sceneText);
+    // Every listed entity must be provable against the scene it was parsed from —
+    // and evidence that proves nothing in particular goes to the Cast Auditor.
+    const verified = verifyCastEvidence(cast, sceneText);
+    const { strong, weak } = splitEvidenceStrength(verified, sceneText);
+    if (!weak.length || !settings().castAuditor) return settings().castAuditor ? strong : verified;
+    const confirmed = await auditCastEvidence(sceneText, weak);
+    return [...strong, ...confirmed];
 }
 
 /**
@@ -1934,10 +2010,23 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                         lastCast = names;            // [] here is REAL info: clears a stale cast
                         lastCastLen = visibleLen;
                         castFocus = {};              // focus is a snapshot of THIS parse
-                        for (const p of parsed) if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                        castEvidence = {};
+                        for (const p of parsed) {
+                            if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                            if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
+                        }
                         if (names.length) {
                             await groundNames(names, true);   // trusted: model chose these (may be lore)
                             if (myEpoch !== chatEpoch) return;
+                            // A PLACE in the cast becomes the CURRENT SETTING — settings
+                            // persist without prose ("ANS should be there even if it's not
+                            // in the prose"). A later place supersedes it.
+                            for (const n of names) {
+                                const hit = cacheEntryFor(n.toLowerCase());
+                                if (hit && (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name))) {
+                                    setChatPin("canon_grounding_setting", hit.key);
+                                }
+                            }
                         }
                     }
                 }
@@ -2011,6 +2100,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const note = relevantCanonNote(scene, cast, chatArc(), {
             pinNames,
             blockNames: chatBlockNames(),
+            settingKey: chatSettingKey(),
             chatPin: chatPin(),
             globalPin: settings().pinnedGlobal,
         });
@@ -2078,7 +2168,11 @@ async function onMessageReceived() {
             lastCast = names;
             lastCastLen = visibleLen;
             castFocus = {};
-            for (const p of parsed) if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+            castEvidence = {};
+            for (const p of parsed) {
+                if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
+            }
             if (names.length) await groundNames(names, true);
         }
         return;
@@ -2175,6 +2269,11 @@ async function addSettingsUI() {
                     <span>Per-pair dynamics ("With Cid: …")</span>
                 </label>
                 <small class="cg-hint">When two grounded characters share a scene, inject how THIS one acts around THAT one, from the wiki's Relationships subsections (or the X/Relationships subpage). The fix for "stoic on the wiki → stoic with everyone".</small>
+                <label class="checkbox_label">
+                    <input id="cg_auditor" type="checkbox">
+                    <span>Cast Auditor 🛡</span>
+                </label>
+                <small class="cg-hint">A dedicated AI check on who gets injected and why: when the parser's evidence for an entity is real scene text but not clearly ABOUT them ("her classmates gathered"), a tiny referee call rules whether it truly refers to them. Unconfirmed = dropped. Fires only on weak cases.</small>
                 <label class="checkbox_label">
                     <input id="cg_dossier" type="checkbox">
                     <span>LLM-curated dossiers ✦</span>
@@ -2292,7 +2391,7 @@ async function addSettingsUI() {
                 <div class="cg-group-body">
                 <small><b>Cache</b> — everything grounded so far:</small>
                 <div id="cg_cache_list" class="cg-cache"></div>
-                <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry.</small>
+                <small class="cg-hint">Facts are fetched from the wiki once per entity, then reused forever (no repeat calls). × removes one entry so it re-fetches next time; "Clear all" wipes everything — do this after changing fields/keywords or fixing a wrong entry. An entry HERE does not mean it injects — "Why each was injected" below is the truth of what entered the note.</small>
                 <div style="margin-top:6px;">
                     <input id="cg_rescan" class="menu_button" type="button" value="Scan current scene now">
                     <input id="cg_preview" class="menu_button" type="button" value="👁 Preview injection">
@@ -2328,6 +2427,9 @@ async function addSettingsUI() {
     });
     $("#cg_dossier").prop("checked", s.llmDossier).on("input", function () {
         s.llmDossier = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    $("#cg_auditor").prop("checked", s.castAuditor).on("input", function () {
+        s.castAuditor = $(this).prop("checked"); saveSettingsDebounced();
     });
     $("#cg_pin_global").val(s.pinnedGlobal).on("input", function () {
         s.pinnedGlobal = $(this).val(); saveSettingsDebounced();
@@ -2440,6 +2542,7 @@ async function addSettingsUI() {
             const cast = pruneStaleCast((ctx.chat || []).filter(m => !m.is_system).length, scene);
             const note = relevantCanonNote(scene, cast, chatArc(), {
                 pinNames: chatPinNames(), blockNames: chatBlockNames(),
+                settingKey: chatSettingKey(),
                 chatPin: chatPin(), globalPin: s.pinnedGlobal,
             });
             lastInjection = note;
@@ -2525,7 +2628,11 @@ async function addSettingsUI() {
                     lastCast = names;
                     lastCastLen = (ctx.chat || []).filter(m => !m.is_system).length;
                     castFocus = {};
-                    for (const p of parsed) if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                    castEvidence = {};
+                    for (const p of parsed) {
+                        if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                        if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
+                    }
                     if (names.length) {
                         await groundNames(names, true);
                         if (myEpoch !== chatEpoch) return;
@@ -2656,6 +2763,7 @@ jQuery(async () => {
             parsedWords = new Set();
             lastCast = [];
             castFocus = {};
+            castEvidence = {};
             lastCastLen = 0;
             lastInjection = "";
             lastInjectionAt = 0;

@@ -20,6 +20,7 @@ const pieces = [
     "function ledgerNames() { return null; }  // stub: scan-mode ledger filter (not under test)",
     "let lastMatchReasons = [];               // stub: module-scope diagnostic the note builder writes",
     "let castFocus = {};                      // stub: scene-focus map written by the parser",
+    "let castEvidence = {};                   // stub: evidence map written by the parser",
     grab("const STOPWORDS", "function extractCandidateNames"),
     grab("function extractCandidateNames", "// ------"),
     grab("function isMediaTitle", "async function findPageTitle"),
@@ -51,6 +52,8 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
+         setEvidence: (m) => { castEvidence = m; },
+         splitEvidenceStrength,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
@@ -458,6 +461,36 @@ T("evidence check is case/whitespace-insensitive", api.verifyCastEvidence([{ nam
 T("evidence-less element kept when its NAME is in the text (compat)", api.verifyCastEvidence([{ name: "Nanase", now: "", evidence: "" }], SCENE).length === 1);
 T("all-fabricated cast verifies to explicit empty", api.verifyCastEvidence([{ name: "Ghost", now: "", evidence: "never said" }], SCENE).length === 0);
 T("parseCast passes evidence through", api.parseCast('[{"name":"Alpha","now":"x","evidence":"quoted words"}]')[0].evidence === "quoted words");
+
+// ---------------------------------------------------------------- v0.11: auditor split + setting persistence
+console.log("[auditor split / setting persistence]");
+const SC2 = "Nanase bowed as they entered the school grounds where her classmates gathered.";
+const split = api.splitEvidenceStrength([
+    { name: "Tsubasa Nanase", now: "", evidence: "Nanase bowed" },
+    { name: "Advanced Nurturing High School", now: "", evidence: "the school grounds" },
+    { name: "Ryōko Nishikawa", now: "", evidence: "her classmates gathered" },
+    { name: "Kakeru Ryūen", now: "", evidence: "" },
+], SC2);
+T("name-token evidence is strong", split.strong.some(c => c.name === "Tsubasa Nanase"));
+T("place-name + place-evidence pair is strong (ANS survives)", split.strong.some(c => c.name === "Advanced Nurturing High School"));
+T("generic evidence is WEAK → goes to the auditor, not the cast", split.weak.length === 1 && split.weak[0].name === "Ryōko Nishikawa");
+T("name-in-text fallback (no evidence) counts strong", split.strong.some(c => c.name === "Kakeru Ryūen"));
+sandbox.__settings.cache = {
+    "ans": { name: "Advanced Nurturing High School", found: true, wiki: "w", aliases: ["ANHS"], kind: "place",
+             sections: { identity: "Advanced Nurturing High School is a government-established institution." }, rel: {} },
+    "nanase": { name: "Tsubasa Nanase", found: true, wiki: "w", aliases: [], kind: "character",
+             sections: { identity: "Tsubasa Nanase is a first-year student." }, rel: {} },
+};
+api.setFocus({}); api.setEvidence({});
+const setnote = api.relevantCanonNote(["she walked silently down the corridor"], ["Tsubasa Nanase"], null, { settingKey: "ans" });
+T("current setting injects with ZERO mention in prose", /Advanced Nurturing High School:/.test(setnote));
+api.relevantCanonNote(["she walked"], [], null, { settingKey: "ans" });
+T("setting reason says it persists", api.getReasons().some(r => /current setting \(persists without mention\)/.test(r)));
+T("blocklist still beats the setting", !/Advanced Nurturing High School:/.test(api.relevantCanonNote([], [], null, { settingKey: "ans", blockNames: ["ANHS"] })));
+api.setEvidence({ "tsubasa nanase": "Nanase bowed" });
+api.relevantCanonNote(["nanase bowed"], ["Tsubasa Nanase"]);
+T("Why-these carries the evidence quote", api.getReasons().some(r => /Tsubasa Nanase/.test(r) && /evidence: "Nanase bowed"/.test(r)));
+api.setEvidence({});
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
