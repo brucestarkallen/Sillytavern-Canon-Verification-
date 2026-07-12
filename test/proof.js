@@ -32,6 +32,8 @@ const pieces = [
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
     grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
+    grab("function apiBase", "async function"),
+    grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
     grab("const DEFAULT_PROMPT_HEADER", "const DEFAULT_PROMPT_PARSER"),
     grab("function relevantCanonNote", "// ------"),
 ];
@@ -55,7 +57,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setFocus: (m) => { castFocus = m; },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -552,6 +554,15 @@ T("no match anywhere → ONE anchor line only (less, not more)", (idle.match(/- 
 sandbox.__settings.cache["oriana kingdom"].kind = "place";
 const dedup = api.relevantCanonNote(["she sipped tea"], ["Rose Oriana"], null, { settingKey: "oriana kingdom" });
 T("background entity already present as a block gets NO duplicate Context line", /Oriana Kingdom:/.test(dedup) && !/- Context: Oriana Kingdom/.test(dedup));
+
+// ---------------------------------------------------------------- v0.16: apiBase hosts + intent parse
+console.log("[hosts / ask-canon intent]");
+T("bare subdomain → fandom", api.apiBase("the-eminence-in-shadow") === "https://the-eminence-in-shadow.fandom.com/api.php");
+T("dotted entry → full MediaWiki host (wiki.gg)", api.apiBase("terraria.wiki.gg") === "https://terraria.wiki.gg/api.php");
+T("scheme/path stripped from pasted URLs", api.apiBase("https://terraria.wiki.gg/wiki/Guide") === "https://terraria.wiki.gg/api.php");
+T("intent parsed with fences + chatter", JSON.stringify(api.parseCanonIntent('sure! ```json\n{"action":"pin","target":"Rose Oriana"}\n```')) === '{"action":"pin","target":"Rose Oriana"}');
+T("unknown action → null", api.parseCanonIntent('{"action":"summon","target":"X"}') === null);
+T("missing target → null", api.parseCanonIntent('{"action":"pin","target":""}') === null);
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

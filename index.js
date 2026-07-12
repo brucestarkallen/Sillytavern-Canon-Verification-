@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.15.1";
+const CG_VERSION = "0.16.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -482,8 +482,12 @@ function extractCandidateNames(text) {
 // ---------------------------------------------------------------------------
 
 function apiBase(wiki) {
-    // Fandom wikis: https://<sub>.fandom.com/api.php
-    return `https://${wiki.trim()}.fandom.com/api.php`;
+    // Bare subdomain → Fandom. Anything WITH a dot is a full MediaWiki host —
+    // wiki.gg (where many big fandoms migrated), miraheze, self-hosted wikis:
+    //   "the-eminence-in-shadow"  → https://the-eminence-in-shadow.fandom.com/api.php
+    //   "terraria.wiki.gg"        → https://terraria.wiki.gg/api.php
+    const w = wiki.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    return w.includes(".") ? `https://${w}/api.php` : `https://${w}.fandom.com/api.php`;
 }
 
 /** Non-character / media / meta pages we should never ground as a character. */
@@ -1103,6 +1107,96 @@ async function resolveRelated(entries) {
         }
     }
     if (wanted.length) await groundNames(wanted, true);
+}
+
+const CANON_INTENTS = new Set(["ground", "pin", "block", "arc", "note", "info"]);
+
+/** Parse the Ask-Canon router's JSON verdict into a safe {action, target}. */
+function parseCanonIntent(text) {
+    const obj = parseJsonCandidates(text, "{", "}", v => v && typeof v === "object" && !Array.isArray(v));
+    if (!obj || typeof obj.action !== "string") return null;
+    const action = obj.action.trim().toLowerCase();
+    const target = typeof obj.target === "string" ? obj.target.trim() : "";
+    if (!CANON_INTENTS.has(action) || !target) return null;
+    return { action, target: clip(target, 300) };
+}
+
+/**
+ * 🗣 ASK CANON — say what you want in plain words; a tiny router call maps it to
+ * the extension's own primitives and executes. "inject rose oriana" → ground +
+ * always-present pin; "set arc to lawless city" → story position; "never show
+ * ryoko" → blocklist; "remember: the engagement is broken" → chat pin text;
+ * "what do you know about beatrix" → ground + show her dossier. User commands
+ * are sovereign — no evidence gate applies to what you explicitly order.
+ */
+async function askCanon(request) {
+    const systemText =
+        "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
+        '"ground" (fetch canon for an entity so it can appear), ' +
+        '"pin" (make a character ALWAYS injected in this chat), ' +
+        '"block" (NEVER inject this entity in this chat), ' +
+        '"arc" (set the story position to an arc/chapter), ' +
+        '"note" (remember a user-authored fact/rule for this chat — target is the full text), ' +
+        '"info" (report what is known about an entity). ' +
+        'Respond ONLY with JSON: {"action": "...", "target": "..."}. ' +
+        '"inject X" or "add X" means pin. If the request is a fact or rule rather than a name, use note.';
+    const out = await llmCall(systemText, request, { maxTokens: 120, budgetMs: Math.min(Number(settings().parserBudgetMs) || 30000, 12000) });
+    const intent = out && parseCanonIntent(out);
+    if (!intent) return { ok: false, msg: lastLlmError || "couldn't understand that — try e.g. \"pin Rose Oriana\" or \"set arc to Lawless City\"" };
+    const t = intent.target;
+    const ctx = getContext();
+    switch (intent.action) {
+        case "ground": {
+            await groundNames([t], true);
+            const hit = cacheEntryFor(t.toLowerCase());
+            return hit && hit.entry.found
+                ? { ok: true, msg: `grounded ${hit.entry.name} — ${clip((hit.entry.dossier && hit.entry.dossier.identity) || hit.entry.sections.identity || "no identity on the page", 140)}` }
+                : { ok: false, msg: `no usable wiki page found for "${t}"` };
+        }
+        case "pin": {
+            await groundNames([t], true);
+            const cur = chatPinNames();
+            if (!cur.some(n => n.toLowerCase() === t.toLowerCase())) {
+                setChatPin("canon_grounding_pin_names", [...cur, t].join(", "));
+            }
+            if (renderChatScoped) try { renderChatScoped(); } catch (e) {}
+            return { ok: true, msg: `pinned — ${t} now injects every turn in this chat` };
+        }
+        case "block": {
+            const cur = chatBlockNames();
+            if (!cur.some(n => n.toLowerCase() === t.toLowerCase())) {
+                setChatPin("canon_grounding_block", [...cur, t].join(", "));
+            }
+            if (renderChatScoped) try { renderChatScoped(); } catch (e) {}
+            return { ok: true, msg: `blocked — ${t} will never inject in this chat` };
+        }
+        case "arc": {
+            const got = await groundArc(t);
+            if (renderArcStatus) try { renderArcStatus(); } catch (e) {}
+            return got ? { ok: true, msg: `story position → ${got.title}` }
+                       : { ok: false, msg: `no arc/chapter page found for "${t}"` };
+        }
+        case "note": {
+            const cur = chatPin();
+            setChatPin("canon_grounding_pin", cur ? cur + "\n" + t : t);
+            if (renderChatScoped) try { renderChatScoped(); } catch (e) {}
+            return { ok: true, msg: "noted — added to this chat's pinned canon" };
+        }
+        case "info": {
+            await groundNames([t], true);
+            const hit = cacheEntryFor(t.toLowerCase());
+            if (!hit || !hit.entry.found) return { ok: false, msg: `nothing on the wiki for "${t}"` };
+            const e = hit.entry;
+            const d = e.dossier;
+            const bits = [
+                (d && d.identity) || e.sections.identity,
+                d && d.facts.length ? `Facts: ${d.facts.slice(0, 2).join("; ")}` : "",
+                d && d.secrets.length ? `${d.secrets.length} guarded secret(s)` : "",
+            ].filter(Boolean).join(" · ");
+            return { ok: true, msg: `${e.name}${d ? " ✦" : ""}: ${clip(bits || "grounded, thin page", 260)}` };
+        }
+    }
+    return { ok: false, msg: "unknown action" };
 }
 
 async function groundArc(query) {
@@ -2367,7 +2461,7 @@ async function addSettingsUI() {
                 <div class="cg-group-body">
                 <small><b>Wiki</b> — where facts come from:</small>
                 <label>Wiki subdomains (comma-separated) — active for this story</label>
-                <small class="cg-hint">The part before .fandom.com for your story's wiki (e.g. the-eminence-in-shadow). Add several, comma-separated, for a crossover.</small>
+                <small class="cg-hint">The part before .fandom.com (e.g. the-eminence-in-shadow) — or a FULL host for non-Fandom MediaWiki sites like wiki.gg (e.g. terraria.wiki.gg). Add several, comma-separated, for a crossover.</small>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
                 <div style="margin-top:4px;">
                     <input id="cg_save_wiki" class="menu_button" type="button" value="+ Save active to library">
@@ -2380,6 +2474,13 @@ async function addSettingsUI() {
                 <details class="cg-group" open>
                 <summary>🧭 Story position &amp; pinned canon</summary>
                 <div class="cg-group-body">
+                <small><b>🗣 Ask Canon</b> — say it in plain words; the extension does it:</small>
+                <div style="display:flex; gap:4px; align-items:center;">
+                    <input id="cg_ask" class="text_pole" type="text" placeholder='e.g. "pin Rose Oriana" · "set arc to Lawless City" · "never show Ryōko" · "remember: the engagement is broken"' style="flex:1;">
+                    <div id="cg_ask_go" class="menu_button" title="Do it">▶</div>
+                </div>
+                <small id="cg_ask_status" class="cg-hint">—</small>
+                <hr>
                 <small><b>Story position</b> — pin an arc/chapter so the model knows exactly where in canon you are (and never spoils past it):</small>
                 <div style="display:flex; gap:4px; align-items:center;">
                     <input id="cg_arc" class="text_pole" type="text" placeholder="e.g. Lawless City Arc, Chapter 45" style="flex:1;">
@@ -2682,6 +2783,16 @@ async function addSettingsUI() {
     renderArcStatus = renderArc;
     $("#cg_arc").val(s.arcTitle || "");
     renderArc();
+    const runAsk = async () => {
+        const q = String($("#cg_ask").val() || "").trim();
+        if (!q) return;
+        $("#cg_ask_status").text("working…");
+        const r = await askCanon(q);
+        $("#cg_ask_status").text((r.ok ? "✓ " : "✕ ") + r.msg);
+        if (r.ok) { $("#cg_ask").val(""); toastr?.success?.(r.msg); } else toastr?.warning?.(r.msg);
+    };
+    $("#cg_ask_go").on("click", runAsk);
+    $("#cg_ask").on("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); runAsk(); } });
     $("#cg_arc_go").on("click", async function () {
         const q = String($("#cg_arc").val() || "").trim();
         if (!q) return;

@@ -56,6 +56,24 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.16.0 (🗣 Ask Canon + wiki.gg)
+
+Proven by `test/proof.js` (194 assertions) + `test/sim.mjs` (23), all passing.
+
+1. **🗣 Ask Canon** — say what you want in plain words, the extension does it.
+   One box, one tiny router call mapping your request onto the primitives that
+   already exist: "pin Rose Oriana" → always-present; "inject X" → same;
+   "set arc to Lawless City" → story position; "never show Ryōko" → blocklist;
+   "remember: the engagement is broken" → chat pinned canon; "what do you know
+   about Beatrix" → grounds her and reports identity/facts/secret-count.
+   Your explicit commands are sovereign — no evidence gate applies to them.
+   Enter key works; results land in the status line and a toast.
+2. **wiki.gg and any MediaWiki host.** A wiki entry containing a dot is treated
+   as a full host: `terraria.wiki.gg` works alongside Fandom subdomains
+   (pasted URLs are stripped to the host). Many large fandoms migrated off
+   Fandom — this covers them with the same free, structured API, no paid
+   search needed.
+
 ## Changelog — v0.15.1 (factory reset: behavior resets, connections and content survive)
 
 The ♻ reset returns EVERYTHING tunable to the best-tested defaults — all eight
