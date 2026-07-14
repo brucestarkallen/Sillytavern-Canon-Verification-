@@ -36,7 +36,7 @@ const pieces = [
     grab("function apiBase", "async function"),
     grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
     grab("const DEFAULT_PROMPT_HEADER", "const DEFAULT_PROMPT_PARSER"),
-    grab("function relevantCanonNote", "// ------"),
+    grab("/**\n * ONE Appearance emitter", "// ------"),
 ];
 
 // stubs for the module-scope things the sliced code touches
@@ -59,7 +59,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -677,6 +677,23 @@ T("learned words never re-trigger (converges)", api.needsFirstMeetWait("you meet
 T("conversation vocabulary counts as known (verbs never gate)", api.needsFirstMeetWait("you embrace rose oriana warmly", ["you embrace people warmly often"]) === false);
 api.setParsedWords([]);
 T("empty message → no wait", api.needsFirstMeetWait("") === false);
+
+// ---------------------------------------------------------------- v0.24: look prose (Ayanokōji verbatim)
+console.log("[look prose]");
+const AYAN = "Kiyotaka is a tall and lean young man with brown hair, brown eyes, and a fair complexion. He is usually seen wearing a standard school uniform. Outside of school, he wears a white hoodie covering a green shirt with an orange stripe along with brown pants. He is also seen wearing a blue vest over a white shirt and brown pants. He has grown taller since his first arrival at the school.";
+const lk = api.extractLookProse(AYAN);
+T("look = wiki's own opening description, sentence-cut", lk.startsWith("Kiyotaka is a tall and lean young man") && /fair complexion/.test(lk) && lk.length <= 300 && /[.!?]$/.test(lk));
+T("empty prose → empty look", api.extractLookProse("") === "");
+sandbox.__settings.cache = {
+    "ayan": { name: "Kiyotaka Ayanokōji", found: true, wiki: "w", aliases: [], kind: "character",
+              sections: { identity: "A student.", physical: "haircolor: Brown; eyecolor: Brown; height: 176 cm",
+                          look: "Kiyotaka is a tall and lean young man with brown hair, brown eyes, and a fair complexion. He is usually seen wearing a standard school uniform." }, rel: {} },
+};
+api.setEvidence({}); api.setFocus({});
+const an = api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"]);
+T("Appearance leads with prose, robotic facts deduped into bracket", /- Appearance: Kiyotaka is a tall and lean young man/.test(an) && !/haircolor: Brown/.test(an) && /\[height: 176 cm\]/.test(an));
+delete sandbox.__settings.cache["ayan"].sections.look;
+T("no look → plain facts line (fallback intact)", /- Appearance: haircolor: Brown; eyecolor: Brown; height: 176 cm/.test(api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"])));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

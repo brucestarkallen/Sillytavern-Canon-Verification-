@@ -56,6 +56,29 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.24.0 (Appearance as the wiki wrote it — not a database row)
+
+Proven by `test/proof.js` (232 assertions) + `test/sim.mjs` (23), all passing.
+
+"hair: brown; eyes: brown" was fragment-mining over prose that already said it
+better: "a tall and lean young man with brown hair, brown eyes, and a fair
+complexion. He is usually seen wearing a standard school uniform." Build,
+complexion, clothing, even "considered very handsome" all live in the
+Appearance section's OPENING sentences — so now they're kept AS PROSE:
+
+1. **Look prose**: the Appearance section's opening description (≤300 chars,
+   sentence-boundary cut) leads the Appearance line, exactly as the wiki wrote
+   it. The Ayanokōji paragraph is a verbatim test fixture.
+2. **Exact facts as a deduped bracket**: infobox colors ride behind the prose
+   as `[height: 176 cm]` — anti-drift stays — but any fact whose value the
+   prose already states stays home (no "brown hair… [haircolor: Brown]").
+3. **One emitter for every branch** (dossier and non-dossier both) — the old
+   split-rendering meant fixes could land in one path and miss the other.
+4. `notably:` distinguishing details now scan only BEYOND the look window
+   (Gamma's sentence-four mole still surfaces; duplicates don't).
+5. Fallbacks intact: no Appearance prose → the exact-facts line as before.
+   Existing entries pick up their look on re-ground (✕ once or new chat).
+
 ## Changelog — v0.23.0 (⏱🤝 first meetings wait — introductions are never wrong)
 
 Proven by `test/proof.js` (228 assertions) + `test/sim.mjs` (23), all passing.

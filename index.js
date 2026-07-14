@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.23.0";
+const CG_VERSION = "0.24.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -880,6 +880,26 @@ function extractQuotes(sectionRaw, maxQuotes = 3, maxLen = 420) {
  * deceptively strong". Pull up to 2 short sentences containing distinctive
  * markers, so Gamma's mole makes it into Appearance alongside hair and eyes.
  */
+/**
+ * The wiki already wrote the physical description better than fragment-mining
+ * recombines it: "a tall and lean young man with brown hair, brown eyes, and a
+ * fair complexion. He is usually seen wearing…" — build, complexion, clothing,
+ * even "considered very handsome" all live in the Appearance section's OPENING
+ * sentences. Take them as prose, sentence-boundary cut.
+ */
+function extractLookProse(prose, maxChars = 300) {
+    if (!prose) return "";
+    let out = "";
+    for (const sRaw of String(prose).split(/(?<=[.!?])\s+/)) {
+        const sent = sRaw.trim();
+        if (!sent || sent.length < 10) continue;
+        if (out && (out.length + 1 + sent.length) > maxChars) break;
+        if (!out && sent.length > maxChars) { out = sent.slice(0, maxChars); break; }
+        out = out ? out + " " + sent : sent;
+    }
+    return out;
+}
+
 const DISTINGUISH_RE = /\b(mole|beauty mark|beauty spot|scar|scars|tattoo|birthmark|freckle|freckles|heterochrom\w*|eyepatch|fang|fangs|pointed ears|slender|petite|muscular|voluptuous|curvaceous|lithe|stocky|towering|diminutive|androgynous|ample|well[- ]built|delicate features)\b/i;
 function extractDistinguishing(prose, maxSentences = 2) {
     if (!prose) return "";
@@ -1018,19 +1038,21 @@ async function ensureGrounded(name, trusted = false) {
                 physical = extractFromProse(appearanceProse || extractLead(wikitext, 1200));
                 if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
             }
-            // CORE-ATTRIBUTE COMPLETION — dialect-proof: whatever exotic template or
-            // field layout the infobox used, if the page's Appearance prose mentions
-            // hair or eyes and the extracted line doesn't carry that attribute, mine
-            // the prose for it. Hair can never again vanish to an infobox quirk.
+            // The LOOK: the Appearance section's opening description, kept as the
+            // wiki wrote it — build, complexion, clothing, all of it.
+            const look = extractLookProse(appearanceProse);
+            // CORE-ATTRIBUTE COMPLETION — dialect-proof: if neither the infobox line
+            // nor the look prose carries hair/eyes but the page mentions them, mine
+            // the phrase. Hair can never vanish to an infobox quirk.
             const proseBits = extractFromProse(appearanceProse) || "";
             for (const attr of ["hair", "eye"]) {
-                if (physical && new RegExp(attr, "i").test(physical)) continue;
+                if (new RegExp(attr, "i").test(physical + " " + look)) continue;
                 const bit = proseBits.split(/;\s*/).find(p => new RegExp(attr, "i").test(p));
                 if (bit) physical = physical ? `${physical}; ${bit.trim()}` : bit.trim();
             }
-            // Distinguishing details from the prose ALWAYS append — the infobox has
-            // colors, the prose has the mole, the scar, the build.
-            const notable = extractDistinguishing(appearanceProse);
+            // Distinguishing details BEYOND the look window still append — Gamma's
+            // mole may be sentence four; inside the window it's already in the look.
+            const notable = extractDistinguishing(appearanceProse.slice(look.length));
             if (notable) physical = physical ? `${physical}; notably: ${notable}` : notable;
 
             // For the other categories, look in BOTH infobox fields and prose sections,
@@ -1106,6 +1128,7 @@ async function ensureGrounded(name, trusted = false) {
                 // subsection headers intact, so relationFor can slice "how A is with B"
                 // at note time for exactly the pair that's on screen.
                 const relRaw = extractSectionRaw(wikitext, ["relationships", "relationship"], 4000);
+                if (look) sections.look = look;
                 const kind = (charSignal || charSection) ? "character" : "place";
                 c[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, kind, found: true, ts: Date.now() };
                 // LLM curation runs in the BACKGROUND — this turn ships the regex
@@ -1617,6 +1640,25 @@ function isUnhandledName(n) {
  *  - Otherwise fall back to scanning the visible scene for grounded names (regex mode).
  * Hard-capped by count / per-entity / total length either way.
  */
+/**
+ * ONE Appearance emitter for every branch: the wiki's own opening description
+ * as prose, with exact infobox facts as a compact deduped bracket — a fact
+ * whose value the prose already states stays home.
+ */
+function appearanceLine(entry) {
+    const look = (entry.sections && entry.sections.look) || "";
+    let facts = (entry.sections && entry.sections.physical) || "";
+    if (!look && !facts) return "";
+    if (look && facts) {
+        const lookLc = look.toLowerCase();
+        facts = facts.split(/;\s*/).filter(f => {
+            const val = (f.split(":")[1] || f).trim().toLowerCase();
+            return val && !lookLc.includes(val);
+        }).join("; ");
+    }
+    return look ? `  - Appearance: ${look}${facts ? ` [${facts}]` : ""}` : `  - Appearance: ${facts}`;
+}
+
 function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const s = settings();
     const msgs = sceneMsgs || [];
@@ -1780,7 +1822,10 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 lines.push(`  - Identity: ${identity}`);
             }
             const nf = focusLine(); if (nf) lines.push(nf);
-            if (s.physical && entry.sections.physical) lines.push(`  - Appearance: ${entry.sections.physical}`);
+            if (s.physical) {
+                const al = appearanceLine(entry);
+                if (al) lines.push(al);
+            }
             const idLc = (identity || "").toLowerCase();
             const pool = d.facts.filter(f => !idLc.includes(f.toLowerCase().replace(/[.?!]$/, "")));
             // Scene-conditional selection, same trick as Now/Context: score each fact
@@ -1834,7 +1879,11 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             if (entry.sections.identity) lines.push(`  - Identity: ${entry.sections.identity}`);
             const nf = focusLine(); if (nf) lines.push(nf);
             for (const cat of order) {
-                if (s[cat] && entry.sections[cat]) lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
+                if (cat === "physical") {
+                    if (s.physical) { const al = appearanceLine(entry); if (al) lines.push(al); }
+                } else if (s[cat] && entry.sections[cat]) {
+                    lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
+                }
                 if (cat === "personality") lines.push(...dynLines());
             }
         }
