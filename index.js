@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.24.0";
+const CG_VERSION = "0.24.1";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -152,7 +152,7 @@ const DEFAULT_PROMPT_DOSSIER =
         "Extract only what matters for portraying this character accurately in scenes. " +
         "Return JSON with exactly these keys: " +
         '{"identity": one sentence — who they are (title, role, affiliation); ' +
-        '"brief": one flowing paragraph, 60–100 words, third person present tense, weaving who they are, their manner, and what defines them — natural prose a narrator absorbs in one read; no lists, no headers; ' +
+        '"brief": one flowing paragraph, 60–100 words, third person present tense, weaving who they are, their manner, and what defines them — natural prose a narrator absorbs in one read; no lists, no headers; do NOT begin with or repeat the character\'s name (the block header already names them); ' +
         '"facts": up to 8 short story-relevant facts a narrator must not get wrong; ' +
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
@@ -900,6 +900,31 @@ function extractLookProse(prose, maxChars = 300) {
     return out;
 }
 
+/**
+ * SMART = whole content, zero waste. The block header already names the
+ * character — the look prose repeating "Kiyotaka is a tall…" pays for the name
+ * twice. Strip the leading subject, compress scaffolding phrases ("He is
+ * usually seen wearing" → "Usually wears"), keep every fact intact.
+ */
+function tightenLook(look, entityName) {
+    if (!look) return "";
+    let t = String(look).trim();
+    const toks = String(entityName || "").split(/\s+/).filter(w => w.length >= 2)
+        .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    if (toks.length) {
+        const namePat = `(?:${toks.join("|")})(?:\\s+(?:${toks.join("|")}))*`;
+        t = t.replace(new RegExp(`^${namePat}\\s+(?:is|was)\\s+(a|an|the)\\s+`, "i"),
+            (m, art) => art.charAt(0).toUpperCase() + art.slice(1) + " ");
+        t = t.replace(new RegExp(`^${namePat}\\s+(?:is|was)\\s+`, "i"), "");
+        t = t.replace(new RegExp(`^${namePat}\\s+has\\s+`, "i"), "Has ");
+    }
+    t = t.replace(/\b(?:He|She|They)\s+(?:is|are)\s+(?:usually|often|typically)\s+seen\s+wearing\b/gi, "Usually wears");
+    t = t.replace(/\b(?:He|She|They)\s+(?:is|are)\s+also\s+seen\s+wearing\b/gi, "Also wears");
+    t = t.replace(/\b(?:He|She|They)\s+(?:is|are)\s+seen\s+wearing\b/gi, "Wears");
+    if (t && /^[a-z]/.test(t)) t = t.charAt(0).toUpperCase() + t.slice(1);
+    return t;
+}
+
 const DISTINGUISH_RE = /\b(mole|beauty mark|beauty spot|scar|scars|tattoo|birthmark|freckle|freckles|heterochrom\w*|eyepatch|fang|fangs|pointed ears|slender|petite|muscular|voluptuous|curvaceous|lithe|stocky|towering|diminutive|androgynous|ample|well[- ]built|delicate features)\b/i;
 function extractDistinguishing(prose, maxSentences = 2) {
     if (!prose) return "";
@@ -1040,7 +1065,7 @@ async function ensureGrounded(name, trusted = false) {
             }
             // The LOOK: the Appearance section's opening description, kept as the
             // wiki wrote it — build, complexion, clothing, all of it.
-            const look = extractLookProse(appearanceProse);
+            const look = tightenLook(extractLookProse(appearanceProse), title);
             // CORE-ATTRIBUTE COMPLETION — dialect-proof: if neither the infobox line
             // nor the look prose carries hair/eyes but the page mentions them, mine
             // the phrase. Hair can never vanish to an infobox quirk.

@@ -56,6 +56,21 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.24.1 (smart = whole content, zero waste)
+
+Proven by `test/proof.js` (236 assertions) + `test/sim.mjs` (23), all passing.
+
+The block header already names the character — prose re-paying for the name is
+waste. Ground-time tightening (deterministic, zero per-turn cost):
+
+1. Leading subject stripped: "Kiyotaka is a tall and lean young man…" →
+   "A tall and lean young man…"; "Gamma has a beauty mark…" → "Has a beauty
+   mark…". Every fact intact.
+2. Scaffolding compressed: "He is usually seen wearing" → "Usually wears";
+   "also seen wearing" → "Also wears".
+3. The dossier brief prompt now forbids opening with or repeating the name —
+   the header pays for it once, nothing else does.
+
 ## Changelog — v0.24.0 (Appearance as the wiki wrote it — not a database row)
 
 Proven by `test/proof.js` (232 assertions) + `test/sim.mjs` (23), all passing.

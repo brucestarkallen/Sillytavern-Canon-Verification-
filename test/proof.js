@@ -59,7 +59,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -683,15 +683,20 @@ console.log("[look prose]");
 const AYAN = "Kiyotaka is a tall and lean young man with brown hair, brown eyes, and a fair complexion. He is usually seen wearing a standard school uniform. Outside of school, he wears a white hoodie covering a green shirt with an orange stripe along with brown pants. He is also seen wearing a blue vest over a white shirt and brown pants. He has grown taller since his first arrival at the school.";
 const lk = api.extractLookProse(AYAN);
 T("look = wiki's own opening description, sentence-cut", lk.startsWith("Kiyotaka is a tall and lean young man") && /fair complexion/.test(lk) && lk.length <= 300 && /[.!?]$/.test(lk));
+const tl = api.tightenLook(lk, "Kiyotaka Ayanokōji");
+T("tighten: leading name never re-paid", tl.startsWith("A tall and lean young man with brown hair") && !/Kiyotaka/.test(tl));
+T("tighten: scaffolding compressed", /Usually wears a standard school uniform\./.test(tl) && !/usually seen wearing/i.test(tl));
+T("tighten: facts intact", /fair complexion/.test(tl) && /brown hair/.test(tl));
+T("tighten: 'has' form works", api.tightenLook("Gamma has a beauty mark under her left eye.", "Gamma") === "Has a beauty mark under her left eye.");
 T("empty prose → empty look", api.extractLookProse("") === "");
 sandbox.__settings.cache = {
     "ayan": { name: "Kiyotaka Ayanokōji", found: true, wiki: "w", aliases: [], kind: "character",
               sections: { identity: "A student.", physical: "haircolor: Brown; eyecolor: Brown; height: 176 cm",
-                          look: "Kiyotaka is a tall and lean young man with brown hair, brown eyes, and a fair complexion. He is usually seen wearing a standard school uniform." }, rel: {} },
+                          look: "A tall and lean young man with brown hair, brown eyes, and a fair complexion. Usually wears a standard school uniform." }, rel: {} },
 };
 api.setEvidence({}); api.setFocus({});
 const an = api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"]);
-T("Appearance leads with prose, robotic facts deduped into bracket", /- Appearance: Kiyotaka is a tall and lean young man/.test(an) && !/haircolor: Brown/.test(an) && /\[height: 176 cm\]/.test(an));
+T("Appearance leads with prose, robotic facts deduped into bracket", /- Appearance: A tall and lean young man/.test(an) && !/haircolor: Brown/.test(an) && /\[height: 176 cm\]/.test(an));
 delete sandbox.__settings.cache["ayan"].sections.look;
 T("no look → plain facts line (fallback intact)", /- Appearance: haircolor: Brown; eyecolor: Brown; height: 176 cm/.test(api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"])));
 
