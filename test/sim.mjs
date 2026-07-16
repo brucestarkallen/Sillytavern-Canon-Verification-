@@ -2,7 +2,8 @@
  * Integration simulation for Canon Grounding — self-contained: builds a stub
  * SillyTavern module tree in a temp dir, copies the real index.js in, and drives
  * the actual interceptor through race scenarios (starvation, serial clobber,
- * epoch guard, cast decay, alias dedupe). Run: node test/sim.mjs
+ * epoch guard, cast decay, alias dedupe, dossier chat-switch isolation).
+ * Run: node test/sim.mjs
  */
 import fs from "fs";
 import os from "os";
@@ -151,6 +152,50 @@ const sweepFetches = fetchLog.length;
 await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 T("cached entity named by the AI is injected", /FreshChar:/.test(lastInjection()));
 T("sweep costs zero fetches", fetchLog.length === sweepFetches);
+
+console.log("[8] dossier chat-switch isolation (same key, two universes)");
+// Ground a brand-new character in chat A with dossiers ON, switch to chat B
+// (which has its OWN same-named character) while the dossier LLM call is still
+// pending, then let it finish. The dossier must land on A's entry object and
+// NEVER on B's — key-lookup-after-await was exactly how one universe's dossier
+// used to overwrite another's.
+extension_settings.canon_grounding.llmDossier = true;
+const ctxA = globalThis.__ctx;
+const cacheA = ctxA.chatMetadata.canon_grounding_cache;
+const qBase = parseQueue.length;
+ctxA.chat.push(msg("Then Twinname enters the room quietly.", false));
+const run8 = intercept(ctxA.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("parse fired for the new name", parseQueue.length === qBase + 1);
+parseQueue[qBase].resolve('["Twinname"]');
+await run8;
+await sleep(30);   // let ensureGrounded finish + scheduleDossier queue its LLM call
+T("chat A grounded the character", !!(cacheA.twinname && cacheA.twinname.found));
+T("dossier LLM call is in flight", parseQueue.length === qBase + 2);
+T("in-flight stamp sits on A's entry", !!cacheA.twinname.dossierTs);
+// --- switch to chat B while the dossier builds ---
+globalThis.__ctx = { ...ctxA, chat: [], chatMetadata: { canon_grounding_cache: {
+    twinname: { name: "Twinname", sections: { physical: "hair: black" }, aliases: [], wiki: "testwiki", found: true, ts: Date.now() },
+} } };
+const cacheB = globalThis.__ctx.chatMetadata.canon_grounding_cache;
+// No CHAT_CHANGED event needed: the dossier fix is ENTRY-binding, not epoch —
+// getContext() now resolving to chat B is exactly the hazard under test.
+parseQueue[qBase + 1].resolve('{"identity":"UNIVERSE-A person","brief":"built from chat A wikitext"}');
+await sleep(30);
+T("B's same-named character got NO dossier", !cacheB.twinname.dossier);
+T("B's entry carries no in-flight stamp either", !cacheB.twinname.dossierTs);
+T("the dossier landed on A's entry (the one that asked)", !!(cacheA.twinname.dossier && cacheA.twinname.dossier.identity === "UNIVERSE-A person"));
+extension_settings.canon_grounding.llmDossier = false;
+
+console.log("[9] cross-chat write guards (static witnesses)");
+T("scheduleDossier is entry-bound (signature)", /function scheduleDossier\(entry, name, wikitext, relRaw\)/.test(src));
+T("dossier .then never re-looks-up by key", !/buildDossier\([^)]*\)\.then\(d => \{\s*\n\s*const e = cache\(\)/.test(src));
+T("groundArc captures its epoch at entry", /async function groundArc\(query\) \{\s*\n\s*const myEpoch = chatEpoch;/.test(src));
+T("groundArc drops a stale arc instead of pinning it", /if \(myEpoch !== chatEpoch\) return null;\s*\/\/ chat switched mid-fetch/.test(src));
+T("askCanon captures its epoch at entry", /async function askCanon\(request\) \{\s*\n\s*const myEpoch = chatEpoch;/.test(src));
+T("askCanon drops a stale command after the router call", /chat changed while the command was being read/.test(src));
+T("askCanon pin re-checks after its own await", /await groundNames\(\[t\], true\);\s*\n\s*if \(myEpoch !== chatEpoch\) return \{ ok: false, msg: "chat changed/.test(src));
+T("askCanon arc reports a drop honestly (not a fake miss)", /story position not pinned \(the command was aimed at the previous chat\)/.test(src));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

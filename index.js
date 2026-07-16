@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.24.1";
+const CG_VERSION = "0.25.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1158,7 +1158,7 @@ async function ensureGrounded(name, trusted = false) {
                 c[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, kind, found: true, ts: Date.now() };
                 // LLM curation runs in the BACKGROUND — this turn ships the regex
                 // sections immediately, the dossier upgrades every turn after.
-                if (s.llmDossier && (charSignal || charSection)) scheduleDossier(key, title, wikitext, relRaw);
+                if (s.llmDossier && (charSignal || charSection)) scheduleDossier(c[key], title, wikitext, relRaw);
                 saveCache();
                 const got = Object.entries(sections).filter(([, v]) => v).map(([k]) => k).join(", ");
                 debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${physical || "(no appearance)"} [have: ${got}]`);
@@ -1282,10 +1282,12 @@ function parseCanonIntent(text) {
  * are sovereign — no evidence gate applies to what you explicitly order.
  */
 async function askCanon(request) {
+    const myEpoch = chatEpoch;   // the command was typed IN a chat; its writes must never follow the user to another one
     const systemText = (settings().promptAsk || "").trim() || DEFAULT_PROMPT_ASK;
     const out = await llmCall(systemText, request, { maxTokens: 120, budgetMs: Math.min(Number(settings().parserBudgetMs) || 30000, 12000) });
     const intent = out && parseCanonIntent(out);
     if (!intent) return { ok: false, msg: lastLlmError || "couldn't understand that — try e.g. \"pin Rose Oriana\" or \"set arc to Lawless City\"" };
+    if (myEpoch !== chatEpoch) return { ok: false, msg: "chat changed while the command was being read — dropped (it was aimed at the previous chat)" };
     const t = intent.target;
     const ctx = getContext();
     switch (intent.action) {
@@ -1298,6 +1300,7 @@ async function askCanon(request) {
         }
         case "pin": {
             await groundNames([t], true);
+            if (myEpoch !== chatEpoch) return { ok: false, msg: "chat changed — pin dropped (it was aimed at the previous chat)" };
             const cur = chatPinNames();
             if (!cur.some(n => n.toLowerCase() === t.toLowerCase())) {
                 setChatPin("canon_grounding_pin_names", [...cur, t].join(", "));
@@ -1315,6 +1318,7 @@ async function askCanon(request) {
         }
         case "arc": {
             const got = await groundArc(t);
+            if (myEpoch !== chatEpoch) return { ok: false, msg: "chat changed — story position not pinned (the command was aimed at the previous chat)" };
             if (renderArcStatus) try { renderArcStatus(); } catch (e) {}
             return got ? { ok: true, msg: `story position → ${got.title}` }
                        : { ok: false, msg: `no arc/chapter page found for "${t}"` };
@@ -1343,6 +1347,7 @@ async function askCanon(request) {
 }
 
 async function groundArc(query) {
+    const myEpoch = chatEpoch;   // arc pinning is FOR the chat that asked — a switch during the fetches below must drop it, not re-target it
     const s = settings();
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
     const structural = /\b(arc|saga|chapter|episode|season|volume|part)\b/i;
@@ -1376,6 +1381,7 @@ async function groundArc(query) {
             const summary = extractSection(wikitext, ["summary", "plot", "synopsis", "overview", "story", "events"], 900)
                 || extractLead(wikitext, 900);
             if (!summary) continue;
+            if (myEpoch !== chatEpoch) return null;   // chat switched mid-fetch: pinning now would stamp the OLD story's position onto the NEW chat
             const note = { query, title, wiki, summary, ts: Date.now() };
             setChatArc(note);
             s.arcTitle = query;               // remembered globally as input convenience only
@@ -2075,17 +2081,21 @@ function titleCoversQuery(query, title, aliases) {
 }
 
 /** Fire-and-forget dossier build with an in-flight/retry guard on the cache entry. */
-function scheduleDossier(key, name, wikitext, relRaw) {
-    const s = settings();
-    const entry = cache()[key];
+function scheduleDossier(entry, name, wikitext, relRaw) {
+    // ENTRY-bound, not key-bound. The build is seconds of LLM time, and cache()
+    // resolves to whatever chat is open at CALL time — so looking the key up
+    // again after the build meant a mid-build chat switch could land this
+    // universe's dossier on a same-named character in ANOTHER chat's universe,
+    // and the in-flight stamp below silently blocked that chat's own dossier
+    // for a day. The entry object IS the identity: writes land on the character
+    // that asked, or (if its chat was unloaded unsaved) nowhere — never on a
+    // stranger.
     if (!entry || entry.dossier) return;
     if (entry.dossierTs && Date.now() - entry.dossierTs < NEGATIVE_TTL) return;  // in flight / recent failure
     entry.dossierTs = Date.now();
     buildDossier(name, wikitext, relRaw).then(d => {
-        const e = cache()[key];
-        if (!e) return;
         if (d) {
-            e.dossier = d;
+            entry.dossier = d;
             debug(`✦ dossier ready: ${name}`);
         }
         saveCache();

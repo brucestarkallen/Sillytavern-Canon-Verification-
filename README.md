@@ -56,6 +56,29 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.25.0 (writes stay in the chat that asked for them)
+
+Proven by `test/proof.js` (236 assertions) + `test/sim.mjs` (38, including a
+live two-chat dossier-isolation scenario), all passing.
+
+Three background flows could write into the WRONG chat if you switched mid-work
+— the same contamination class fixed across the sibling extensions:
+
+1. **Dossiers are entry-bound, not key-bound.** The dossier builder is seconds
+   of LLM time; it used to re-look-up its cache slot by name when it finished.
+   Two chats with a same-named character (one per universe) meant chat A's
+   dossier could land on chat B's character — and A's in-flight stamp silently
+   blocked B's own dossier for a day. The build now holds the entry OBJECT:
+   the dossier lands on the character that asked, or nowhere.
+2. **Story-position pinning drops on a chat switch.** `groundArc` fetches for
+   seconds; finishing after a switch used to stamp the OLD story's arc onto the
+   NEW chat. It now captures the chat epoch at entry and refuses a stale pin.
+3. **Ask-Canon commands are sovereign IN their chat only.** The router call and
+   `pin`'s own grounding are awaits; a switch during either used to land pins,
+   blocks, notes, or arcs on whatever chat you arrived in. Every write path now
+   re-checks the epoch and reports an honest drop ("aimed at the previous
+   chat") instead of a false miss.
+
 ## Changelog — v0.24.1 (smart = whole content, zero waste)
 
 Proven by `test/proof.js` (236 assertions) + `test/sim.mjs` (23), all passing.
