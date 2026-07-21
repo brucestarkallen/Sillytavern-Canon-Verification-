@@ -234,7 +234,7 @@ sandbox.__settings = {
     llmParser: true, contextWindow: 10,
 };
 const note = api.relevantCanonNote(["alpha nodded at cid kagenou"], ["Alpha", "Cid Kagenou"]);
-T("framing: baseline-not-script present", /BASELINE, not a script/.test(note) && /overrides the baseline/.test(note));
+T("framing: behavior-not-a-rule present", /DESCRIPTIVE — how this person has tended to act — never a rule/.test(note) && /overrides the baseline/.test(note));
 T("per-pair dynamics line injected", /- With Cid Kagenou: Around Cid her stoic mask slips/.test(note));
 T("dynamics line sits under Personality", note.indexOf("Personality: Stoic") < note.indexOf("With Cid Kagenou:"));
 T("trivia line injected", /- Trivia: Keeps every note/.test(note));
@@ -699,6 +699,62 @@ const an = api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"]
 T("Appearance leads with prose, robotic facts deduped into bracket", /- Appearance: A tall and lean young man/.test(an) && !/haircolor: Brown/.test(an) && /\[height: 176 cm\]/.test(an));
 delete sandbox.__settings.cache["ayan"].sections.look;
 T("no look → plain facts line (fallback intact)", /- Appearance: haircolor: Brown; eyecolor: Brown; height: 176 cm/.test(api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"])));
+
+// ---------------------------------------------------------------- v0.26: markup containment (Tsunade verbatim)
+console.log("[markup containment]");
+const TSU = `'''Tsunade''' is a fair-skinned kunoichi. <!-- lead comment > with angle -->
+<gallery>
+Lead Tsunade.png|In the lead.
+</gallery>
+== Appearance == <!--images-->
+<gallery widths="120" mode="packed-hover">
+Kid Tsunade.png|Tsunade as a child.
+Tsunade full.png|Tsunade's full appearance.
+Tsunade off jacket.png|Tsunade without her haori.
+Tsunade shinobi outfit.png|Tsunade in her shinobi outfit.
+</gallery>
+Tsunade is a fair-skinned woman with brown eyes and straight blonde hair. She is often seen wearing a grass-green haori.
+<tabber>
+Part I=[[File:TsunadeP1.png|thumb]]
+|-|Part II=In Part II her attire changes little.
+</tabber>
+== Background ==
+{| class="wikitable"
+! Arc !! Role
+|-
+| Search || Legendary Sannin
+|}
+Tsunade left the village after the war.
+__NOTOC__
+`;
+const tsuProse = api.cleanWikitext(api.extractSectionRaw(TSU, ["appearance", "physical appearance"], 4000));
+const tsuLook = api.tightenLook(api.extractLookProse(tsuProse), "Tsunade");
+T("gallery filenames never reach the look", !/\.png/i.test(tsuLook) && !/\|/.test(tsuLook));
+T("look = the wiki's real description", tsuLook.startsWith("A fair-skinned woman with brown eyes and straight blonde hair"));
+T("tabber prose survives, plumbing dies", /In Part II her attire changes little/.test(tsuProse) && !/Part I=/.test(tsuProse) && !/\|-\|/.test(tsuProse));
+T("lead gallery + angle-bearing comment never reach identity", api.identityLine(TSU) === "Tsunade is a fair-skinned kunoichi.");
+const tsuBg = api.cleanWikitext(api.extractSectionRaw(TSU, ["background"], 4000));
+T("wikitable removed whole, surrounding prose survives", tsuBg === "Tsunade left the village after the war.");
+T("unclosed gallery drops to end (no filename leak)", !/\.png/i.test(api.cleanWikitext("<gallery>\nA b.png|x\nB c.png|y")));
+T("unclosed table drops to end, prior prose survives", api.cleanWikitext("Real prose here.\n{| class=\"wikitable\"\n! h\n|-\n| cell") === "Real prose here.");
+T("nested table peeled clean", api.cleanWikitext("Before.\n{|\n| outer\n{|\n| inner\n|}\n|}\nAfter.") === "Before. After.");
+T("bare image-entry line dies whole", api.cleanWikitext("Solid prose.\nKid Tsunade.png|Tsunade as a child.\nMore prose.") === "Solid prose. More prose.");
+T("prose merely mentioning a filename mid-sentence survives", /portrait\.png on her desk/.test(api.cleanWikitext("She kept portrait.png on her desk that day.")));
+T("magic words stripped", api.cleanWikitext("Prose. __NOTOC__ More.") === "Prose. More.");
+T("comment containing '>' removed entirely", api.cleanWikitext("A. <!-- x > y --> B.") === "A. B.");
+
+// ---------------------------------------------------------------- v0.26: anti-rigidity payload
+console.log("[anti-rigidity]");
+const hdrNote = api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"]);
+T("header: behavior material declared DESCRIPTIVE, never a rule", /DESCRIPTIVE — how this person has tended to act — never a rule/.test(hdrNote));
+T("header: under-pressure clause present (danger/pain/grief)", /Under pressure \(danger, pain, temptation, grief, exhaustion\)/.test(hdrNote));
+T("header: stubborn-under-torture is named and de-robotized", /stubborn character threatened with torture is not a wall/.test(hdrNote));
+T("header: identical repetition under escalation = portrayal error", /identical reaction repeated while circumstances escalate is a portrayal error/.test(hdrNote));
+T("header: reacts to what JUST happened", /react to what JUST happened/.test(hdrNote));
+T("header: hard-facts authority scoped away from behavior", /HARD FACTS \(appearance, relations, history, events\)/.test(hdrNote));
+T("dossier brief: temperament as tendency, not law", /write temperament as living tendency, not law/.test(src));
+T("dossier brief: absolutist wording banned unless sourced", /avoid absolutist wording \("always", "never", "nothing can"\) unless the source itself insists/.test(src));
+T("regex personality routes through head+tail sampling", /personality: join\(\s*extractInfoboxFields\(wikitext, perKw\),\s*sampleSection\(extractSection\(wikitext, perKw, 4000\), 500\)\s*\)/.test(src));
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.25.0";
+const CG_VERSION = "0.26.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -97,7 +97,7 @@ const CG_VERSION = "0.25.0";
 // everyone who hasn't customized.
 const DEFAULT_PROMPT_HEADER =
             "[CANON REFERENCE — retrieved from the official wiki for this series.\n" +
-        "FACTS (appearance, relations, history, events) are authoritative: they override " +
+        "HARD FACTS (appearance, relations, history, events) are authoritative: they override " +
         "your own memory and anything else in this prompt that disagrees — use them, do " +
         "not second-guess, 'correct', or invent alternatives.\n" +
         "KNOWLEDGE SCOPE: these facts are for YOUR accuracy as the narrator — they are " +
@@ -106,14 +106,23 @@ const DEFAULT_PROMPT_HEADER =
         "affiliations, and unrevealed connections stay hidden: guard them actively, and " +
         "never let a character's dialogue, thoughts, or behavior betray information " +
         "sourced from this reference.\n" +
-        "BEHAVIOR is different: each Personality line is that character's public BASELINE, " +
-        "not a script. Real people modulate with company, mood, privacy, and stakes — a " +
-        "commander who is stoic on duty can be warm, petty, or openly devoted in private. " +
-        "When a 'With <name>' line exists and that person is in the scene, THAT dynamic " +
-        "overrides the baseline. Voice lines are STYLE SAMPLES — match their cadence, " +
-        "vocabulary, and attitude in fresh dialogue; never repeat the sample lines " +
-        "themselves unless the moment canonically calls for it. Never flatten a " +
-        "character to their trait words; show the traits through fresh, " +
+        "BEHAVIOR is different: personality, demeanor, and voice material here is " +
+        "DESCRIPTIVE — how this person has tended to act — never a rule for what they " +
+        "do next. They are a living person first: they react to what JUST happened, " +
+        "and company, mood, privacy, and stakes modulate them — a commander stoic on " +
+        "duty can be warm, petty, or openly devoted in private. Under pressure " +
+        "(danger, pain, temptation, grief, exhaustion) the person shows through the " +
+        "trait: fear leaks, tactics shift, voices crack; they stall, bargain, deflect, " +
+        "rage, adapt — sometimes break, sometimes hold at visible, mounting cost. A " +
+        "stubborn character threatened with torture is not a wall replaying one " +
+        "refusal: the defiance strains and changes shape each round even if it never " +
+        "gives. Traits decide HOW someone responds, never WHETHER they respond " +
+        "humanly — an identical reaction repeated while circumstances escalate is a " +
+        "portrayal error. When a 'With <name>' line exists and that person is in the " +
+        "scene, THAT dynamic overrides the baseline. Voice lines are STYLE SAMPLES — " +
+        "match their cadence, vocabulary, and attitude in fresh dialogue; never repeat " +
+        "the sample lines themselves unless the moment canonically calls for it. Never " +
+        "flatten a character to their trait words; show the traits through fresh, " +
         "situation-specific behavior, contradictions included.]\n";
 const DEFAULT_PROMPT_ASK =
     "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
@@ -152,7 +161,7 @@ const DEFAULT_PROMPT_DOSSIER =
         "Extract only what matters for portraying this character accurately in scenes. " +
         "Return JSON with exactly these keys: " +
         '{"identity": one sentence — who they are (title, role, affiliation); ' +
-        '"brief": one flowing paragraph, 60–100 words, third person present tense, weaving who they are, their manner, and what defines them — natural prose a narrator absorbs in one read; no lists, no headers; do NOT begin with or repeat the character\'s name (the block header already names them); ' +
+        '"brief": one flowing paragraph, 60–100 words, third person present tense, weaving who they are, their manner, and what defines them — write temperament as living tendency, not law: where the material shows it, include what softens them, what pressures them, and how they differ strained versus at ease; keep the source\'s own contradictions; avoid absolutist wording ("always", "never", "nothing can") unless the source itself insists; natural prose a narrator absorbs in one read; no lists, no headers; do NOT begin with or repeat the character\'s name (the block header already names them); ' +
         '"facts": up to 8 short story-relevant facts a narrator must not get wrong; ' +
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
@@ -669,9 +678,38 @@ function stripTemplates(text) {
 function cleanWikitext(wt) {
     if (!wt) return "";
     let s = wt;
-    // Media links FIRST — [[File:x.png|thumb|Caption]] must vanish whole, or the
+    // BLOCK CONSTRUCTS FIRST — containers whose CONTENT is markup, not prose. The
+    // generic <tag> stripper below removes only the tags, so their bodies used to
+    // flow into the text as fake sentences: a <gallery> in an Appearance section
+    // injected "Kid Tsunade.png|Tsunade as a child. Tsunade full.png|…" as the
+    // character's look. One containment pass here heals every consumer at once
+    // (look, identity, personality, relationships, biography, dossier, arc).
+    // 1) Comments — may contain ">" (which breaks the generic stripper) or anything else.
+    s = s.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+    // 2) Image containers: bodies are image syntax by definition — the whole block
+    //    vanishes. An unclosed opener runs to end-of-input (same philosophy as
+    //    stripTemplates: better no text than raw markup).
+    s = s.replace(/<(gallery|imagemap|timeline|slideshow|score)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, "");
+    // 3) Tabber bodies DO carry content between the tab plumbing — unwrap: drop the
+    //    |-| separators and line-leading "Label=" heads, keep the rest (File links
+    //    inside die in the media-link pass below).
+    s = s.replace(/<tabber\b[^>]*>([\s\S]*?)(?:<\/tabber\s*>|$)/gi,
+        (m, tbody) => tbody.replace(/\|-\|/g, "\n").replace(/^[ \t]*[^=\n]{1,40}=[ \t]*/gm, ""));
+    // 4) Wikitables: {| … |} — headers, row pipes, style attrs; none of it is prose.
+    //    Tempered innermost-first loop peels nesting; an unclosed {| drops to end.
+    for (let guard = 0; guard < 8 && s.includes("{|"); guard++) {
+        const next = s.replace(/\{\|(?:(?!\{\||\|\})[\s\S])*\|\}/g, "");
+        if (next === s) { s = s.replace(/\{\|[\s\S]*$/, ""); break; }
+        s = next;
+    }
+    // Media links — [[File:x.png|thumb|Caption]] must vanish whole, or the
     // generic link rule below leaks its parameters ("thumb|Caption") into the text.
     s = s.replace(/\[\[(?:File|Image|Media):[^\]]*\]\]/gi, "");
+    // 5) Residual bare image-entry LINES ("Foo bar.png|caption", "File:Foo.jpg") —
+    //    exotic gallery dialects, unclosed containers. A line that IS an image
+    //    reference dies whole; prose that merely mentions a filename mid-sentence
+    //    (text continuing after the extension without a pipe) survives.
+    s = s.replace(/^[ \t]*(?:File:|Image:)?[^|=\n]{1,120}\.(?:png|jpe?g|gif|webp|svg|bmp|tiff?)\s*(?:\|[^\n]*)?$/gim, "");
     // Convert links to their text BEFORE removing templates, so names inside list
     // templates (e.g. a Relatives field) survive.
     s = s.replace(/\[\[[^\]|]*\|([^\]]+)\]\]/g, "$1").replace(/\[\[([^\]]+)\]\]/g, "$1");
@@ -702,6 +740,8 @@ function cleanWikitext(wt) {
         .replace(/<ref[^>]*\/>/gi, "")
         .replace(/<[^>]+>/g, "")
         .replace(/'''?/g, "")
+        .replace(/__[A-Z]+__/g, "")                  // magic words (__NOTOC__, __TOC__…)
+        .replace(/-->/g, "")                         // orphaned comment closer (opener was malformed)
         .replace(/^[\s*#:;]+/gm, "")
         .replace(/\[\d+\]/g, "")
         .replace(/={2,}[^=]+={2,}/g, "")             // stray sub-headers
@@ -1097,9 +1137,14 @@ async function ensureGrounded(name, trusted = false) {
                 // Always extracted, always injected (≤260 chars).
                 identity: identityLine(wikitext),
                 physical,
+                // Personality sections open with the absolutist thesis ("stern and
+                // unyielding") and record the humanizing exceptions and growth near
+                // the BOTTOM. A 500-char top-slice injected only the robot half —
+                // sample head + tail (the dossier digest's trick) so the baseline
+                // carries the contradictions too.
                 personality: join(
                     extractInfoboxFields(wikitext, perKw),
-                    extractSection(wikitext, perKw, 500)
+                    sampleSection(extractSection(wikitext, perKw, 4000), 500)
                 ),
                 relationship: join(
                     extractInfoboxFields(wikitext, relKw),

@@ -56,6 +56,69 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.26.0 (markup containment + living-person baseline)
+
+Proven by `test/proof.js` (257 assertions) + `test/sim.mjs` (46, including live
+gallery-containment and personality-tail scenarios), all passing. Every new
+guard was negative-tested: run against the pre-fix code, 21 proof assertions
+and 5 sim assertions fail; on the fix, all pass.
+
+**1) The Tsunade bug — gallery filenames injected as "Appearance".**
+Reported symptom: `Appearance: Kid Tsunade.png|Tsunade as a child. Tsunade
+full.png|…`. Root cause was a whole defect CLASS in `cleanWikitext`, not a
+gallery special case: the generic `<tag>` stripper removes only the tags, so
+any block construct whose *content* is markup flowed through as fake prose.
+Reproducing it surfaced two more leaks of the same class that simply hadn't
+been hit yet: HTML comments containing `>` bled their tails into Identity, and
+wikitables bled whole (`{| class="wikitable" ! Arc |- …`) into any section.
+One containment pass at the top of `cleanWikitext` now heals every consumer at
+once (look, identity, personality, relationships, biography, dossier digest,
+arc summary):
+
+- comments stripped first (they may contain `>` or anything else);
+- `<gallery>/<imagemap>/<timeline>/<slideshow>/<score>` blocks vanish whole —
+  their bodies are image syntax by definition; an unclosed opener drops to
+  end-of-input (better no text than raw markup, same philosophy as
+  `stripTemplates`);
+- `<tabber>` bodies are *unwrapped*, not deleted — tab labels and `|-|`
+  plumbing die, prose between them survives;
+- wikitables `{| … |}` peel innermost-first (nesting-safe); unclosed drops to
+  end;
+- residual bare image-entry LINES (`Foo bar.png|caption` from exotic dialects)
+  die as lines — prose that merely *mentions* a filename mid-sentence
+  survives;
+- `__NOTOC__`-style magic words and orphaned `-->` stripped.
+
+Tsunade's Appearance now injects as the wiki's own sentence: *"A fair-skinned
+woman with brown eyes and straight blonde hair…"*
+
+**2) The robot-NPC bug — canon making every personality rigid.**
+Diagnosis: the note opens with maximum compliance pressure ("authoritative…
+do not second-guess"), wiki personality prose is written in timeless absolutes
+("never backs down"), and the old behavior paragraph only granted modulation
+by company/mood/privacy — it said nothing about *duress*. Under threat of
+torture the model played the absolute: identical defiance every beat.
+Fixed at all three sources, model-agnostically:
+
+- **Header:** behavior material is now declared DESCRIPTIVE — "how this person
+  has tended to act — never a rule for what they do next"; characters "react
+  to what JUST happened"; a new under-pressure clause (danger, pain,
+  temptation, grief, exhaustion → fear leaks, tactics shift, voices crack,
+  they stall/bargain/deflect/rage/adapt — sometimes break, sometimes hold at
+  visible, mounting cost); the exact failure is named ("a stubborn character
+  threatened with torture is not a wall replaying one refusal"); and
+  "an identical reaction repeated while circumstances escalate is a portrayal
+  error". Hard-fact authority is explicitly scoped to appearance/relations/
+  history/events so it can't bleed onto behavior.
+- **Dossier brief:** temperament is written "as living tendency, not law" —
+  what softens them, what pressures them, strained vs at ease, the source's
+  own contradictions kept, absolutist wording banned unless the source itself
+  insists.
+- **Regex baseline:** personality sections open with the absolutist thesis and
+  record the humanizing exceptions near the bottom; the old 500-char top-slice
+  injected only the robot half. Now head+tail sampled (the dossier digest's
+  trick), so the injected baseline carries the contradictions too.
+
 ## Changelog — v0.25.0 (writes stay in the chat that asked for them)
 
 Proven by `test/proof.js` (236 assertions) + `test/sim.mjs` (38, including a

@@ -36,6 +36,23 @@ globalThis.fetch = async (url) => {
     const titles = u.searchParams.get("titles");
     const page = u.searchParams.get("page");
     if (titles) return { ok: true, json: async () => ({ query: { pages: { 1: { pageid: 1, title: titles } } } }) };
+    if (page === "Gallerychar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'''Gallerychar''' is a legendary healer.
+== Appearance ==
+<gallery widths="120" mode="packed-hover">
+Kid Gallerychar.png|As a child.
+Gallerychar full.png|Full appearance.
+</gallery>
+Gallerychar is a fair-skinned woman with brown eyes and straight blonde hair.
+== Personality ==
+Calm.` } } }) };
+    if (page === "Tailchar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'''Tailchar''' is a knight-commander.
+{{Infobox
+| hair = Tailchar-colored
+}}
+== Personality ==
+${"Tailchar is stern, unyielding, and utterly devoted to duty. ".repeat(10)}Yet in her final year she laughs easily and forgives quickly.` } } }) };
     if (page) return { ok: true, json: async () => ({ parse: { wikitext: { "*": `{{Infobox\n| hair = ${page}-colored\n}}\n== Personality ==\nCalm.` } } }) };
     return { ok: true, json: async () => ({}) };
 };
@@ -196,6 +213,34 @@ T("askCanon captures its epoch at entry", /async function askCanon\(request\) \{
 T("askCanon drops a stale command after the router call", /chat changed while the command was being read/.test(src));
 T("askCanon pin re-checks after its own await", /await groundNames\(\[t\], true\);\s*\n\s*if \(myEpoch !== chatEpoch\) return \{ ok: false, msg: "chat changed/.test(src));
 T("askCanon arc reports a drop honestly (not a fake miss)", /story position not pinned \(the command was aimed at the previous chat\)/.test(src));
+
+console.log("[10] gallery containment through the real ground→inject pipeline");
+const q10 = parseQueue.length;
+globalThis.__ctx.chat.push(msg("At the gate stands Gallerychar, waiting.", false));
+const run10 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("parse fired for Gallerychar", parseQueue.length === q10 + 1);
+parseQueue[q10].resolve('["Gallerychar"]');
+await run10;
+T("Appearance = the wiki's real prose", /- Appearance: A fair-skinned woman with brown eyes and straight blonde hair/.test(lastInjection()));
+T("no gallery filename anywhere in the injection", !/\.png/i.test(lastInjection()) && !/\|As a child/.test(lastInjection()));
+
+console.log("[11] personality baseline carries the humanizing tail (head+tail sample)");
+extension_settings.canon_grounding.personality = true;
+extension_settings.canon_grounding.maxCharsPerChar = 1200;
+const q11 = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Then Tailchar arrives in full armor.", false));
+const run11 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("parse fired for Tailchar", parseQueue.length === q11 + 1);
+parseQueue[q11].resolve('["Tailchar"]');
+await run11;
+T("absolutist head still present (top of section preserved)", /stern, unyielding/.test(lastInjection()));
+T("humanizing TAIL survives into the injected baseline", /laughs easily and forgives quickly/.test(lastInjection()));
+T("head+tail seam marks the sample", /\[…\]/.test(lastInjection()));
+T("anti-rigidity header rides every note", /Under pressure \(danger, pain, temptation, grief, exhaustion\)/.test(lastInjection()));
+extension_settings.canon_grounding.personality = false;
+extension_settings.canon_grounding.maxCharsPerChar = 400;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
