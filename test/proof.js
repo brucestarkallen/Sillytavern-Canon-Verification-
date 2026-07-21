@@ -59,7 +59,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -755,6 +755,15 @@ T("header: hard-facts authority scoped away from behavior", /HARD FACTS \(appear
 T("dossier brief: temperament as tendency, not law", /write temperament as living tendency, not law/.test(src));
 T("dossier brief: absolutist wording banned unless sourced", /avoid absolutist wording \("always", "never", "nothing can"\) unless the source itself insists/.test(src));
 T("regex personality routes through head+tail sampling", /personality: join\(\s*extractInfoboxFields\(wikitext, perKw\),\s*sampleSection\(extractSection\(wikitext, perKw, 4000\), 500\)\s*\)/.test(src));
+
+// ---------------------------------------------------------------- v0.27: poisoned-entry detection
+console.log("[poisoned entries]");
+T("gallery-junk look flags as poisoned", api.entryPoisoned({ sections: { look: "Kid Tsunade.png|Tsunade as a child. Tsunade full.png|Full." } }) === true);
+T("wikitable junk flags as poisoned", api.entryPoisoned({ sections: { biography: '{| class="wikitable" ! Arc' } }) === true);
+T("magic-word junk flags as poisoned", api.entryPoisoned({ sections: { trivia: "Likes tea. __NOTOC__" } }) === true);
+T("tab plumbing flags as poisoned", api.entryPoisoned({ sections: { personality: "Stoic. |-|Part II=Kind." } }) === true);
+T("clean sections never flag", api.entryPoisoned({ sections: { look: "A fair-skinned woman with brown eyes.", personality: "Stern at work […] soft with family." } }) === false);
+T("sectionless entry never flags", api.entryPoisoned({ found: true }) === false);
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");

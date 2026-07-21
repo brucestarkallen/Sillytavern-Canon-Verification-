@@ -46,6 +46,18 @@ Gallerychar full.png|Full appearance.
 Gallerychar is a fair-skinned woman with brown eyes and straight blonde hair.
 == Personality ==
 Calm.` } } }) };
+    if (page === "Healchar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'''Healchar''' is a wandering medic.
+{{Infobox
+| hair = copper
+}}
+== Appearance ==
+<gallery>
+Kid Healchar.png|As a child.
+</gallery>
+Healchar is a fair-skinned woman with emerald eyes and copper hair.
+== Personality ==
+Calm.` } } }) };
     if (page === "Tailchar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
 `'''Tailchar''' is a knight-commander.
 {{Infobox
@@ -241,6 +253,25 @@ T("head+tail seam marks the sample", /\[…\]/.test(lastInjection()));
 T("anti-rigidity header rides every note", /Under pressure \(danger, pain, temptation, grief, exhaustion\)/.test(lastInjection()));
 extension_settings.canon_grounding.personality = false;
 extension_settings.canon_grounding.maxCharsPerChar = 400;
+
+console.log("[12] poisoned cache self-heals from a fresh fetch");
+const healCache = globalThis.__ctx.chatMetadata.canon_grounding_cache;
+healCache["healchar"] = { name: "Healchar", sections: {
+    identity: "A medic.",
+    physical: "hair: copper",
+    look: "Kid Healchar.png|As a child. Healchar full.png|Full appearance.",
+}, aliases: [], rel: {}, wiki: "testwiki", kind: "character", found: true, ts: Date.now() };
+globalThis.__ctx.chat.push(msg("Nearby, Healchar hums a tune.", false));
+const run12 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await run12;
+T("poisoned look was live before the heal (bug real)", /Kid Healchar\.png/.test(lastInjection()));
+await sleep(40);   // background heal: fetch + rebuild
+T("heal stamped once-per-entity", !!healCache["healchar"].healTs);
+T("look rebuilt to the wiki's real prose", /^A fair-skinned woman with emerald eyes and copper hair\.$/.test(healCache["healchar"].sections.look || ""));
+T("no image junk anywhere in rebuilt sections", !Object.values(healCache["healchar"].sections).some(v => /\.png/i.test(v || "")));
+const run12b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await run12b;
+T("next turn injects the healed look", /- Appearance: A fair-skinned woman with emerald eyes and copper hair/.test(lastInjection()) && !/\.png/i.test(lastInjection()));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

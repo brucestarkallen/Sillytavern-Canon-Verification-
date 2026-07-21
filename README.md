@@ -56,6 +56,28 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.27.0 (poisoned caches heal themselves)
+
+Proven by `test/proof.js` (263 assertions) + `test/sim.mjs` (51, including a
+live poison→heal→clean-injection scenario), all passing; the 4 heal guards
+negative-verified failing on pre-heal code.
+
+v0.26.0 fixed the extractor — but the cache is chat-scoped and permanent, so
+every entity grounded BEFORE the fix still carried gallery filenames as its
+"look" and injected them forever. The extractor fix alone could never reach an
+existing chat. Now:
+
+- **`entryPoisoned`** detects the junk signature (image syntax, `{|` table
+  syntax, magic words, comment shrapnel, `|-|` tab plumbing) in any cached
+  section.
+- **Self-heal in the interceptor**: one poisoned entry per turn is rebuilt in
+  the background from a fresh fetch — once per entity ever (`healTs`
+  persists), same pattern as the dossier self-upgrade, but scanning the whole
+  chat cache so single-character scenes heal too. No manual ✕-resets.
+- **One builder, both paths**: section building is extracted from
+  `ensureGrounded` into `buildEntrySections`, used verbatim by fresh grounding
+  AND the heal — one definition, no drift.
+
 ## Changelog — v0.26.0 (markup containment + living-person baseline)
 
 Proven by `test/proof.js` (257 assertions) + `test/sim.mjs` (46, including live

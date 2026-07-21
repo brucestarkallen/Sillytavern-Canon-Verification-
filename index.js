@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.26.0";
+const CG_VERSION = "0.27.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1040,6 +1040,110 @@ function extractAliases(wikitext, keywords) {
 
 const NEGATIVE_TTL = 1000 * 60 * 60 * 24; // don't re-search a "not found" for 24h
 
+// Markup that has no business inside an injected section: image syntax, table
+// syntax, magic words, comment shrapnel, tab plumbing. Presence means the entry
+// was built by a pre-containment extractor (or an unknown dialect leaked) — the
+// self-heal below rebuilds it from a fresh fetch with the current extractor.
+const SECTION_JUNK = /\.(?:png|jpe?g|gif|webp|svg|bmp|tiff?)\b|\{\||__[A-Z]+__|-->|<gallery|\|-\|/i;
+function entryPoisoned(entry) {
+    const sec = entry && entry.sections;
+    if (!sec) return false;
+    return ["look", "physical", "identity", "personality", "relationship", "biography", "abilities", "trivia", "voice"]
+        .some(k => sec[k] && SECTION_JUNK.test(sec[k]));
+}
+
+/**
+ * Build every injected section from a page's wikitext. Extracted from
+ * ensureGrounded so the poisoned-cache self-heal can rebuild an existing
+ * entry with the exact same logic a fresh grounding uses — one definition,
+ * both paths, no drift.
+ */
+async function buildEntrySections(wiki, title, wikitext, s, isCharacter) {
+    // Physical: infobox hair/eyes (robust extractor handles piped links and
+    // <br> lists), else prose appearance with the "pink hair and eyes" handling.
+    // Prose is read from the wikitext we already have; the extract fetch remains
+    // only as a last resort.
+    const appearanceProse = cleanWikitext(
+        extractSectionRaw(wikitext, ["appearance", "physical appearance", "physical description", "looks"], 4000)
+    );
+    let physical = extractInfoboxFields(wikitext, s.fields.split(","));
+    if (!physical) {
+        physical = extractFromProse(appearanceProse || extractLead(wikitext, 1200));
+        if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
+    }
+    // The LOOK: the Appearance section's opening description, kept as the
+    // wiki wrote it — build, complexion, clothing, all of it.
+    const look = tightenLook(extractLookProse(appearanceProse), title);
+    // CORE-ATTRIBUTE COMPLETION — dialect-proof: if neither the infobox line
+    // nor the look prose carries hair/eyes but the page mentions them, mine
+    // the phrase. Hair can never vanish to an infobox quirk.
+    const proseBits = extractFromProse(appearanceProse) || "";
+    for (const attr of ["hair", "eye"]) {
+        if (new RegExp(attr, "i").test(physical + " " + look)) continue;
+        const bit = proseBits.split(/;\s*/).find(p => new RegExp(attr, "i").test(p));
+        if (bit) physical = physical ? `${physical}; ${bit.trim()}` : bit.trim();
+    }
+    // Distinguishing details BEYOND the look window still append — Gamma's
+    // mole may be sentence four; inside the window it's already in the look.
+    const notable = extractDistinguishing(appearanceProse.slice(look.length));
+    if (notable) physical = physical ? `${physical}; notably: ${notable}` : notable;
+
+    const relKw = s.relationshipKeywords.split(",");
+    const bioKw = s.biographyKeywords.split(",");
+    const perKw = s.personalityKeywords.split(",");
+    const abiKw = s.abilitiesKeywords.split(",");
+    const join = (...parts) => [...new Set(parts.filter(Boolean))].join(" — ");
+
+    const sections = {
+        // Identity is the single highest-value string on any wiki page —
+        // always extracted, always injected (≤260 chars).
+        identity: identityLine(wikitext),
+        physical,
+        // Personality sections open with the absolutist thesis ("stern and
+        // unyielding") and record the humanizing exceptions and growth near
+        // the BOTTOM. A 500-char top-slice injected only the robot half —
+        // sample head + tail (the dossier digest's trick) so the baseline
+        // carries the contradictions too.
+        personality: join(
+            extractInfoboxFields(wikitext, perKw),
+            sampleSection(extractSection(wikitext, perKw, 4000), 500)
+        ),
+        relationship: join(
+            extractInfoboxFields(wikitext, relKw),
+            extractSection(wikitext, relKw, 500)
+        ),
+        // Biography = infobox bio fields + history section. The lead moved to
+        // the always-on identity category above (no duplication when both show).
+        biography: join(
+            extractInfoboxFields(wikitext, bioKw),
+            extractSection(wikitext, bioKw, 400)
+        ),
+        abilities: join(
+            extractInfoboxFields(wikitext, abiKw),
+            extractSection(wikitext, abiKw, 300)
+        ),
+        // Fan-level canon: quirks, habits, hidden facts. Often the ONLY place the
+        // wiki records the humanizing detail ("secretly practices X", "only smiles
+        // around Y") that keeps a character from reading as their job title.
+        trivia: extractTrivia(wikitext, s.triviaKeywords.split(",").map(t => t.trim()).filter(Boolean)),
+        // Voice: verbatim lines from the Quotes section — how they actually talk.
+        voice: extractQuotes(extractSectionRaw(wikitext, s.quoteKeywords.split(",").map(t => t.trim()).filter(Boolean), 6000)),
+    };
+
+    // Many wikis keep quotes on a dedicated "X/Quotes" subpage instead of a
+    // section. One extra fetch, at build time, only when the main page had
+    // none. Gated on the CHARACTER signal: places/organizations don't get
+    // quote subpages, so probing them is a guaranteed dead round trip.
+    if (s.voice && !sections.voice && isCharacter) {
+        try {
+            const qp = await fetchWikitext(wiki, `${title}/Quotes`);
+            if (qp) sections.voice = extractQuotes(qp);
+        } catch (e) { /* best-effort */ }
+    }
+    if (look) sections.look = look;
+    return sections;
+}
+
 async function ensureGrounded(name, trusted = false) {
     const s = settings();
     const key = name.toLowerCase();
@@ -1089,96 +1193,9 @@ async function ensureGrounded(name, trusted = false) {
                 continue;
             }
 
-            // Physical: infobox hair/eyes (robust extractor handles piped links and
-            // <br> lists), else prose appearance with the "pink hair and eyes" handling.
-            // Prose is read from the WIKITEXT WE ALREADY HAVE (Appearance section, then
-            // the lead) — the old code always made a second network round trip for the
-            // full plain-text extract, which on mobile added 100-500ms per new entity
-            // and pulled entire articles. The extract fetch remains only as a last resort.
-            const appearanceProse = cleanWikitext(
-                extractSectionRaw(wikitext, ["appearance", "physical appearance", "physical description", "looks"], 4000)
-            );
-            let physical = extractInfoboxFields(wikitext, s.fields.split(","));
-            if (!physical) {
-                physical = extractFromProse(appearanceProse || extractLead(wikitext, 1200));
-                if (!physical) physical = extractFromProse(await fetchExtract(wiki, title));
-            }
-            // The LOOK: the Appearance section's opening description, kept as the
-            // wiki wrote it — build, complexion, clothing, all of it.
-            const look = tightenLook(extractLookProse(appearanceProse), title);
-            // CORE-ATTRIBUTE COMPLETION — dialect-proof: if neither the infobox line
-            // nor the look prose carries hair/eyes but the page mentions them, mine
-            // the phrase. Hair can never vanish to an infobox quirk.
-            const proseBits = extractFromProse(appearanceProse) || "";
-            for (const attr of ["hair", "eye"]) {
-                if (new RegExp(attr, "i").test(physical + " " + look)) continue;
-                const bit = proseBits.split(/;\s*/).find(p => new RegExp(attr, "i").test(p));
-                if (bit) physical = physical ? `${physical}; ${bit.trim()}` : bit.trim();
-            }
-            // Distinguishing details BEYOND the look window still append — Gamma's
-            // mole may be sentence four; inside the window it's already in the look.
-            const notable = extractDistinguishing(appearanceProse.slice(look.length));
-            if (notable) physical = physical ? `${physical}; notably: ${notable}` : notable;
-
-            // For the other categories, look in BOTH infobox fields and prose sections,
-            // using the keyword lists — so family in an infobox "Relatives" field is found.
-            const relKw = s.relationshipKeywords.split(",");
-            const bioKw = s.biographyKeywords.split(",");
-            const perKw = s.personalityKeywords.split(",");
-            const abiKw = s.abilitiesKeywords.split(",");
-
-            const join = (...parts) => [...new Set(parts.filter(Boolean))].join(" — ");
-
-            const sections = {
-                // Identity is the single highest-value string on any wiki page — the
-                // "X is the second princess of …" lead sentence. It was gated behind
-                // the off-by-default biography category, which is exactly how a model
-                // ends up knowing a character's hair color but not WHO SHE IS.
-                // Always extracted, always injected (≤260 chars).
-                identity: identityLine(wikitext),
-                physical,
-                // Personality sections open with the absolutist thesis ("stern and
-                // unyielding") and record the humanizing exceptions and growth near
-                // the BOTTOM. A 500-char top-slice injected only the robot half —
-                // sample head + tail (the dossier digest's trick) so the baseline
-                // carries the contradictions too.
-                personality: join(
-                    extractInfoboxFields(wikitext, perKw),
-                    sampleSection(extractSection(wikitext, perKw, 4000), 500)
-                ),
-                relationship: join(
-                    extractInfoboxFields(wikitext, relKw),
-                    extractSection(wikitext, relKw, 500)
-                ),
-                // Biography = infobox bio fields + history section. The lead moved to
-                // the always-on identity category above (no duplication when both show).
-                biography: join(
-                    extractInfoboxFields(wikitext, bioKw),
-                    extractSection(wikitext, bioKw, 400)
-                ),
-                abilities: join(
-                    extractInfoboxFields(wikitext, abiKw),
-                    extractSection(wikitext, abiKw, 300)
-                ),
-                // Fan-level canon: quirks, habits, hidden facts. Often the ONLY place the
-                // wiki records the humanizing detail ("secretly practices X", "only smiles
-                // around Y") that keeps a character from reading as their job title.
-                trivia: extractTrivia(wikitext, s.triviaKeywords.split(",").map(t => t.trim()).filter(Boolean)),
-                // Voice: verbatim lines from the Quotes section — how they actually talk.
-                voice: extractQuotes(extractSectionRaw(wikitext, s.quoteKeywords.split(",").map(t => t.trim()).filter(Boolean), 6000)),
-            };
-
-            // Many wikis keep quotes on a dedicated "X/Quotes" subpage instead of a
-            // section. One extra fetch, at ground time, only when the main page had
-            // none — cached forever on the entry like everything else. Gated on the
-            // CHARACTER signal: places/organizations (trusted lore) don't get quote
-            // subpages, so probing them is a guaranteed dead round trip.
-            if (s.voice && !sections.voice && (charSignal || charSection)) {
-                try {
-                    const qp = await fetchWikitext(wiki, `${title}/Quotes`);
-                    if (qp) sections.voice = extractQuotes(qp);
-                } catch (e) { /* best-effort */ }
-            }
+            // One builder for fresh grounding AND the poisoned-cache self-heal —
+            // same logic, one definition, no drift (see buildEntrySections).
+            const sections = await buildEntrySections(wiki, title, wikitext, s, !!(charSignal || charSection));
 
             const anything = Object.values(sections).some(Boolean);
             if (anything) {
@@ -1198,7 +1215,6 @@ async function ensureGrounded(name, trusted = false) {
                 // subsection headers intact, so relationFor can slice "how A is with B"
                 // at note time for exactly the pair that's on screen.
                 const relRaw = extractSectionRaw(wikitext, ["relationships", "relationship"], 4000);
-                if (look) sections.look = look;
                 const kind = (charSignal || charSection) ? "character" : "place";
                 c[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, kind, found: true, ts: Date.now() };
                 // LLM curation runs in the BACKGROUND — this turn ships the regex
@@ -1206,7 +1222,7 @@ async function ensureGrounded(name, trusted = false) {
                 if (s.llmDossier && (charSignal || charSection)) scheduleDossier(c[key], title, wikitext, relRaw);
                 saveCache();
                 const got = Object.entries(sections).filter(([, v]) => v).map(([k]) => k).join(", ");
-                debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${physical || "(no appearance)"} [have: ${got}]`);
+                debug(`✓ ${title}${aliases.length ? " (aka " + aliases.slice(0, 4).join(", ") + ")" : ""} → ${sections.physical || "(no appearance)"} [have: ${got}]`);
                 return c[key];
             }
             missReason = "no-facts";
@@ -2705,6 +2721,37 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         if (pinNames.length) {
             await groundNames(pinNames, true);
             if (myEpoch !== chatEpoch) return;
+        }
+
+        // SELF-HEALING SECTIONS: an entry grounded before markup containment can
+        // carry junk forever (gallery filenames as its "look", wikitable rows in a
+        // section) — the cache is permanent, so the extractor fix alone never
+        // reaches it. Detect the junk signature and rebuild the entry's sections
+        // from a fresh fetch with the CURRENT extractor: one entry per turn, once
+        // per entity ever (healTs persists), in the background — same pattern as
+        // the dossier self-upgrade, but over the whole chat cache so a
+        // single-character scene heals too.
+        {
+            const store = cache();
+            for (const key of Object.keys(store)) {
+                const e = store[key];
+                if (!e || !e.found || !e.wiki || e.healTs || !entryPoisoned(e)) continue;
+                e.healTs = Date.now();
+                (async () => {
+                    try {
+                        const wt = await fetchWikitext(e.wiki, e.name);
+                        if (!wt) return;
+                        const rebuilt = await buildEntrySections(e.wiki, e.name, wt, s, e.kind !== "place");
+                        if (Object.values(rebuilt).some(Boolean)) {
+                            e.sections = rebuilt;
+                            e.relRaw = extractSectionRaw(wt, ["relationships", "relationship"], 4000);
+                            debug(`♻ sections rebuilt clean: ${e.name}`);
+                            saveCache();
+                        }
+                    } catch (err) { /* once per entity — healTs stays */ }
+                })();
+                break;
+            }
         }
 
         // Per-pair dynamics: with the cast settled, resolve "how A is around B" for every
