@@ -323,5 +323,35 @@ await run14;
 T("bare mention injects the suffix-keyed entry", /- Appearance: A pale duelist/.test(lastInjection()));
 T("the shadowing ✕ row is buried", !("ghostblade" in healCache2));
 
+console.log("[15] 'you talked to Rukia' — a first-name mention outranks the stale cast");
+const q15a = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Beside the brazier, Vandrel Kuchor sharpens a blade.", false));
+const run15a = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+parseQueue[q15a]?.resolve('["Vandrel Kuchor"]');
+await run15a;
+T("multi-word character grounded", !!healCache2["vandrel kuchor"]?.found);
+S.parserEveryTurn = true;
+S.contextWindow = 1;   // the old full-name mention has scrolled out of the scene
+const q15b = parseQueue.length;
+globalThis.__ctx.chat.push(msg("At the arch, Zarblade waits alone.", false));
+const run15b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+parseQueue[q15b]?.resolve('["Zarblade"]');
+await run15b;
+S.parserEveryTurn = false;
+T("cast swapped to the previous-scene character", /Zarblade/.test(lastInjection()) && !/Vandrel/.test(lastInjection()));
+const q15c = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Later that night, you talked with Vandrel by the gate.", true));
+const run15c = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await run15c;
+T("no parser round trip needed for a cached first name", parseQueue.length === q15c);
+parseQueue[q15c]?.resolve('["Vandrel Kuchor"]');
+const inj15 = lastInjection();
+T("the character you addressed IS injected", /Vandrel Kuchor/.test(inj15));
+T("…and rides FIRST, ahead of the stale cast", inj15.indexOf("Vandrel Kuchor") >= 0 && inj15.indexOf("Vandrel Kuchor") < inj15.indexOf("Zarblade"));
+T("no duplicate cache key for the short form", !("vandrel" in healCache2));
+S.contextWindow = 10;
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

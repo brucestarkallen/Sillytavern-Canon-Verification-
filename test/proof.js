@@ -786,6 +786,26 @@ T("unclosed table swallows to end (MediaWiki-faithful)", (() => {
 T("clean sections never flag", api.entryPoisoned({ sections: { look: "A fair-skinned woman with brown eyes.", personality: "Stern at work […] soft with family." } }) === false);
 T("sectionless entry never flags", api.entryPoisoned({ found: true }) === false);
 
+// ---------------------------------------------------------------- v0.29: first names find their character
+console.log("[first-name resolution]");
+sandbox.__settings.cache = {
+    "rukia kuchiki (bleach)": { name: "Rukia Kuchiki", sections: { physical: "hair: black" }, aliases: ["Rukia Kuchiki (bleach)"], rel: {}, found: true, ts: Date.now() },
+    "byakuya kuchiki": { name: "Byakuya Kuchiki", sections: { physical: "hair: black" }, aliases: [], rel: {}, found: true, ts: Date.now() },
+    "kiyone kotetsu": { name: "Kiyone Kotetsu", sections: { physical: "hair: blonde" }, aliases: [], rel: {}, found: true, ts: Date.now() },
+    "isane kotetsu": { name: "Isane Kotetsu", sections: { physical: "hair: silver" }, aliases: [], rel: {}, found: true, ts: Date.now() },
+};
+T("first name resolves to the full entry", api.cacheEntryFor("rukia")?.entry.name === "Rukia Kuchiki");
+T("surname shared by TWO characters resolves to nothing", api.cacheEntryFor("kuchiki") === null);
+T("each sister's given name still resolves", api.cacheEntryFor("kiyone")?.entry.name === "Kiyone Kotetsu" && api.cacheEntryFor("isane")?.entry.name === "Isane Kotetsu");
+T("too-short token never token-matches", api.cacheEntryFor("ru") === null);
+T("gate: a first-name mention is HANDLED (no wasteful re-parse)", api.isUnhandledName("Rukia") === false);
+sandbox.__settings.cache["rukia"] = { name: "Rukia", sections: {}, found: false, ts: Date.now() };
+T("token hit buries a corpse at the short key too", api.cacheEntryFor("rukia")?.entry.name === "Rukia Kuchiki" && !("rukia" in sandbox.__settings.cache));
+const fnNote = api.relevantCanonNote(["later, you talked to rukia by the gate"], ["Zzz Unresolvable"]);
+T("sweep pulls a first-name mention into the note", /Rukia Kuchiki/.test(fnNote));
+const ambNote = api.relevantCanonNote(["a kotetsu waited in the hall"], ["Zzz Unresolvable"]);
+T("ambiguous surname sweeps NEITHER sister", !/Kiyone/.test(ambNote) && !/Isane/.test(ambNote));
+
 // ---------------------------------------------------------------- v0.28: a miss binds only the wikis it searched
 console.log("[miss scope]");
 T("wiki set normalizes: trim, case, dedupe, sort", JSON.stringify(api.normWikiSet(" B , a ,b,,A ")) === '["a","b"]');

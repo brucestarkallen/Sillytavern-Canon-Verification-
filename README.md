@@ -56,6 +56,33 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.29.0 (first names find their character)
+
+"You talked to Rukia" injected the previous scene's cast — and no Rukia.
+She was cached, but every non-parser resolver was exact-match blind:
+`cacheEntryFor("rukia")` ≠ "Rukia Kuchiki", the smart sweep only matched
+full names/aliases against the scene, and the parser gate stayed shut
+because the word was already in `parsedWords`. Priority (pins → setting →
+cast → sweep) then filled the note from the stale cast.
+
+- **Unambiguous whole-token resolution** in `cacheEntryFor`: a query that is
+  a whole token (≥3 chars, non-noise) of exactly ONE character's name/alias
+  set resolves to that character. "Rukia" → Rukia Kuchiki. A token two
+  characters share — "Kotetsu" with both sisters cached — resolves to
+  nothing: no guessing, the parser can disambiguate that one. Heals the
+  user-typed prepend (which already rides FIRST, ahead of the cast), the
+  parser gate (no wasteful re-parse, no duplicate short-form cache keys),
+  and cast pruning — one choke point.
+- **First-name smart sweep**: the same uniqueness rule applied scene-wide
+  via a token→owner index, so "you talked to Rukia" pulls her in even in
+  sweep-only situations.
+
+Proven by `test/proof.js` (284 assertions) + `test/sim.mjs` (66, including
+the exact end-to-end scenario: stale cast + first-name user mention →
+addressed character injected FIRST, zero parser round trips). 8 guards
+negative-verified failing on v0.28.0; ambiguity guards prove the token pass
+never over-matches.
+
 ## Changelog — v0.28.0 (a "not found" binds only the wikis it searched)
 
 The Bleach-crossover bug: characters missed BEFORE the right wiki was in the

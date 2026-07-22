@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.28.0";
+const CG_VERSION = "0.29.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1709,6 +1709,28 @@ function cacheEntryFor(nameLc) {
             return { key: k, entry: e };
         }
     }
+    // PASS 2 — a WHOLE TOKEN of exactly one character's names: "Rukia" must find
+    // "Rukia Kuchiki" without a parser round trip. First names are how players
+    // actually refer to characters; exact-only matching made every such reference
+    // invisible to the user-typed prepend, the gate, and cast pruning. A token two
+    // DIFFERENT characters share ("Kotetsu" with both sisters cached) resolves to
+    // nothing — no guessing; the parser can disambiguate that one.
+    if (nameLc.length >= 3 && !NOISE_WORDS.has(nameLc)) {
+        let hit = null;
+        for (const [k, e] of Object.entries(c)) {
+            if (!e.found || !e.sections) continue;
+            const toks = [e.name || "", k, ...(e.aliases || [])].join(" ").toLowerCase()
+                .split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3 && !NOISE_WORDS.has(t));
+            if (toks.includes(nameLc)) {
+                if (hit && hit.entry.name !== e.name) return null;   // shared by two characters
+                if (!hit) hit = { key: k, entry: e };
+            }
+        }
+        if (hit) {
+            if (c[nameLc] && !c[nameLc].found) { delete c[nameLc]; saveCache(); debug(`⚰ stale miss "${nameLc}" buried — found as "${hit.entry.name}"`); }
+            return hit;
+        }
+    }
     return null;
 }
 
@@ -1867,6 +1889,18 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         // named in the recent scene — including by the AI's own output — injects
         // immediately, no parser round trip required. The AI saying "Alpha" is all
         // the evidence needed: she's cached.
+        // token → owning character across the cache: a token unique to ONE character
+        // ("rukia") counts as a mention of them; a shared token ("kuchiki") never does.
+        const tokenOwner = new Map();
+        for (const [k2, e2] of Object.entries(store)) {
+            if (!e2.found || !e2.sections) continue;
+            for (const t of [e2.name || "", k2, ...(e2.aliases || [])].join(" ").toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+                if (t.length < 3 || NOISE_WORDS.has(t)) continue;
+                const cur = tokenOwner.get(t);
+                if (cur !== undefined && cur !== (e2.name || "")) tokenOwner.set(t, "\u0000AMBIG");
+                else tokenOwner.set(t, e2.name || "");
+            }
+        }
         for (const key of Object.keys(store)) {
             const entry = store[key];
             if (!entry.found || !entry.sections || usedKeysGlobal.has(key)) continue;
@@ -1874,6 +1908,12 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
             let hit = "";
             for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.find(n => mentioned(n, lowerMsgs[i])) || "";
+            if (!hit) {
+                // First-name sweep: "you talked to Rukia" must pull Rukia Kuchiki in.
+                const toks = [...new Set(names.join(" ").split(/[^\p{L}\p{N}'-]+/u)
+                    .filter(t => t.length >= 3 && !NOISE_WORDS.has(t) && tokenOwner.get(t) === (entry.name || "")))];
+                for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = toks.find(t => mentioned(t, lowerMsgs[i])) || "";
+            }
             if (hit) {
                 usedKeysGlobal.add(key);
                 present.push({ entry, matchedName: hit, swept: true });
