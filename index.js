@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.27.0";
+const CG_VERSION = "0.27.1";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -696,12 +696,19 @@ function cleanWikitext(wt) {
     s = s.replace(/<tabber\b[^>]*>([\s\S]*?)(?:<\/tabber\s*>|$)/gi,
         (m, tbody) => tbody.replace(/\|-\|/g, "\n").replace(/^[ \t]*[^=\n]{1,40}=[ \t]*/gm, ""));
     // 4) Wikitables: {| … |} — headers, row pipes, style attrs; none of it is prose.
-    //    Tempered innermost-first loop peels nesting; an unclosed {| drops to end.
-    for (let guard = 0; guard < 8 && s.includes("{|"); guard++) {
+    //    Tempered innermost-first loop peels one nesting LEVEL per pass. The match
+    //    can never be empty, so every productive pass strictly shrinks the string —
+    //    termination is guaranteed by progress, not by the count failsafe (which
+    //    only protects against a future edit making the regex zero-width).
+    for (let guard = 0; guard < 64 && s.includes("{|"); guard++) {
         const next = s.replace(/\{\|(?:(?!\{\||\|\})[\s\S])*\|\}/g, "");
-        if (next === s) { s = s.replace(/\{\|[\s\S]*$/, ""); break; }
+        if (next === s) break;
         s = next;
     }
+    // Anything still open — unclosed opener, or nesting past the failsafe — can
+    // only be table markup from here down; MediaWiki itself swallows an unclosed
+    // {| to end of page. Every exit path lands junk-free.
+    if (s.includes("{|")) s = s.replace(/\{\|[\s\S]*$/, "");
     // Media links — [[File:x.png|thumb|Caption]] must vanish whole, or the
     // generic link rule below leaks its parameters ("thumb|Caption") into the text.
     s = s.replace(/\[\[(?:File|Image|Media):[^\]]*\]\]/gi, "");

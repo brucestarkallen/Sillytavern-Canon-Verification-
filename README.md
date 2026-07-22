@@ -56,6 +56,22 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.27.1 (table peel completes at any depth)
+
+Post-crash audit release. Stress-tested the v0.26 containment pass with
+pathological input (340KB, table nesting depth 14, unclosed constructs, 5k
+image lines): terminates in 4ms — nothing in this extension can hang or
+crash the platform. The audit did catch one leak: the table peel loop's
+arbitrary 8-pass cap abandoned *balanced* table syntax at nesting depth >8.
+The loop now terminates on progress (each productive pass strictly shrinks
+the string; the raised failsafe only guards a hypothetical zero-width regex
+edit), and a post-loop sweep makes every exit path junk-free — matching
+MediaWiki itself, which swallows an unclosed `{|` to end of page.
+
+Proven by `test/proof.js` (265 assertions: depth-12 guard negative-verified
+failing on v0.27.0, unclosed-table guard preserving drop-to-end behavior) +
+`test/sim.mjs` (51) + the standalone stress harness, all passing.
+
 ## Changelog — v0.27.0 (poisoned caches heal themselves)
 
 Proven by `test/proof.js` (263 assertions) + `test/sim.mjs` (51, including a

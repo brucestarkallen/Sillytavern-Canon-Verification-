@@ -762,6 +762,15 @@ T("gallery-junk look flags as poisoned", api.entryPoisoned({ sections: { look: "
 T("wikitable junk flags as poisoned", api.entryPoisoned({ sections: { biography: '{| class="wikitable" ! Arc' } }) === true);
 T("magic-word junk flags as poisoned", api.entryPoisoned({ sections: { trivia: "Likes tea. __NOTOC__" } }) === true);
 T("tab plumbing flags as poisoned", api.entryPoisoned({ sections: { personality: "Stoic. |-|Part II=Kind." } }) === true);
+T("depth-12 nested table peels completely", (() => {
+    let d = "cell"; for (let i = 0; i < 12; i++) d = `{| class="n${i}"\n|-\n| ${d}\n|}`;
+    const out = api.cleanWikitext(`Before.\n${d}\nAfter.`);
+    return !out.includes("{|") && !out.includes("|}") && !out.includes("cell") && /Before\./.test(out) && /After\./.test(out);
+})());
+T("unclosed table swallows to end (MediaWiki-faithful)", (() => {
+    const out = api.cleanWikitext("Prose stays.\n{| class=\"x\"\n|-\n| row\nno close ever");
+    return out.includes("Prose stays.") && !out.includes("{|") && !out.includes("row");
+})());
 T("clean sections never flag", api.entryPoisoned({ sections: { look: "A fair-skinned woman with brown eyes.", personality: "Stern at work […] soft with family." } }) === false);
 T("sectionless entry never flags", api.entryPoisoned({ found: true }) === false);
 
