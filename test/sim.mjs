@@ -35,6 +35,21 @@ globalThis.fetch = async (url) => {
     const u = new URL(url);
     const titles = u.searchParams.get("titles");
     const page = u.searchParams.get("page");
+    if (u.hostname.startsWith("bleachstub")) {
+        if (titles === "Zarblade") return { ok: true, json: async () => ({ query: { pages: { 9: { pageid: 9, title: "Zarblade" } } } }) };
+        if (titles) return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };
+        if (page === "Zarblade") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'''Zarblade''' is a rogue captain.
+{{Infobox
+| hair = white
+}}
+== Appearance ==
+Zarblade is a towering swordsman with white hair.
+== Personality ==
+Boisterous.` } } }) };
+        return { ok: true, json: async () => ({}) };
+    }
+    if (titles === "Zarblade") return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };  // exists ONLY on bleachstub
     if (titles) return { ok: true, json: async () => ({ query: { pages: { 1: { pageid: 1, title: titles } } } }) };
     if (page === "Gallerychar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
 `'''Gallerychar''' is a legendary healer.
@@ -272,6 +287,41 @@ T("no image junk anywhere in rebuilt sections", !Object.values(healCache["healch
 const run12b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 await run12b;
 T("next turn injects the healed look", /- Appearance: A fair-skinned woman with emerald eyes and copper hair/.test(lastInjection()) && !/\.png/i.test(lastInjection()));
+
+console.log("[13] adding a wiki revives a fresh 'not found' (the Bleach-crossover bug)");
+const S = extension_settings.canon_grounding;
+const q13 = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Across the courtyard, Zarblade laughed.", false));
+const run13 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("parse fired for the new name", parseQueue.length === q13 + 1);
+parseQueue[q13]?.resolve('["Zarblade"]');
+await run13;
+const healCache2 = globalThis.__ctx.chatMetadata.canon_grounding_cache;
+T("missed on the configured wiki → negative cached", healCache2["zarblade"] && healCache2["zarblade"].found === false);
+T("the miss remembers WHAT it searched", JSON.stringify(healCache2["zarblade"].searched) === '["testwiki"]');
+T("nothing injected for the miss", !/Zarblade/.test(lastInjection()));
+S.wikis = "testwiki, bleachstub";
+const q13b = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Once more, Zarblade drew his blade.", false));
+const run13b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("gate re-asks: the old miss doesn't speak for the new wiki", parseQueue.length === q13b + 1);
+parseQueue[q13b]?.resolve('["Zarblade"]');
+await run13b;
+T("grounded from the ADDED wiki", healCache2["zarblade"] && healCache2["zarblade"].found === true && healCache2["zarblade"].wiki === "bleachstub");
+T("…and injected this very turn", /- Appearance: A towering swordsman with white hair/.test(lastInjection()) && /Zarblade/.test(lastInjection()));
+S.wikis = "testwiki";
+
+console.log("[14] found-under-suffixed-key buries the bare-name corpse");
+healCache2["ghostblade"] = { name: "Ghostblade", sections: {}, found: false, searched: ["testwiki"], ts: Date.now() };
+healCache2["ghostblade (bleachstub)"] = { name: "Ghostblade", sections: { look: "A pale duelist.", personality: "Wry." },
+    aliases: ["Ghostblade (bleachstub)"], rel: {}, wiki: "bleachstub", kind: "character", found: true, ts: Date.now() };
+globalThis.__ctx.chat.push(msg("By the well, Ghostblade waits.", false));
+const run14 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await run14;
+T("bare mention injects the suffix-keyed entry", /- Appearance: A pale duelist/.test(lastInjection()));
+T("the shadowing ✕ row is buried", !("ghostblade" in healCache2));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

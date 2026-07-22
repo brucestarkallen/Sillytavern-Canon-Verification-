@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.27.1";
+const CG_VERSION = "0.28.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1059,6 +1059,21 @@ function entryPoisoned(entry) {
         .some(k => sec[k] && SECTION_JUNK.test(sec[k]));
 }
 
+function normWikiSet(csv) {
+    return [...new Set(String(csv || "").split(",").map(w => w.trim().toLowerCase()).filter(Boolean))].sort();
+}
+
+/** Does this negative verdict still speak for the CURRENT wiki list?
+ *  A miss is a fact about the wikis that were searched, nothing more. When the
+ *  user adds a wiki (the usual reason: crossover characters kept missing), every
+ *  old "not found" is silent about the new wiki and must not block a re-search.
+ *  Removing a wiki changes nothing (still covered). Legacy negatives carry no
+ *  `searched` stamp — always stale, so pre-existing dead rows revive once. */
+function missCoversCurrentWikis(entry, wikisCsv) {
+    if (!entry || !Array.isArray(entry.searched)) return false;
+    return normWikiSet(wikisCsv).every(w => entry.searched.includes(w));
+}
+
 /**
  * Build every injected section from a page's wikitext. Extracted from
  * ensureGrounded so the poisoned-cache self-heal can rebuild an existing
@@ -1155,23 +1170,27 @@ async function ensureGrounded(name, trusted = false) {
     const s = settings();
     const key = name.toLowerCase();
     const c = cache();
+    // The same character may already be grounded under a DIFFERENT key — e.g. "alya"
+    // resolved to the page "Alisa Mikhailovna Kujou", or "Kenpachi Zaraki" grounded
+    // as "Kenpachi Zaraki (bleach)". A found entry beats any stale miss at this key
+    // (cacheEntryFor buries the corpse itself), so this check runs FIRST.
+    const aliasHit = cacheEntryFor(key);
+    if (aliasHit) return aliasHit.entry;
+
     const existing = c[key];
     if (existing && existing.sections) {
         if (existing.found) return existing;                       // already grounded
         if (Date.now() - existing.ts < NEGATIVE_TTL) {
             // A page rejected ONLY because it didn't look like a character can still be
             // valid lore (a place/org). If the caller now trusts it (LLM parser), re-fetch
-            // instead of reusing the untrusted miss; otherwise honor the recent miss.
-            if (!(existing.reason === "not-character" && trusted)) return existing;
+            // instead of reusing the untrusted miss; otherwise honor the recent miss —
+            // but only if it was searched against every wiki now configured. A miss
+            // recorded before the user added a wiki says nothing about that wiki.
+            if (!missCoversCurrentWikis(existing, s.wikis)) {
+                debug(`↻ wiki list grew since "${name}" missed — re-searching`);
+            } else if (!(existing.reason === "not-character" && trusted)) return existing;
         }
     }
-
-    // The same character may already be grounded under a DIFFERENT key — e.g. "alya"
-    // resolved to the page "Alisa Mikhailovna Kujou", and now the parser asks for the
-    // canonical name. Reuse that entry instead of re-hitting the wiki and creating a
-    // second cache entry for the same character (which also injected them twice).
-    const aliasHit = cacheEntryFor(key);
-    if (aliasHit) return aliasHit.entry;
 
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
     let hadError = false;          // network / HTTP / parse failure (transient — retry later)
@@ -1245,7 +1264,7 @@ async function ensureGrounded(name, trusted = false) {
     // prevents re-fetching the same dead end every turn. Transient network errors are NOT
     // locked in (hadError skips this), and the 24h TTL lets it retry later.
     if (!hadError) {
-        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, ts: Date.now() };
+        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, searched: normWikiSet(s.wikis), ts: Date.now() };
         saveCache();
         debug(`✕ no usable wiki page for "${name}" on: ${s.wikis}`);
     }
@@ -1681,7 +1700,14 @@ function cacheEntryFor(nameLc) {
     for (const [k, e] of Object.entries(c)) {
         if (!e.found || !e.sections) continue;
         const names = [e.name && e.name.toLowerCase(), k, ...(e.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
-        if (names.includes(nameLc)) return { key: k, entry: e };
+        if (names.includes(nameLc)) {
+            // The same entity grounded under another key (suffixed/canonical query)
+            // while a stale "not found" sits at THIS key — a corpse that shadows the
+            // real entry for the parser gate and haunts the panel as a duplicate ✕
+            // row. Every resolver path funnels through here: bury it on sight.
+            if (c[nameLc] && !c[nameLc].found) { delete c[nameLc]; saveCache(); debug(`⚰ stale miss "${nameLc}" buried — found as "${e.name}"`); }
+            return { key: k, entry: e };
+        }
     }
     return null;
 }
@@ -1727,8 +1753,21 @@ function isUnhandledName(n) {
     const lc = n.toLowerCase();
     if (cacheEntryFor(lc)) return false;                                        // grounded (any name/alias)
     const neg = cache()[lc];
-    if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)) return false; // fresh miss
+    if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)
+        && missCoversCurrentWikis(neg, settings().wikis)) return false;         // fresh miss, list unchanged
     return true;
+}
+
+/** parsedWords stops re-showing the parser words it already ruled on — but a
+ *  "not found" ruling is a fact about the wiki list that produced it. When the
+ *  list has since grown, THAT word's veto is void; verdicts about non-names
+ *  (never cached) rightly survive wiki changes. */
+function parserMayRevisit(n) {
+    const lc = n.toLowerCase();
+    if (!isUnhandledName(n)) return false;
+    if (!parsedWords.has(lc)) return true;
+    const neg = cache()[lc];
+    return !!(neg && !neg.found && !missCoversCurrentWikis(neg, settings().wikis));
 }
 
 /**
@@ -2619,7 +2658,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             const quick = extractCandidateNames(sceneText);
             if (!shouldParse) {
                 // A capitalized word we've never shown the model and never grounded.
-                shouldParse = quick.some(n => isUnhandledName(n) && !parsedWords.has(n.toLowerCase()));
+                shouldParse = quick.some(parserMayRevisit);
             }
             if (!shouldParse) {
                 // Always (re)parse when the CURRENT user message names someone we haven't
@@ -2872,7 +2911,7 @@ async function onMessageReceived() {
         const sceneText = sceneMessages(ctx, s.contextWindow).join("\n");
         const quick = extractCandidateNames(sceneText);
         const hasNew = s.parserEveryTurn ||
-            quick.some(n => isUnhandledName(n) && !parsedWords.has(n.toLowerCase()));
+            quick.some(parserMayRevisit);
         if (!hasNew) return;
         // NOT guarded by cgInFlight: the old code held that flag for up to 15s here,
         // which made the NEXT user turn's interceptor bail out entirely — a whole

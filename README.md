@@ -56,6 +56,32 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.28.0 (a "not found" binds only the wikis it searched)
+
+The Bleach-crossover bug: characters missed BEFORE the right wiki was in the
+list stayed "✕ not found" for 24h even after adding it — while fresh
+suffixed queries ("Kenpachi Zaraki (bleach)") grounded fine, leaving a found
+entry AND a corpse ✕ row for the same character. Four legs, one class: the
+negative verdict never recorded WHAT it searched, `ensureGrounded` honored
+it blindly, the parser gate suppressed re-asking, and `parsedWords` vetoed
+the name for the rest of the session.
+
+- Misses now carry a `searched` stamp (normalized wiki set). A negative only
+  speaks while it covers the CURRENT list — add a wiki and every affected
+  name re-searches on next mention. Legacy stampless misses are always
+  stale, so existing dead rows revive once, immediately.
+- `cacheEntryFor` buries a stale ✕ shadowing an entity found under another
+  key (suffixed/canonical query) — one choke point, every path heals, the
+  duplicate panel row deletes itself.
+- `isUnhandledName` and both parser-trigger sites apply the same coverage
+  test; the `parsedWords` veto is void exactly for wiki-stale negatives
+  (verdicts about non-names rightly survive wiki changes).
+
+Proven by `test/proof.js` (276 assertions) + `test/sim.mjs` (60, including
+end-to-end: miss on wiki A → add wiki B → same name grounds and injects
+same turn; suffix-keyed entry buries its bare-name corpse). 5 sim guards
+negative-verified failing on v0.27.1.
+
 ## Changelog — v0.27.1 (table peel completes at any depth)
 
 Post-crash audit release. Stress-tested the v0.26 containment pass with

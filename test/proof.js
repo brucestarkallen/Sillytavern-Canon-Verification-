@@ -49,6 +49,7 @@ const sandbox = {
     console,
 };
 const body = pieces.join("\n\n") + `
+saveCache = () => {};   // persistence is sim's job — the real saveCache needs live ST context
 return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
          extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
@@ -59,7 +60,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -167,8 +168,19 @@ sandbox.__settings.cache = {
 T("canonical name resolves to nickname-keyed entry (no refetch path)", api.cacheEntryFor("alisa mikhailovna kujou")?.key === "alya");
 T("second alias resolves too", api.cacheEntryFor("solitary princess")?.key === "alya");
 T("isUnhandledName false for alias-known (post-gen gate fix)", api.isUnhandledName("Alisa Mikhailovna Kujou") === false);
-sandbox.__settings.cache["mitsugoshi"] = { name: "mitsugoshi", sections: {}, found: false, ts: Date.now() };
-T("fresh negative is handled", api.isUnhandledName("Mitsugoshi") === false);
+sandbox.__settings.wikis = "testwiki";
+sandbox.__settings.cache["mitsugoshi"] = { name: "mitsugoshi", sections: {}, found: false, searched: ["testwiki"], ts: Date.now() };
+T("fresh negative covering the current wiki list is handled", api.isUnhandledName("Mitsugoshi") === false);
+sandbox.__settings.cache["crossover ghost"] = { name: "crossover ghost", sections: {}, found: false, searched: ["some-old-wiki"], ts: Date.now() };
+T("fresh negative from a DIFFERENT wiki list re-asks", api.isUnhandledName("Crossover Ghost") === true);
+sandbox.__settings.cache["legacy ghost"] = { name: "legacy ghost", sections: {}, found: false, ts: Date.now() };
+T("legacy negative (no stamp) re-asks once", api.isUnhandledName("Legacy Ghost") === true);
+// A found entry under another key buries a stale miss shadowing the same name.
+sandbox.__settings.cache["kenpachi zaraki"] = { name: "Kenpachi Zaraki", sections: {}, found: false, ts: Date.now() };
+sandbox.__settings.cache["kenpachi zaraki (bleach)"] = { name: "Kenpachi Zaraki", sections: { look: "An eyepatched giant." }, aliases: ["Kenpachi Zaraki (bleach)"], found: true, ts: Date.now() };
+T("found-under-suffixed-key beats the bare-name corpse", api.cacheEntryFor("kenpachi zaraki")?.entry.sections.look === "An eyepatched giant.");
+T("the corpse is buried (panel row gone)", !("kenpachi zaraki" in sandbox.__settings.cache));
+T("…and the gate re-routes to the found entry", api.isUnhandledName("Kenpachi Zaraki") === false);
 sandbox.__settings.cache["mitsugoshi"].ts = Date.now() - 1000 * 60 * 60 * 25; // 25h old
 T("EXPIRED negative is unhandled again (was handled forever)", api.isUnhandledName("Mitsugoshi") === true);
 
@@ -773,6 +785,15 @@ T("unclosed table swallows to end (MediaWiki-faithful)", (() => {
 })());
 T("clean sections never flag", api.entryPoisoned({ sections: { look: "A fair-skinned woman with brown eyes.", personality: "Stern at work […] soft with family." } }) === false);
 T("sectionless entry never flags", api.entryPoisoned({ found: true }) === false);
+
+// ---------------------------------------------------------------- v0.28: a miss binds only the wikis it searched
+console.log("[miss scope]");
+T("wiki set normalizes: trim, case, dedupe, sort", JSON.stringify(api.normWikiSet(" B , a ,b,,A ")) === '["a","b"]');
+T("same list → miss still speaks", api.missCoversCurrentWikis({ searched: ["a", "b"] }, "b, a") === true);
+T("wiki ADDED → miss is stale", api.missCoversCurrentWikis({ searched: ["a"] }, "a, bleach") === false);
+T("wiki removed → still covered", api.missCoversCurrentWikis({ searched: ["a", "b"] }, "a") === true);
+T("legacy miss (no stamp) → always stale", api.missCoversCurrentWikis({ found: false, ts: 1 }, "a") === false);
+T("case-insensitive coverage", api.missCoversCurrentWikis({ searched: ["bleach"] }, "Bleach") === true);
 
 // ---------------------------------------------------------------- misc
 console.log("[misc]");
