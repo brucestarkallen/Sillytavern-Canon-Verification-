@@ -56,6 +56,33 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.31.0 (meta blocks are UI, not scene; injection tiers are decree, not inference)
+
+Whereabouts tickers ("[ACW: Hiyori Shiina | Library | calm]") and similar
+status blocks embedded in messages were read as scene prose. The parser —
+asked who is present in text that literally lists every tracked character
+with a location — answered honestly with the whole roster, and the sweep
+saw a page of proper-noun names for people nowhere near the scene. The
+actual cast then fought the roster for injection budget.
+
+- **`stripMetaBlocks`** scrubs ALL-CAPS-tag brackets (`[ACW: …]`,
+  `[HUD: …]`, `[OOC: …]`) at every text entry point: the scene window, the
+  last user message, and inside `relevantCanonNote` itself. Unclosed blocks
+  (mid-stream cuts) drop to end of message. `[sic]`, `[laughs]`, and
+  name-tagged dialogue (`[Kiyotaka: …]` — mixed case) survive untouched.
+  Ticker names never reach the parser, the gates, or the sweep.
+- **Injection priority is now explicit tiers**: pins → current setting →
+  **player-named this turn** → **on-screen ledger cast** → parser cast →
+  sweep. The ledger tier now applies in every mode, not just ledger mode.
+  Caps trim from the bottom, so the characters you are actually addressing
+  can never be squeezed out by inference.
+
+Proven by `test/proof.js` (297 assertions: scrub semantics, ticker
+immunity, tier ordering) + `test/sim.mjs` (69, including end-to-end: a
+ticker-only character stays out, zero parser round trips, real cast
+untouched). 2 sim guards negative-verified failing on v0.30.0 —
+reproducing the reported bug exactly.
+
 ## Changelog — v0.30.0 (token resolution can no longer summon the off-screen)
 
 v0.29's token pass regressed injection: it was over-broad on two axes.

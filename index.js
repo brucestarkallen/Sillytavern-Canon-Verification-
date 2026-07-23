@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.30.0";
+const CG_VERSION = "0.31.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1601,7 +1601,7 @@ function sceneMessages(ctx, windowSize) {
     const visible = chat.filter(m =>
         !m.is_system && !markers.some(mk => (m.mes || "").includes(mk))
     );
-    return visible.slice(-Math.max(1, windowSize)).map(m => m.mes || "");
+    return visible.slice(-Math.max(1, windowSize)).map(m => stripMetaBlocks(m.mes || ""));
 }
 
 /**
@@ -1820,9 +1820,20 @@ function appearanceLine(entry) {
     return look ? `  - Appearance: ${look}${facts ? ` [${facts}]` : ""}` : `  - Appearance: ${facts}`;
 }
 
+/** Ambient status/meta blocks other extensions weave into messages —
+ *  "[ACW: Hiyori Shiina | Library | calm]", "[HUD: …]", "[OOC: …]" — are UI,
+ *  not scene. Left in, they hand the parser a roll call of every tracked
+ *  character and give the sweep a page of proper-noun names for people who
+ *  are nowhere near the scene. ALL-CAPS-tag brackets only, so "[sic]",
+ *  "[laughs]", and name-tagged dialogue ("[Kiyotaka: …]") survive. An
+ *  unclosed block (mid-stream cut) drops to end of message. */
+function stripMetaBlocks(text) {
+    return String(text || "").replace(/\[[A-Z][A-Z0-9 _&-]{1,14}:[^\]]*(\]|$)/g, " ");
+}
+
 function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const s = settings();
-    const msgs = sceneMsgs || [];
+    const msgs = (sceneMsgs || []).map(stripMetaBlocks);
     const lowerMsgs = msgs.map(m => m.toLowerCase());
     const pinNames = (extras.pinNames || []).filter(Boolean);
     // Force-OUT by decree: any entity whose name/alias matches the blocklist never
@@ -1869,6 +1880,25 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     if (extras.settingKey && store[extras.settingKey] && !usedKeysGlobal.has(extras.settingKey)) {
         usedKeysGlobal.add(extras.settingKey);
         present.push({ entry: store[extras.settingKey], matchedName: store[extras.settingKey].name, setting: true });
+    }
+
+    // PRIORITY TIERS (decree over inference): characters the PLAYER just named
+    // outrank everything but pins and the setting; the story's own ledger cast
+    // comes second; the parser's cast third; the sweep last. Caps always trim
+    // from the bottom, so the people you are actually talking to survive.
+    for (const un of (extras.userNames || [])) {
+        const found = cacheEntryFor(String(un).toLowerCase());
+        if (found && !usedKeysGlobal.has(found.key) && !isBlocked(found.entry, un)) {
+            usedKeysGlobal.add(found.key);
+            present.push({ entry: found.entry, matchedName: un });
+        }
+    }
+    for (const ln of (extras.ledgerNames || [])) {
+        const found = cacheEntryFor(String(ln).toLowerCase());
+        if (found && !usedKeysGlobal.has(found.key) && !isBlocked(found.entry, ln)) {
+            usedKeysGlobal.add(found.key);
+            present.push({ entry: found.entry, matchedName: ln });
+        }
     }
 
     if (castNames && castNames.length) {
@@ -2688,10 +2718,12 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const scene = sceneMessages(ctx, s.contextWindow);
         const sceneText = scene.join("\n");
         const visibleLen = (ctx.chat || []).filter(m => !m.is_system).length;
-        const lastUserMsg = ([...chat].reverse().find(m => m.is_user) || {}).mes || "";
+        const lastUserMsg = stripMetaBlocks(([...chat].reverse().find(m => m.is_user) || {}).mes || "");
         const lgNames = ledgerNames();
         const pinNames = chatPinNames();
         let cast = null;  // entities present this turn; drives injection when known
+        let tierUser = [];    // player-typed grounded names — injection tier 1
+        let tierLedger = [];  // on-screen ledger cast — injection tier 2
 
         // ⏱ IMMERSION CEILING: everything below (parse → verify → audit → ground →
         // pins → pairs → expansion → self-heal) runs as ONE background-capable task.
@@ -2802,14 +2834,16 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             if (userNames.length) {
                 await groundNames(userNames);
                 if (myEpoch !== chatEpoch) return;
-                if (cast) {
-                    const groundedUser = [];
-                    for (const n of userNames) {
-                        const hit = cacheEntryFor(n.toLowerCase());
-                        if (hit) groundedUser.push(hit.entry.name);
-                    }
-                    if (groundedUser.length) cast = [...new Set([...groundedUser, ...cast])];
-                }
+                tierUser = userNames.filter(n => cacheEntryFor(n.toLowerCase()));
+            }
+        }
+        // The story's REAL cast (Summaryception ledger) that is on-screen right now
+        // rides ahead of the parser's judgment — in every mode, not just ledger mode.
+        if (lgNames) {
+            tierLedger = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
+            if (tierLedger.length) {
+                await groundNames(tierLedger, true);
+                if (myEpoch !== chatEpoch) return;
             }
         }
 
@@ -2912,6 +2946,8 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // recomputed sceneMessages a second time for nothing).
         const note = relevantCanonNote(scene, cast, chatArc(), {
             pinNames,
+            userNames: tierUser,
+            ledgerNames: tierLedger,
             blockNames: chatBlockNames(),
             settingKey: chatSettingKey(),
             chatPin: chatPin(),

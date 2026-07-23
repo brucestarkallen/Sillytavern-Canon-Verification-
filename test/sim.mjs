@@ -353,5 +353,18 @@ T("…and rides FIRST, ahead of the stale cast", inj15.indexOf("Vandrel Kuchor")
 T("no duplicate cache key for the short form", !("vandrel" in healCache2));
 S.contextWindow = 10;
 
+console.log("[16] a whereabouts ticker is not the scene");
+const q16 = parseQueue.length;
+S.contextWindow = 2;   // [15]'s real prose mentions of Vandrel scroll out — the ticker is his ONLY appearance
+globalThis.__ctx.chat.push(msg("The night drags on quietly.", true));   // neutral player turn: nobody user-named
+globalThis.__ctx.chat.push(msg("Dusk settles over the camp as Zarblade stirs.\n[ACW: Vandrel Kuchor | Far ridge | resting] [ACW: Nimbler Vosk | Archives | idle]", false));
+const run16 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await run16;
+T("ticker names never reach the parser (no round trip)", parseQueue.length === q16);
+parseQueue[q16]?.resolve('[]');
+T("cached character named ONLY in the ticker is NOT injected", !/Vandrel/.test(lastInjection()));
+T("the real cast is untouched", /Zarblade/.test(lastInjection()));
+S.contextWindow = 10;
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

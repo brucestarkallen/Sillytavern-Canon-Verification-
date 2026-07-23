@@ -60,7 +60,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -786,6 +786,18 @@ T("unclosed table swallows to end (MediaWiki-faithful)", (() => {
 T("clean sections never flag", api.entryPoisoned({ sections: { look: "A fair-skinned woman with brown eyes.", personality: "Stern at work […] soft with family." } }) === false);
 T("sectionless entry never flags", api.entryPoisoned({ found: true }) === false);
 
+// ---------------------------------------------------------------- v0.31: meta blocks are UI, not scene
+console.log("[meta-block scrub + priority tiers]");
+T("ACW whereabouts block stripped whole", (() => {
+    const out = api.stripMetaBlocks("Dusk falls. [ACW: Hiyori Shiina | Library, lost in the stacks | calm] The bell rings.");
+    return !/Hiyori|Library|ACW/.test(out) && /Dusk falls\./.test(out) && /The bell rings\./.test(out);
+})());
+T("OOC block stripped", !/tomorrow/.test(api.stripMetaBlocks("She nods. [OOC: pausing until tomorrow]")));
+T("unclosed block (stream cut) drops to end of message", api.stripMetaBlocks("Rain falls. [ACW: Ken Sud\u014d | Gym, basketball club drills").trim() === "Rain falls.");
+T("[sic] and plain brackets survive", api.stripMetaBlocks("He said it was 'to good' [sic] and left [quietly].") === "He said it was 'to good' [sic] and left [quietly].");
+T("name-tagged dialogue survives (mixed case is not a meta tag)", api.stripMetaBlocks("[Kiyotaka: I see.]") === "[Kiyotaka: I see.]");
+T("multiple blocks in one message all stripped", !/Shiina|Sud\u014d/.test(api.stripMetaBlocks("[ACW: Hiyori Shiina | Library | calm] [ACW: Ken Sud\u014d | Gym | fired up]")));
+
 // ---------------------------------------------------------------- v0.29: first names find their character
 console.log("[first-name resolution]");
 sandbox.__settings.cache = {
@@ -813,6 +825,13 @@ T("cache-key tokens never resolve (wiki suffixes are generic)", api.cacheEntryFo
 const aliasNote = api.relevantCanonNote(["The Commander gave the order to hold."], ["Zzz Unresolvable"]);
 T("an alias word in prose summons no one", !/Su\u00ec/.test(aliasNote));
 T("first name STILL resolves after the tightening", api.cacheEntryFor("rukia")?.entry.name === "Rukia Kuchiki");
+const acwNote = api.relevantCanonNote(["Dusk falls over the mall.\n[ACW: Rukia Kuchiki | Library, lost in the stacks | calm]"], ["Zzz Unresolvable"]);
+T("a character named ONLY in a whereabouts ticker is NOT swept in", !/Rukia Kuchiki/.test(acwNote));
+const tierNote = api.relevantCanonNote(["Byakuya Kuchiki and Rukia Kuchiki stand apart while Kiyone watches."], ["Rukia Kuchiki"],
+    undefined, { userNames: ["Isane"], ledgerNames: ["Byakuya Kuchiki"] });
+const pos = n => tierNote.indexOf(n);
+T("tier order: player-named \u2192 ledger \u2192 cast \u2192 sweep", pos("Isane Kotetsu") >= 0
+    && pos("Isane Kotetsu") < pos("Byakuya Kuchiki") && pos("Byakuya Kuchiki") < pos("Rukia Kuchiki") && pos("Rukia Kuchiki") < pos("Kiyone Kotetsu"));
 
 // ---------------------------------------------------------------- v0.28: a miss binds only the wikis it searched
 console.log("[miss scope]");
