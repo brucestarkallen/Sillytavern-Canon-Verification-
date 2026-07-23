@@ -93,7 +93,7 @@ globalThis.__ctx = {
     chatMetadata: {},
     ConnectionManagerRequestService: svc,
     extensionSettings: {},
-    setExtensionPrompt: (key, text) => injections.push(text),
+    setExtensionPrompt: (key, text, pos, depth) => { injections.push(text); globalThis.__lastDepth = depth; },
     extension_prompt_types: { IN_CHAT: 1 },
     extension_prompt_roles: { SYSTEM: 0 },
 };
@@ -365,6 +365,15 @@ parseQueue[q16]?.resolve('[]');
 T("cached character named ONLY in the ticker is NOT injected", !/Vandrel/.test(lastInjection()));
 T("the real cast is untouched", /Zarblade/.test(lastInjection()));
 S.contextWindow = 10;
+
+console.log("[17] injection depth: top-of-chat by default, user-tunable");
+T("default depth parks canon at the top of chat", globalThis.__lastDepth === 9999);
+S.injectDepth = 3;
+globalThis.__ctx.chat.push(msg("Embers pop softly beside Zarblade.", false));
+const run17 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await run17;
+T("depth setting is honored live", globalThis.__lastDepth === 3);
+S.injectDepth = 9999;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

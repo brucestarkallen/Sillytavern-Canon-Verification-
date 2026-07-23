@@ -56,6 +56,22 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.32.0 (injection depth is a setting; canon rides at the top by default)
+
+The note was hardcoded at depth 1 — glued just above the newest message,
+below every other extension's injection. Canon is stable reference, not
+recency: it belongs where the model reads it before anything else.
+
+- **New setting: Injection depth** (0–9999). ST clamps depth to the chat,
+  so the default **9999 parks the canon note at the very top of chat —
+  right after the system prompt**, above Plot Essential and the first
+  message. Set 1 to restore the old just-above-newest placement, or any
+  depth in between to interleave with other extensions' injections.
+
+Proven by `test/proof.js` (297) + `test/sim.mjs` (71: default depth
+observed at the ST API boundary, live setting change honored next turn).
+2 guards negative-verified failing on v0.31.0.
+
 ## Changelog — v0.31.0 (meta blocks are UI, not scene; injection tiers are decree, not inference)
 
 Whereabouts tickers ("[ACW: Hiyori Shiina | Library | calm]") and similar

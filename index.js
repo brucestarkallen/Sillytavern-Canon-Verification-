@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.31.0";
+const CG_VERSION = "0.32.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -280,6 +280,7 @@ const defaultSettings = {
     // to inject. ~10 matches a setup that summarizes everything older. Higher = a
     // character stays grounded longer after they stop being mentioned.
     contextWindow: 10,
+    injectDepth: 9999,      // in-chat injection depth; huge = clamps to TOP of chat (right after the system prompt)
     // Hard limits so a big cast (e.g. High School DxD) can't balloon the prompt. Set a
     // bit generously because the LLM parser only returns real, relevant entities (no
     // regex junk), so there's room for present + referenced characters.
@@ -2689,7 +2690,13 @@ function setInjection(text) {
         const roles = c.extension_prompt_roles || {};
         const pos = types.IN_CHAT !== undefined ? types.IN_CHAT : 1;   // in-chat @ depth
         const role = roles.SYSTEM !== undefined ? roles.SYSTEM : 0;    // system role
-        c.setExtensionPrompt(INJECT_KEY, text || "", pos, 1, false, role); // depth 1 = just above the latest message
+        // Depth is how many messages up from the bottom the note lands. ST clamps
+        // it to the chat, so the huge default parks canon at the VERY TOP — right
+        // after the system prompt, above other extensions' injections and the
+        // first message: stable reference the model reads before any recency.
+        const rawDepth = Number(settings().injectDepth);
+        const depth = Number.isFinite(rawDepth) && rawDepth >= 0 ? Math.min(rawDepth, 9999) : 9999;
+        c.setExtensionPrompt(INJECT_KEY, text || "", pos, depth, false, role);
         return true;
     } catch (e) {
         return false;
@@ -3250,6 +3257,9 @@ async function addSettingsUI() {
                 <small class="cg-hint">Infobox fields that list a character's other names, so any nickname matches their full-name page.</small>
                 <label>Scene window (visible messages that count as "now")</label>
                 <input id="cg_window" class="text_pole" type="number" min="1" max="100">
+                <label>Injection depth (messages up from the newest)</label>
+                <input id="cg_depth" class="text_pole" type="number" min="0" max="9999">
+                <small class="cg-hint">Where the canon note sits in the prompt. 9999 (default) clamps to the very top of chat — right after the system prompt, above other extensions and the first message. 1 = the old behavior, just above the newest message.</small>
                 <small class="cg-hint">How many recent visible messages count as the current scene. A character stops injecting once their name scrolls past this many messages. Lower = drops off-screen characters faster.</small>
                 <hr>
                 <small><b>Size limits</b> — hard caps so a big cast can't balloon the prompt:</small>
@@ -3481,6 +3491,11 @@ async function addSettingsUI() {
     $("#cg_window").val(s.contextWindow).on("input", function () {
         const n = parseInt($(this).val(), 10);
         s.contextWindow = Number.isFinite(n) && n > 0 ? n : 10;
+        saveSettingsDebounced();
+    });
+    $("#cg_depth").val(s.injectDepth).on("input", function () {
+        const n = parseInt($(this).val(), 10);
+        s.injectDepth = Number.isFinite(n) && n >= 0 ? Math.min(n, 9999) : 9999;
         saveSettingsDebounced();
     });
     // budget stored in ms, edited in seconds
