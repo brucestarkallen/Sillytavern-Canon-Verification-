@@ -56,6 +56,30 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.30.0 (token resolution can no longer summon the off-screen)
+
+v0.29's token pass regressed injection: it was over-broad on two axes.
+Token SOURCE — aliases ("Bee Commander") and suffixed cache keys
+("… (bleach)") are full of generic words, so an epithet word in ordinary
+prose resolved to a character nowhere near the scene. Token MATCHING —
+case-blind, so lowercase prose sharing a word with someone's name swept
+them in, displacing the on-screen cast under the caps.
+
+- Token source is the character's NAME only, both in `cacheEntryFor` pass 2
+  and the sweep index. Aliases stay exact-match (pass 1) — that is what
+  aliases are for.
+- The sweep now requires PROPER-NOUN usage: the token must appear in the
+  scene with its name casing ("Rukia"), matched case-sensitively on the
+  original messages. A character can only be swept in if their name is
+  actually written as a name in the window.
+- Cross-cache uniqueness guard unchanged: shared tokens ("Kotetsu") still
+  resolve to nothing.
+
+Proven by `test/proof.js` (289 assertions) + `test/sim.mjs` (66). 4 guards
+negative-verified failing on v0.29.0 — each reproduces the regression
+(alias-word summon, key-token summon, lowercase-prose sweep) before the
+fix; "Rukia"-style first-name resolution verified intact after it.
+
 ## Changelog — v0.29.0 (first names find their character)
 
 "You talked to Rukia" injected the previous scene's cast — and no Rukia.

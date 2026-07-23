@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.29.0";
+const CG_VERSION = "0.30.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -1709,17 +1709,18 @@ function cacheEntryFor(nameLc) {
             return { key: k, entry: e };
         }
     }
-    // PASS 2 — a WHOLE TOKEN of exactly one character's names: "Rukia" must find
-    // "Rukia Kuchiki" without a parser round trip. First names are how players
-    // actually refer to characters; exact-only matching made every such reference
-    // invisible to the user-typed prepend, the gate, and cast pruning. A token two
+    // PASS 2 — a WHOLE TOKEN of exactly one character's NAME: "Rukia" must find
+    // "Rukia Kuchiki" without a parser round trip. NAME tokens only — aliases stay
+    // exact-match (pass 1): epithet aliases ("Bee Commander") and suffixed cache
+    // keys ("… (bleach)") are full of generic words, and token-matching them let
+    // ordinary prose resolve to characters who aren't even in play. A token two
     // DIFFERENT characters share ("Kotetsu" with both sisters cached) resolves to
     // nothing — no guessing; the parser can disambiguate that one.
     if (nameLc.length >= 3 && !NOISE_WORDS.has(nameLc)) {
         let hit = null;
         for (const [k, e] of Object.entries(c)) {
             if (!e.found || !e.sections) continue;
-            const toks = [e.name || "", k, ...(e.aliases || [])].join(" ").toLowerCase()
+            const toks = String(e.name || "").toLowerCase()
                 .split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3 && !NOISE_WORDS.has(t));
             if (toks.includes(nameLc)) {
                 if (hit && hit.entry.name !== e.name) return null;   // shared by two characters
@@ -1889,12 +1890,14 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         // named in the recent scene — including by the AI's own output — injects
         // immediately, no parser round trip required. The AI saying "Alpha" is all
         // the evidence needed: she's cached.
-        // token → owning character across the cache: a token unique to ONE character
-        // ("rukia") counts as a mention of them; a shared token ("kuchiki") never does.
+        // token → owning character across the cache: a NAME token unique to ONE
+        // character ("Rukia") counts as a mention of them; a shared token
+        // ("Kuchiki") never does. Name tokens only — alias/key tokens are full of
+        // generic words and swept in characters nowhere near the scene.
         const tokenOwner = new Map();
-        for (const [k2, e2] of Object.entries(store)) {
+        for (const e2 of Object.values(store)) {
             if (!e2.found || !e2.sections) continue;
-            for (const t of [e2.name || "", k2, ...(e2.aliases || [])].join(" ").toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+            for (const t of String(e2.name || "").toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
                 if (t.length < 3 || NOISE_WORDS.has(t)) continue;
                 const cur = tokenOwner.get(t);
                 if (cur !== undefined && cur !== (e2.name || "")) tokenOwner.set(t, "\u0000AMBIG");
@@ -1910,9 +1913,17 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.find(n => mentioned(n, lowerMsgs[i])) || "";
             if (!hit) {
                 // First-name sweep: "you talked to Rukia" must pull Rukia Kuchiki in.
-                const toks = [...new Set(names.join(" ").split(/[^\p{L}\p{N}'-]+/u)
-                    .filter(t => t.length >= 3 && !NOISE_WORDS.has(t) && tokenOwner.get(t) === (entry.name || "")))];
-                for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = toks.find(t => mentioned(t, lowerMsgs[i])) || "";
+                // PROPER-NOUN usage required: the token must appear in the scene with
+                // its name casing ("Rukia"), so ordinary prose ("the ice cracked")
+                // can never summon an off-screen character whose name shares a word.
+                const toks = [...new Set(String(entry.name || "").split(/[^\p{L}\p{N}'-]+/u)
+                    .filter(t => t.length >= 3 && /^\p{Lu}/u.test(t) && !NOISE_WORDS.has(t.toLowerCase())
+                        && tokenOwner.get(t.toLowerCase()) === (entry.name || "")))];
+                for (let i = msgs.length - 1; i >= 0 && !hit; i--) {
+                    const m = msgs[i];
+                    hit = toks.find(t => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "u").test(m)) || "";
+                }
+                if (hit) hit = hit.toLowerCase();
             }
             if (hit) {
                 usedKeysGlobal.add(key);

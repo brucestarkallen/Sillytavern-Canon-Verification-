@@ -801,10 +801,18 @@ T("too-short token never token-matches", api.cacheEntryFor("ru") === null);
 T("gate: a first-name mention is HANDLED (no wasteful re-parse)", api.isUnhandledName("Rukia") === false);
 sandbox.__settings.cache["rukia"] = { name: "Rukia", sections: {}, found: false, ts: Date.now() };
 T("token hit buries a corpse at the short key too", api.cacheEntryFor("rukia")?.entry.name === "Rukia Kuchiki" && !("rukia" in sandbox.__settings.cache));
-const fnNote = api.relevantCanonNote(["later, you talked to rukia by the gate"], ["Zzz Unresolvable"]);
-T("sweep pulls a first-name mention into the note", /Rukia Kuchiki/.test(fnNote));
-const ambNote = api.relevantCanonNote(["a kotetsu waited in the hall"], ["Zzz Unresolvable"]);
+const fnNote = api.relevantCanonNote(["Later, you talked to Rukia by the gate."], ["Zzz Unresolvable"]);
+T("sweep pulls a proper-noun first-name mention into the note", /Rukia Kuchiki/.test(fnNote));
+const lcNote = api.relevantCanonNote(["the rukia flowers bloomed by the gate"], ["Zzz Unresolvable"]);
+T("lowercase prose sharing a name token sweeps NOBODY", !/Rukia Kuchiki/.test(lcNote));
+const ambNote = api.relevantCanonNote(["A Kotetsu waited in the hall."], ["Zzz Unresolvable"]);
 T("ambiguous surname sweeps NEITHER sister", !/Kiyone/.test(ambNote) && !/Isane/.test(ambNote));
+sandbox.__settings.cache["sui-feng"] = { name: "Su\u00ec-F\u0113ng", sections: { physical: "hair: black" }, aliases: ["Bee Commander"], rel: {}, found: true, ts: Date.now() };
+T("alias tokens never resolve (epithets are generic)", api.cacheEntryFor("bee") === null && api.cacheEntryFor("commander") === null);
+T("cache-key tokens never resolve (wiki suffixes are generic)", api.cacheEntryFor("bleach") === null);
+const aliasNote = api.relevantCanonNote(["The Commander gave the order to hold."], ["Zzz Unresolvable"]);
+T("an alias word in prose summons no one", !/Su\u00ec/.test(aliasNote));
+T("first name STILL resolves after the tightening", api.cacheEntryFor("rukia")?.entry.name === "Rukia Kuchiki");
 
 // ---------------------------------------------------------------- v0.28: a miss binds only the wikis it searched
 console.log("[miss scope]");
