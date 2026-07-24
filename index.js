@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.32.0";
+const CG_VERSION = "0.33.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -164,6 +164,7 @@ const DEFAULT_PROMPT_DOSSIER =
         '"brief": one flowing paragraph, 60–100 words, third person present tense, weaving who they are, their manner, and what defines them — write temperament as living tendency, not law: where the material shows it, include what softens them, what pressures them, and how they differ strained versus at ease; keep the source\'s own contradictions; avoid absolutist wording ("always", "never", "nothing can") unless the source itself insists; natural prose a narrator absorbs in one read; no lists, no headers; do NOT begin with or repeat the character\'s name (the block header already names them); ' +
         '"facts": up to 8 short story-relevant facts a narrator must not get wrong; ' +
         '"secrets": up to 4 things HIDDEN in-story (secret identities, covert affiliations, unrevealed twists) stated plainly; ' +
+        '"abilities": up to 4 short entries — named techniques, powers, weapons, and their stated LIMITS or costs; the proper name first ("I Am Atomic: wide-area annihilation spell"); empty array for a character with none; ' +
         '"voice": up to 3 short verbatim quotes if any appear; ' +
         '"dynamics": object mapping up to 5 specific other characters to one line on how this character behaves around THEM; ' +
         '"related": up to 3 canon BACKGROUND entities essential to understanding them, each as {\"name\": proper name, \"why\": under 8 words on what it is to them — e.g. their kingdom, their sword school, their order}}. ' +
@@ -208,7 +209,7 @@ const defaultSettings = {
     personality: true,    // temperament — injected as a BASELINE, not a script
     relationship: true,   // family and key connections (helps correct invented parents)
     biography: true,      // infobox bio + history — identity covers the lead separately
-    abilities: false,     // powers, skills, weapons
+    abilities: true,      // powers, skills, weapons — curated + scene-conditional (see abilityLine)
     trivia: true,         // "== Trivia ==" bullets — dense fan-level canon facts
     triviaKeywords: "trivia",
     // Voice samples: short verbatim quotes from the wiki's Quotes section (or the
@@ -353,6 +354,15 @@ function settings() {
         if (st.maxCharsPerChar === 700) st.maxCharsPerChar = 1100;
         if (st.maxTotalChars === 4500) st.maxTotalChars = 6000;
         st.migrated_v5 = true;
+        saveSettingsDebounced();
+    }
+    if (!st.migrated_v7) {
+        // Abilities defaulted OFF because the raw wiki section was 400 characters of
+        // noise on every turn. It is now a curated, limits-aware line that appears
+        // only when the scene is about capability — the reason to hide it is gone,
+        // and a model that doesn't know a character's techniques invents them.
+        st.abilities = true;
+        st.migrated_v7 = true;
         saveSettingsDebounced();
     }
     if (!st.migrated_v6) {
@@ -622,20 +632,31 @@ function extractFromProse(text) {
 
     const COLORS = new Set(["silver","black","blonde","blond","blue","violet","purple","pink","white","grey","gray","red","green","brown","crimson","azure","golden","gold","platinum","auburn","chestnut","teal","turquoise","lavender","scarlet","amber","hazel","magenta","indigo","cyan","emerald","ruby","sapphire","raven","snow-white","silver-white"]);
     const MODIFIERS = new Set(["light","dark","pale","deep","bright","ash","platinum","midnight","dusty","soft","vivid","pastel"]);
-    const clean = (words) => {
-        let w = words.trim().split(/\s+/);
-        while (w.length && PROSE_STOP.has(w[0].toLowerCase())) w.shift();
-        // Prefer the COLOR: "mid-back length silver hair" must yield "silver",
-        // not "length silver"; "light purple eyes" keeps its modifier.
+    // Nearest COLOR to the noun, scanning back from it; keeps a leading modifier
+    // ("light purple") but never a length word ("mid-back length silver").
+    const pickColor = (w) => {
         for (let i = w.length - 1; i >= 0; i--) {
             if (COLORS.has(w[i].toLowerCase().replace(/[.,;]$/, ""))) {
                 const mod = i > 0 && MODIFIERS.has(w[i - 1].toLowerCase()) ? w[i - 1] + " " : "";
                 return (mod + w[i]).replace(/[.,;]$/, "");
             }
         }
+        return null;
+    };
+    const clean = (words) => {
+        let w = words.trim().split(/\s+/);
+        while (w.length && PROSE_STOP.has(w[0].toLowerCase())) w.shift();
+        const col = pickColor(w);
+        if (col) return col;
         if (w.length > 2) w = w.slice(-2);
         return w.length ? w.join(" ") : null;
     };
+    // CLAUSE ISOLATION. The old extractor searched the whole snippet for "the words
+    // before <noun>", so a colour belonging to a DIFFERENT clause was read as this
+    // attribute: "Her hair is a deep crimson and her eyes are pale gold" reported
+    // eyes: deep crimson — a confidently wrong canon fact, injected silently.
+    // Each attribute is now resolved inside the clause that names it.
+    const clauses = snippet.split(/[.;:!?]+|\s+and\s+/i).filter(Boolean);
 
     // Compound case first: "pastel pink hair and eyes" — one color covers both.
     const compound = snippet.match(
@@ -647,9 +668,25 @@ function extractFromProse(text) {
     }
 
     const grab = (noun) => {
-        const re = new RegExp(`((?:[A-Za-z][A-Za-z-]+\\s+){1,4})${noun}\\b`, "i");
-        const m = snippet.match(re);
-        return m ? clean(m[1]) : null;
+        const nounRe = new RegExp(`\\b${noun}\\b`, "i");
+        const preRe = new RegExp(`((?:[A-Za-z][A-Za-z-]+\\s+){1,4})${noun}\\b`, "i");
+        // PREDICATE form: "her hair is a deep crimson", "his hair, once black, is now
+        // white", "hair as black as night". The pre-modifier pattern alone returned
+        // nothing for these — the commonest way English wikis actually write it —
+        // so hair/eye colour vanished on any page that phrased it as a sentence.
+        const postRe = new RegExp(`${noun}\\b((?:[\\s,]+[A-Za-z][A-Za-z-]*){1,6})`, "i");
+        for (const clause of clauses) {
+            if (!nounRe.test(clause)) continue;
+            const pre = clause.match(preRe);
+            const preVal = pre ? clean(pre[1]) : null;
+            if (preVal) return preVal;
+            const post = clause.match(postRe);
+            // A trailing run is only trusted when it names a real colour; arbitrary
+            // following words ("hair fell across her face") are not a descriptor.
+            const postVal = post ? pickColor(post[1].trim().split(/[\s,]+/).filter(Boolean)) : null;
+            if (postVal) return postVal;
+        }
+        return null;
     };
     const found = [];
     const hair = grab("hair");
@@ -1036,7 +1073,13 @@ function extractAliases(wikitext, keywords) {
     const values = raw.split(";").map(part => part.replace(/^[^:]+:\s*/, "")).join(",");
     const out = [];
     for (let a of values.split(/[,、\/・]/)) {
-        a = a.replace(/\([^)]*\)/g, "").replace(/["'“”]/g, "").trim(); // drop "(by X)" notes, quotes
+        // Drop "(by X)" notes and the quote marks that WRAP a value — but an
+        // apostrophe INSIDE a name belongs to it. Blanket-stripping ' turned
+        // "White Room's Masterpiece" into "White Rooms Masterpiece", an alias that
+        // can never match the scene text that names her.
+        a = a.replace(/\([^)]*\)/g, "")
+             .replace(/^[\s"“”'‘’]+|[\s"“”'‘’]+$/g, "")
+             .trim();
         if (a.length >= 2 && a.length <= 40 && /[A-Za-z]/.test(a)) out.push(a);
     }
     return [...new Set(out)];
@@ -1641,6 +1684,17 @@ function clip(str, max) {
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 /**
+ * ONE canonical form for a name used as a key or compared against another name.
+ * Wikis, models, and human typing disagree about which apostrophe they use
+ * ("Room's" vs "Room’s"); without a canonical form the same name is two
+ * different strings and every exact-match lookup silently misses.
+ */
+const APOSTROPHES = /['’‘‛´`]/g;
+function normName(n) { return String(n || "").toLowerCase().replace(APOSTROPHES, "'"); }
+/** Regex source for a name that matches any apostrophe dialect. */
+function nameRegexSource(name) { return escapeRegex(String(name)).replace(APOSTROPHES, "['’‘‛´`]"); }
+
+/**
  * Whole-word-ish match: "Cid" matches "Cid drew his sword" and "Cid's" but NOT
  * "Cidolfus"; "Lucy" won't fire inside "reclusively". Hyphens/apostrophes/spaces
  * count as boundaries so "Alya" still matches "Alya-chan". Falls back to substring
@@ -1651,9 +1705,9 @@ function mentioned(name, lowerText) {
     // Non-Latin fallback: the text is already lowercased, so the name must be too —
     // Cyrillic HAS case ("Мария" never matched "мария" before this fix, which broke
     // mention detection for Russian names entirely).
-    if (/[^\x00-\x7F]/.test(name)) return lowerText.includes(name.toLowerCase());
+    if (/[^\x00-\x7F]/.test(name)) return normName(lowerText).includes(normName(name));
     try {
-        return new RegExp(`(^|[^a-z0-9])${escapeRegex(name)}([^a-z0-9]|$)`, "i").test(lowerText);
+        return new RegExp(`(^|[^a-z0-9])${nameRegexSource(name)}([^a-z0-9]|$)`, "i").test(lowerText);
     } catch (e) {
         return lowerText.includes(name);
     }
@@ -1692,15 +1746,16 @@ function relationFor(relWikitext, otherNames, maxLen = 350) {
 }
 
 /** Find the cached, grounded entry for a name (by key, then title/alias). */
-function cacheEntryFor(nameLc) {
+function cacheEntryFor(nameLcRaw) {
     const s = settings();
     const c = cache();
+    const nameLc = normName(nameLcRaw);
     if (c[nameLc] && c[nameLc].found && c[nameLc].sections) {
         return { key: nameLc, entry: c[nameLc] };
     }
     for (const [k, e] of Object.entries(c)) {
         if (!e.found || !e.sections) continue;
-        const names = [e.name && e.name.toLowerCase(), k, ...(e.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
+        const names = [e.name && normName(e.name), normName(k), ...(e.aliases || []).map(normName)].filter(Boolean);
         if (names.includes(nameLc)) {
             // The same entity grounded under another key (suffixed/canonical query)
             // while a stale "not found" sits at THIS key — a corpse that shadows the
@@ -1803,6 +1858,45 @@ function parserMayRevisit(n) {
  * Hard-capped by count / per-entity / total length either way.
  */
 /**
+ * ONE Abilities emitter for every branch — SCENE-CONDITIONAL by design. A
+ * character's named techniques and their limits are the difference between a real
+ * fight and invented nonsense, and dead weight in a conversation. They ride when
+ * the scene touches them (token overlap) or when the moment is about conflict at
+ * all; otherwise they cost nothing. Curated dossier entries preferred; the regex
+ * section is the fallback so a pre-abilities dossier still answers.
+ */
+/**
+ * How much of `text` is actually IN PLAY right now. Word-boundary matching, not
+ * substring — "Wind Read" must not score off "bread", "Star" must not score off
+ * "started". Distinct tokens only, so repetition can't inflate a score.
+ */
+function inPlayScore(text, play) {
+    if (!text || !play) return 0;
+    const toks = [...new Set(String(text).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 4))];
+    return toks.reduce((a, t) => a + (mentioned(t, play) ? 1 : 0), 0);
+}
+
+function abilityLine(entry, inPlay) {
+    const s = settings();
+    if (!s.abilities) return "";
+    const d = entry.dossier;
+    const list = (d && Array.isArray(d.abilities) && d.abilities.length)
+        ? d.abilities
+        : ((entry.sections && entry.sections.abilities) ? [entry.sections.abilities] : []);
+    if (!list.length) return "";
+    const play = String(inPlay || "").toLowerCase();
+    const scored = list.map(a => ({ a, score: inPlayScore(a, play) }));
+    const hot = scored.filter(x => x.score > 0).sort((x, y) => y.score - x.score).map(x => x.a);
+    // The two triggers COMPOSE, they don't compete. A fight needs the arsenal
+    // (relevance-ordered); a quiet scene that merely names one technique needs
+    // that technique and nothing else. Scoring must never NARROW the answer
+    // below what a bare combat scene would have shown.
+    const ordered = [...hot, ...list.filter(a => !hot.includes(a))];
+    const take = COMBAT_WORDS.test(play) ? ordered.slice(0, 3) : hot.slice(0, 2);
+    return take.length ? `  - Abilities: ${take.join("; ")}` : "";
+}
+
+/**
  * ONE Appearance emitter for every branch: the wiki's own opening description
  * as prose, with exact infobox facts as a compact deduped bracket — a fact
  * whose value the prose already states stays home.
@@ -1812,10 +1906,14 @@ function appearanceLine(entry) {
     let facts = (entry.sections && entry.sections.physical) || "";
     if (!look && !facts) return "";
     if (look && facts) {
+        // WORD-BOUNDARY dedupe. Raw substring containment silently deleted true
+        // facts whose value happens to sit inside an unrelated word: "hair: red"
+        // vanished because the look prose said "shredded", "eyes: tan" because it
+        // said "distant". A fact is only redundant when the prose states THAT WORD.
         const lookLc = look.toLowerCase();
         facts = facts.split(/;\s*/).filter(f => {
             const val = (f.split(":")[1] || f).trim().toLowerCase();
-            return val && !lookLc.includes(val);
+            return val && !mentioned(val, lookLc);
         }).join("; ");
     }
     return look ? `  - Appearance: ${look}${facts ? ` [${facts}]` : ""}` : `  - Appearance: ${facts}`;
@@ -1865,22 +1963,31 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
 
     const present = [];  // { entry, matchedName }
     const usedKeysGlobal = new Set();
+    /**
+     * The ONE door into `present`. Every tier funnels through it, so the blocklist
+     * is enforced once, at admission — not at emit time, where a forbidden entity
+     * had already been seen by the pair-dynamics builder ("With <blocked>: …"),
+     * by the Context de-dup set, and by the reasons panel. Blocked means absent.
+     */
+    const admit = (entry, matchedName, key, flags = {}) => {
+        if (!entry || usedKeysGlobal.has(key)) return false;
+        if (isBlocked(entry, matchedName)) return false;
+        usedKeysGlobal.add(key);
+        present.push({ entry, matchedName, ...flags });
+        return true;
+    };
     // Pinned entities ride FIRST, always — no cast, no mention, no scene required.
     for (const pn of pinNames) {
         const found = cacheEntryFor(pn.toLowerCase());
-        if (found && !usedKeysGlobal.has(found.key)) {
-            usedKeysGlobal.add(found.key);
-            present.push({ entry: found.entry, matchedName: pn, pinned: true });
-        }
+        if (found) admit(found.entry, pn, found.key, { pinned: true });
     }
     // CURRENT SETTING: the location the story is in persists WITHOUT mention — it
     // is where the scene happens, not something the prose must keep naming. Set by
     // the parser whenever a place enters the cast; superseded by the next place;
     // removable via the blocklist.
     const store = cache();
-    if (extras.settingKey && store[extras.settingKey] && !usedKeysGlobal.has(extras.settingKey)) {
-        usedKeysGlobal.add(extras.settingKey);
-        present.push({ entry: store[extras.settingKey], matchedName: store[extras.settingKey].name, setting: true });
+    if (extras.settingKey && store[extras.settingKey]) {
+        admit(store[extras.settingKey], store[extras.settingKey].name, extras.settingKey, { setting: true });
     }
 
     // PRIORITY TIERS (decree over inference): characters the PLAYER just named
@@ -1889,17 +1996,11 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // from the bottom, so the people you are actually talking to survive.
     for (const un of (extras.userNames || [])) {
         const found = cacheEntryFor(String(un).toLowerCase());
-        if (found && !usedKeysGlobal.has(found.key) && !isBlocked(found.entry, un)) {
-            usedKeysGlobal.add(found.key);
-            present.push({ entry: found.entry, matchedName: un });
-        }
+        if (found) admit(found.entry, un, found.key);
     }
     for (const ln of (extras.ledgerNames || [])) {
         const found = cacheEntryFor(String(ln).toLowerCase());
-        if (found && !usedKeysGlobal.has(found.key) && !isBlocked(found.entry, ln)) {
-            usedKeysGlobal.add(found.key);
-            present.push({ entry: found.entry, matchedName: ln });
-        }
+        if (found) admit(found.entry, ln, found.key);
     }
 
     if (castNames && castNames.length) {
@@ -1911,10 +2012,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         // "Never inject" blocklist, not by string heuristics.
         for (const cn of castNames) {
             const found = cacheEntryFor(cn.toLowerCase());
-            if (found && !usedKeysGlobal.has(found.key)) {
-                usedKeysGlobal.add(found.key);
-                present.push({ entry: found.entry, matchedName: cn });
-            }
+            if (found) admit(found.entry, cn, found.key);
         }
         // SMART SWEEP: the parser's cast is pronoun-proof but gated — it can lag the
         // story (or be down entirely). Any entity we ALREADY KNOW (cached) that is
@@ -1956,10 +2054,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 }
                 if (hit) hit = hit.toLowerCase();
             }
-            if (hit) {
-                usedKeysGlobal.add(key);
-                present.push({ entry, matchedName: hit, swept: true });
-            }
+            if (hit) admit(entry, hit, key, { swept: true });
         }
     } else {
         // Scene-scan fallback (regex mode): grounded names actually in the recent window.
@@ -1980,11 +2075,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             if (lastIdx >= 0) scored.push({ entry, lastIdx, matchedName, key });
         }
         scored.sort((a, b) => b.lastIdx - a.lastIdx);  // most recently mentioned first
-        for (const sc of scored) {
-            if (usedKeysGlobal.has(sc.key)) continue;
-            usedKeysGlobal.add(sc.key);
-            present.push({ entry: sc.entry, matchedName: sc.matchedName });
-        }
+        for (const sc of scored) admit(sc.entry, sc.matchedName, sc.key);
     }
 
     const blocks = [];
@@ -1993,7 +2084,6 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     let total = 0;
     for (const { entry, matchedName, pinned, swept, setting } of present) {
         if (blocks.length >= s.maxCharacters) break;
-        if (isBlocked(entry, matchedName)) continue;
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
         const lines = [];
@@ -2046,21 +2136,21 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 const al = appearanceLine(entry);
                 if (al) lines.push(al);
             }
-            const idLc = (identity || "").toLowerCase();
-            const pool = d.facts.filter(f => !idLc.includes(f.toLowerCase().replace(/[.?!]$/, "")));
+            // In prose-brief mode the identity line is NOT printed — the brief is — so
+            // deduping facts against identity alone let every fact the BRIEF already
+            // stated ride along a second time, on every character, on every turn.
+            const shownLc = ((s.proseBriefs && d.brief ? d.brief + " " : "") + (identity || "")).toLowerCase();
+            const pool = d.facts.filter(f => !shownLc.includes(f.toLowerCase().replace(/[.?!]$/, "")));
             // Scene-conditional selection, same trick as Now/Context: score each fact
             // against what is IN PLAY; matched facts surface first (up to 5), and an
             // idle scene shows only the 3 anchors — curation once, selection free.
             const inPlayF = ((castFocus[nameKey] || "") + " " + lowerMsgs.slice(-2).join(" ")).toLowerCase();
-            const scoredF = pool.map(f => ({
-                f,
-                score: f.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 4)
-                        .reduce((a, t) => a + (inPlayF.includes(t) ? 1 : 0), 0),
-            }));
+            const scoredF = pool.map(f => ({ f, score: inPlayScore(f, inPlayF) }));
             const hot = scoredF.filter(x => x.score > 0).sort((a, b) => b.score - a.score).map(x => x.f);
             const facts = hot.length ? [...hot, ...pool.filter(f => !hot.includes(f))].slice(0, 5) : pool.slice(0, 3);
             if (facts.length) lines.push(`  - Facts: ${facts.join("; ")}`);
             lines.push(...dynLines());
+            const al2 = abilityLine(entry, inPlayF); if (al2) lines.push(al2);
             const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
             if (voice) lines.push(`  - Voice: ${voice}`);
             if (s.smartExpansion && d.related && d.related.length) {
@@ -2080,9 +2170,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                     const rHit = cacheEntryFor(String(rn).toLowerCase());
                     if (!rHit || isBlocked(rHit.entry, rn)) continue;
                     if (presentNames.has((rHit.entry.name || "").toLowerCase())) continue; // has its own block
-                    const toks = (rn + " " + why).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 4);
-                    const score = toks.reduce((a, t) => a + (inPlay.includes(t) ? 1 : 0), 0);
-                    scored.push({ rHit, rn, why, score });
+                    scored.push({ rHit, rn, why, score: inPlayScore(rn + " " + why, inPlay) });
                 }
                 scored.sort((a, b) => b.score - a.score);
                 const anyMatch = scored.some(x => x.score > 0);
@@ -2098,9 +2186,12 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             // hair color but not WHO SHE IS was the original sin here.
             if (entry.sections.identity) lines.push(`  - Identity: ${entry.sections.identity}`);
             const nf = focusLine(); if (nf) lines.push(nf);
+            const inPlayR = ((castFocus[nameKey] || "") + " " + lowerMsgs.slice(-2).join(" ")).toLowerCase();
             for (const cat of order) {
                 if (cat === "physical") {
                     if (s.physical) { const al = appearanceLine(entry); if (al) lines.push(al); }
+                } else if (cat === "abilities") {
+                    const al2 = abilityLine(entry, inPlayR); if (al2) lines.push(al2);
                 } else if (s[cat] && entry.sections[cat]) {
                     lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
                 }
@@ -2194,6 +2285,7 @@ function parseDossier(text) {
         facts: arr(obj.facts, 8, 200).filter(f => !META_FACT.test(f)),
         secrets: arr(obj.secrets, 4, 200).filter(f => !META_FACT.test(f)),
         voice: arr(obj.voice, 3, 160),
+        abilities: arr(obj.abilities, 4, 160).filter(f => !META_FACT.test(f)),
         related: [],
         dynamics: {},
     };
@@ -2212,7 +2304,11 @@ function parseDossier(text) {
             if (k && line) d.dynamics[String(k).trim()] = line;
         }
     }
-    if (!d.identity && !d.facts.length && !d.secrets.length && !d.voice.length && !Object.keys(d.dynamics).length) return null;
+    // The BRIEF is the highest-value field in prose-brief mode and the one the
+    // block actually opens with — a reply carrying only a brief was being thrown
+    // away as "empty" because this test predates it.
+    if (!d.identity && !d.brief && !d.facts.length && !d.secrets.length && !d.voice.length
+        && !d.abilities.length && !Object.keys(d.dynamics).length) return null;
     return d;
 }
 
@@ -2237,19 +2333,33 @@ function sampleSection(text, cap) {
     return t.slice(0, head) + " […] " + t.slice(t.length - tail);
 }
 
-async function buildDossier(name, wikitext, relRaw) {
+function dossierDigest(name, wikitext, relRaw) {
+    const s = settings();
+    // The INFOBOX is the densest factual element on a wiki page (affiliation, rank,
+    // status, relatives, height, birthday) and the curator was never shown it — it
+    // wrote every dossier blind to it. Same field vocabulary the extension already
+    // trusts elsewhere, collapsed into one line.
+    const boxKw = [...new Set([s.fields, s.relationshipKeywords, s.biographyKeywords,
+        s.personalityKeywords, s.abilitiesKeywords, s.aliasKeywords]
+        .join(",").split(",").map(k => k.trim()).filter(Boolean))];
     // Once-per-entity background work: generous caps + head/tail sampling — the
     // curator should read the WHOLE character, not the top of each section.
-    const digest = [
+    return [
         `PAGE: ${name}`,
         `LEAD: ${extractLead(wikitext, 700)}`,
+        `INFOBOX: ${extractInfoboxFields(wikitext, boxKw, 700)}`,
         `APPEARANCE: ${sampleSection(cleanWikitext(extractSectionRaw(wikitext, ["appearance", "physical appearance"], 4000)), 1200)}`,
         `PERSONALITY: ${sampleSection(extractSection(wikitext, ["personality"], 6000), 2500)}`,
         `RELATIONSHIPS: ${sampleSection(cleanWikitext(relRaw || extractSectionRaw(wikitext, ["relationships", "relationship"], 6000)), 3000)}`,
+        `ABILITIES: ${sampleSection(cleanWikitext(extractSectionRaw(wikitext, s.abilitiesKeywords.split(",").map(t => t.trim()).filter(Boolean), 8000)), 2000)}`,
         `HISTORY: ${sampleSection(extractSection(wikitext, ["history", "biography", "background", "plot", "synopsis"], 8000), 2500)}`,
         `TRIVIA: ${extractTrivia(wikitext, ["trivia"], 10, 1200)}`,
         `QUOTES: ${extractQuotes(extractSectionRaw(wikitext, ["quotes", "notable quotes"], 5000), 6, 800)}`,
     ].filter(l => !/^[A-Z]+: ?$/.test(l)).join("\n");
+}
+
+async function buildDossier(name, wikitext, relRaw) {
+    const digest = dossierDigest(name, wikitext, relRaw);
     const systemText = (settings().promptDossier || "").trim() || DEFAULT_PROMPT_DOSSIER;
     const out = await llmCall(systemText, digest, { maxTokens: 1000, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
     return parseDossier(out);
@@ -2408,6 +2518,13 @@ function parseCast(text) {
 // Story-structure/event pages: when one enters the cast, the STORY has moved —
 // autonomously advance the pinned story position instead of treating it as a place.
 const EVENT_WORDS = /\b(arc|saga|festival|exam|examination|tournament|war|battle|incident|trial|ceremony|raid|expedition|invasion|uprising|rebellion|massacre|banquet|gala|election)\b/i;
+
+/**
+ * Is the moment ABOUT capability? Powers, techniques and their limits are the
+ * difference between a real fight and invented nonsense, and dead weight in a
+ * conversation — so they ride only when the scene earns them.
+ */
+const COMBAT_WORDS = /\b(fight|fights|fighting|fought|battle|battling|duel|duels|spar|sparring|combat|attack|attacks|attacked|strike|strikes|struck|slash|stab|parry|parries|dodge|dodges|block(?:s|ed)?|clash|clashes|kill|kills|killed|slay|wound|wounded|sword|blade|dagger|spear|bow|gun|fist|magic|mana|spell|spells|cast|casting|technique|techniques|jutsu|quirk|semblance|ability|abilities|power|powers|weapon|weapons|armor|armour|enemy|enemies|ambush|assassin|assassinate|duelist|training|train(?:s|ed)?\s+(?:with|against))\b/i;
 
 const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|city|town|village|kingdom|empire|nation|guild|organization|organisation|company|agency|island|castle|palace|temple|church|dungeon|tower|district|region|world|realm|garden)\b/i;
 
@@ -2912,7 +3029,8 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             // per entity — so old caches upgrade without anyone pressing ✕.
             if (s.llmDossier) {
                 for (const e of uniq.values()) {
-                    if (e.found && e.dossier && (!("related" in e.dossier) || !("brief" in e.dossier)) && !e.dossierUpTs) {
+                    if (e.found && e.dossier && (!("related" in e.dossier) || !("brief" in e.dossier)
+                        || !("abilities" in e.dossier)) && !e.dossierUpTs) {
                         e.dossierUpTs = Date.now();
                         (async () => {
                             try {
@@ -3108,6 +3226,12 @@ async function addSettingsUI() {
                 <label>Always-present characters (this chat)</label>
                 <input id="cg_pin_names" class="text_pole" type="text" placeholder="e.g. Rose Oriana, Alpha">
                 <small class="cg-hint">Comma-separated names, grounded and injected EVERY turn regardless of who the parser thinks is on screen. The hammer for "the AI doesn't know X".</small>
+                <label>Current setting (this chat)</label>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <input id="cg_setting_now" class="text_pole" type="text" readonly placeholder="(none — set automatically when a place enters the scene)">
+                    <div id="cg_setting_clear" class="menu_button" title="Forget the current setting">✕</div>
+                </div>
+                <small class="cg-hint">Where the story is happening. Set automatically when the parser sees a place, superseded by the next one, and injected EVERY turn without needing to be named — a room does not have to be mentioned to still be the room. ✕ forgets it (useful when an organisation, not a location, got picked up).</small>
                 <label>Never inject (this chat)</label>
                 <input id="cg_block_names" class="text_pole" type="text" placeholder="e.g. Ryōko Nishikawa">
                 <small class="cg-hint">Comma-separated names (aliases count) that must NEVER appear in the canon note — whatever the parser, sweep, or even a pin says. The hammer for "stop injecting X". The cache entry stays; only injection is forbidden.</small>
@@ -3395,6 +3519,11 @@ async function addSettingsUI() {
         $("#cg_pin_chat").val(chatPin());
         try { $("#cg_pin_names").val(getContext().chatMetadata?.canon_grounding_pin_names || ""); } catch (e) {}
         try { $("#cg_block_names").val(getContext().chatMetadata?.canon_grounding_block || ""); } catch (e) {}
+        try {
+            const sk = chatSettingKey();
+            const ent = sk ? cache()[sk] : null;
+            $("#cg_setting_now").val(ent && ent.name ? ent.name : (sk || ""));
+        } catch (e) {}
     };
     renderChatPins();
     renderChatScoped = () => { renderChatPins(); };
@@ -3402,6 +3531,7 @@ async function addSettingsUI() {
     $("#cg_pin_chat").on("input", function () { setChatPin("canon_grounding_pin", $(this).val()); });
     $("#cg_pin_names").on("input", function () { setChatPin("canon_grounding_pin_names", $(this).val()); });
     $("#cg_block_names").on("input", function () { setChatPin("canon_grounding_block", $(this).val()); });
+    $("#cg_setting_clear").on("click", () => { setChatPin("canon_grounding_setting", ""); renderChatPins(); });
     // Story position (arc/chapter grounding).
     const renderArc = () => {
         const a = chatArc();

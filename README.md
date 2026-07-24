@@ -56,6 +56,81 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.33.0 (the model can finally read the whole page; wrong facts stop shipping)
+
+An audit of the whole grounding path, from wikitext to injected block. Five of
+the eight findings were not gaps in what the extension knew — they were canon
+it stated **incorrectly**, silently, with full confidence.
+
+**Wrong facts, fixed at the source**
+
+- **Attribute cross-contamination.** The prose extractor searched the entire
+  snippet for "the words before `<noun>`", so a colour belonging to a different
+  clause was read as this attribute: *"Her hair is a deep crimson and her eyes
+  are pale gold"* reported **eyes: deep crimson**. Each attribute is now
+  resolved inside the clause that names it.
+- **Predicate forms were invisible.** Only the pre-modifier shape ("silver
+  hair") ever matched — *"her hair is X"*, *"his hair, once black, is now
+  white"*, *"hair as black as night"* all yielded nothing, on every wiki that
+  writes descriptions as sentences. Now handled, and a trailing run with no
+  real colour in it is still correctly refused.
+- **True facts silently deleted.** Infobox facts were deduped against the look
+  prose by raw substring containment, so `hair: red` vanished because the prose
+  said "sh**red**ded" and `eyes: tan` because it said "dis**tan**t". The dedupe
+  is word-boundary aware now.
+- **Relevance scored on accidental letter overlap.** The same substring mistake
+  drove every scene-conditional selector: a power called *Wind Read* surfaced
+  because the scene mentioned **bread**. One `inPlayScore` helper now serves
+  facts, powers, and background context — distinct tokens, word boundaries, so
+  repetition can't inflate a score either.
+- **Apostrophes split names in two.** Alias extraction stripped every `'`,
+  turning *White Room's Masterpiece* into an alias that can never match the text
+  naming her; and `'` vs `’` were two different characters everywhere a name is
+  keyed or compared. One canonical form (`normName`), and matching tolerates
+  every apostrophe dialect.
+
+**Knowing everything**
+
+- **Powers were structurally unreachable.** The dossier curator was shown
+  LEAD / APPEARANCE / PERSONALITY / RELATIONSHIPS / HISTORY / TRIVIA / QUOTES —
+  no Abilities section, **and no infobox at all**. Once a dossier existed the
+  regex abilities line was never emitted either, so a character's signature
+  techniques could not reach the model no matter which toggles were on. The
+  digest now carries **INFOBOX** (the densest facts on any page: affiliation,
+  rank, status, relatives) and **ABILITIES**; the dossier schema gained an
+  `abilities` key that asks for techniques *with their stated limits*; existing
+  dossiers self-upgrade in the background.
+- **Powers cost nothing until they matter.** The new line is scene-conditional:
+  a quiet scene pays zero, a scene that names a technique gets that technique,
+  a fight gets the arsenal in relevance order. The two triggers compose — a
+  partial keyword match can never narrow the answer below what a bare combat
+  scene shows. `abilities` now defaults ON (`migrated_v7`); it was off because
+  the raw wiki section was 400 characters of noise every turn, and it no longer
+  is.
+
+**Decree and waste**
+
+- **"Never inject X" leaked.** The blocklist was enforced at emit time only, so
+  a blocked character still reached the present-cast and came back out through
+  *other* characters' `With <name>:` dynamics, the Context de-dup set, and the
+  reasons panel. Six duplicated admission sites collapsed into one `admit()`
+  gate: blocked now means absent, not merely unprinted.
+- **Every fact printed twice.** In prose-brief mode the identity line is not
+  emitted — the brief is — but facts were deduped against identity. Now deduped
+  against what is actually printed.
+- **A brief-only dossier was thrown away** as "empty": the test predated the
+  field the block opens with.
+- **The current setting was invisible.** It is written by the parser, injected
+  every turn forever, and had no row in the UI and no code path that clears it —
+  so an organisation whose name contains a place word ("Shadow Garden" →
+  *garden*) became a permanent block nobody could see or remove. It now has a
+  row and a ✕.
+
+Proven by `test/proof.js` (331) + `test/sim.mjs` (76, including end-to-end:
+the digest the curator actually receives, and powers appearing only in the
+scene that earns them). **13 guards negative-verified** — each fix reverted in
+a scratch tree and the corresponding assertion watched to fail.
+
 ## Changelog — v0.32.0 (injection depth is a setting; canon rides at the top by default)
 
 The note was hardcoded at depth 1 — glued just above the newest message,

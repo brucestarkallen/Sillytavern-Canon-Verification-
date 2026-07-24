@@ -31,12 +31,13 @@ const pieces = [
     grab("/**\n * Reasoning models", "async function parseSceneCharacters"),
     grab("/**\n * A multi-token query must be COVERED", "/** Fire-and-forget dossier"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
+    grab("/**\n * Long wiki sections are CHRONOLOGICAL", "async function buildDossier"),
     grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
     grab("function apiBase", "async function"),
     grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
     grab("const DEFAULT_PROMPT_HEADER", "const DEFAULT_PROMPT_PARSER"),
-    grab("/**\n * ONE Appearance emitter", "// ------"),
+    grab("/**\n * ONE Abilities emitter", "// ------"),
 ];
 
 // stubs for the module-scope things the sliced code touches
@@ -61,6 +62,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
+         abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -848,6 +850,157 @@ T("media page rejected", api.isMediaTitle("The Eminence in Shadow (Light Novel)"
 T("subpage rejected", api.isMediaTitle("Cid Kagenou/Relationships"));
 T("(Character) disambig allowed", !api.isMediaTitle("Shadow (Character)"));
 T("clip trims on word boundary", api.clip("alpha beta gamma delta", 12) === "alpha beta…");
+
+// ------------------------------------------------- v0.33.0: canon accuracy + reach
+console.log("[v0.33 clause isolation]");
+// The colour of one attribute must never be read as the other's. This exact
+// sentence shape made the extension inject a WRONG eye colour, silently.
+eq("predicate form, both attributes, no cross-contamination",
+   api.extractFromProse("Her hair is a deep crimson and her eyes are pale gold."),
+   "hair: deep crimson; eyes: pale gold");
+eq("mid-clause revision keeps the CURRENT colour",
+   api.extractFromProse("His hair, once black, is now white; his eyes remain grey."),
+   "hair: white; eyes: grey");
+eq("simile predicate", api.extractFromProse("Her hair is as black as night."), "hair: black");
+T("a trailing run with no colour is not a descriptor",
+  !/hair/.test(api.extractFromProse("Her hair fell across her face.")));
+eq("pre-modifier still wins nearest colour",
+   api.extractFromProse("Hiyori has mid-back length silver hair. She has light purple eyes."),
+   "hair: silver; eyes: light purple");
+
+console.log("[v0.33 appearance dedupe is word-boundary]");
+const APP = { name: "Foo", sections: { look: "A wiry youth in shredded cloth, scarred across the brow.",
+                                       physical: "hair: red; eyes: tan" } };
+T("short colour survives a look that merely CONTAINS the letters",
+  /hair: red/.test(api.appearanceLine(APP)) && /eyes: tan/.test(api.appearanceLine(APP)));
+const APP2 = { name: "Foo", sections: { look: "A youth with red hair and tan skin.",
+                                        physical: "hair: red; eyes: blue" } };
+T("a fact the prose genuinely states is still dropped", !/hair: red/.test(api.appearanceLine(APP2)));
+T("a fact the prose does NOT state still rides", /eyes: blue/.test(api.appearanceLine(APP2)));
+
+console.log("[v0.33 apostrophe is one character]");
+const ALIAS = api.extractAliases("{{Infobox\n| alias = White Room's Masterpiece\n}}", ["alias"]);
+T("interior apostrophe survives alias extraction", ALIAS.includes("White Room's Masterpiece"));
+T("alias matches ASCII-apostrophe prose",
+  api.mentioned("white room's masterpiece", "they call him the white room's masterpiece."));
+T("alias matches CURLY-apostrophe prose",
+  api.mentioned("white room's masterpiece", "they call him the white room\u2019s masterpiece."));
+eq("normName folds every apostrophe dialect",
+   [api.normName("Room\u2019s"), api.normName("Room\u2018s"), api.normName("Room\u00b4s")],
+   ["room's", "room's", "room's"]);
+
+console.log("[v0.33 the curator can see the whole page]");
+const CIDPAGE = [
+  "{{Character",
+  "|Name = Cid Kagenou",
+  "|Hair Color = Black",
+  "|Affiliation = Shadow Garden",
+  "|Relatives = Claire Kagenou (sister)",
+  "}}",
+  "Cid Kagenou is the protagonist.",
+  "== Appearance ==",
+  "Cid is average-looking.",
+  "== Powers and Abilities ==",
+  "His signature technique is I Am Atomic, a wide-area annihilation spell.",
+  "== Trivia ==",
+  "* He trains nightly.",
+].join("\n");
+Object.assign(sandbox.__settings, { fields: "hair", relationshipKeywords: "relative",
+    biographyKeywords: "affiliation", personalityKeywords: "personality",
+    abilitiesKeywords: "power,abilities", aliasKeywords: "alias" });
+const DIGEST = api.dossierDigest("Cid Kagenou", CIDPAGE, "");
+T("digest carries the ABILITIES section (was structurally invisible)", /I Am Atomic/.test(DIGEST));
+T("digest carries the INFOBOX (densest facts on the page)",
+  /INFOBOX:/.test(DIGEST) && /Shadow Garden/.test(DIGEST) && /Claire/.test(DIGEST));
+
+console.log("[v0.33 abilities ride only when the scene earns them]");
+sandbox.__settings.abilities = true;
+const FIGHTER = { name: "Cid", sections: {}, dossier: { abilities: [
+    "I Am Atomic: wide-area annihilation, leaves him drained",
+    "Slime armor: shapes magic into armour",
+    "Pre-emptive draw: cuts at a distance"] } };
+eq("quiet scene pays nothing", api.abilityLine(FIGHTER, "he sips tea in the courtyard"), "");
+T("combat scene gets the arsenal, relevance-ordered",
+  api.abilityLine(FIGHTER, "he draws his blade as the enemy charges").split(";").length === 3);
+T("a technique NAMED in a quiet scene rides alone",
+  /I Am Atomic/.test(api.abilityLine(FIGHTER, "he raises a hand. i am atomic.")) &&
+  !/Slime/.test(api.abilityLine(FIGHTER, "he raises a hand. i am atomic.")));
+// The discriminating case: the scene is a FIGHT *and* one technique is named.
+// The old rule treated the two triggers as alternatives, so a partial keyword
+// match NARROWED a fight down to the single matched entry — worse than saying
+// nothing specific at all. They must compose: arsenal, relevance-ordered.
+const NAMEDFIGHT = "he uses falling star as they fight";
+const ARSENAL = { name: "X", sections: {}, dossier: { abilities: [
+    "Falling Star: downward cut that shatters guard",
+    "Wind Read: anticipates a blade",
+    "Iron Skin: hardens the body"] } };
+T("a named technique inside a fight does not suppress the rest of the arsenal",
+  api.abilityLine(ARSENAL, NAMEDFIGHT).split(";").length === 3);
+T("...and the named one still leads",
+  api.abilityLine(ARSENAL, NAMEDFIGHT).startsWith("  - Abilities: Falling Star"));
+T("scoring never NARROWS below what a bare combat scene shows",
+  api.abilityLine(ARSENAL, NAMEDFIGHT).split(";").length >=
+  api.abilityLine(ARSENAL, "they fight").split(";").length);
+sandbox.__settings.abilities = false;
+eq("category off means silent", api.abilityLine(FIGHTER, "they fight"), "");
+sandbox.__settings.abilities = true;
+const OLDDOSS = { name: "X", sections: { abilities: "Swings a very large sword." }, dossier: { abilities: [] } };
+T("a pre-abilities dossier falls back to the regex section",
+  /large sword/.test(api.abilityLine(OLDDOSS, "they fight")));
+
+console.log("[v0.33 relevance scoring is word-boundary]");
+T("a power does not surface because the scene said 'bread'",
+  api.abilityLine({ name: "X", sections: {}, dossier: { abilities: ["Wind Read: anticipates a blade"] } },
+                  "they share bread by the fire") === "");
+T("the same power DOES surface when actually named",
+  /Wind Read/.test(api.abilityLine({ name: "X", sections: {}, dossier: { abilities: ["Wind Read: anticipates a blade"] } },
+                  "he uses wind read to time the parry")));
+T("repetition cannot inflate a score above a real second match",
+  api.abilityLine({ name: "X", sections: {}, dossier: {
+      abilities: ["Star: star star star star", "Falling Guard: shatters guard"] } },
+      "the falling guard shatters").startsWith("  - Abilities: Falling Guard"));
+
+console.log("[v0.33 dossier shape]");
+T("a brief-only dossier is a real dossier",
+  ((api.parseDossier('{"identity":"","brief":"A quiet strategist who hides behind ordinary marks."}') || {}).brief || "").length > 10);
+T("abilities parsed and capped at 4",
+  api.parseDossier('{"identity":"x","abilities":["a1","a2","a3","a4","a5"]}').abilities.length === 4);
+T("truly-empty is still null",
+  api.parseDossier('{"identity":"","brief":"","facts":[],"secrets":[],"voice":[],"abilities":[],"dynamics":{}}') === null);
+
+console.log("[v0.33 blocked means absent, not merely unprinted]");
+sandbox.__settings.cache = {
+    "rose oriana": { name: "Rose Oriana", found: true, wiki: "w", aliases: [], kind: "character",
+        rel: { "beta": "Wary of her; keeps it short." },
+        sections: { identity: "Second princess of Oriana." },
+        dossier: { identity: "Second princess of Oriana.", brief: "", facts: [], secrets: [], voice: [],
+                   abilities: [], dynamics: { "Beta": "Guarded." }, related: [] } },
+    "beta": { name: "Beta", found: true, wiki: "w", aliases: [], kind: "character", rel: {},
+        sections: { identity: "Second of Shadow Garden." } },
+};
+Object.assign(sandbox.__settings, { relationDynamics: true, proseBriefs: true, llmDossier: true,
+    maxCharacters: 8, maxCharsPerChar: 1100, maxTotalChars: 6000, physical: true, voice: true,
+    smartExpansion: false, contextWindow: 10 });
+const BLK = api.relevantCanonNote(["Rose Oriana walks in. Beta follows."], ["Rose Oriana", "Beta"], undefined,
+                                  { blockNames: ["Beta"] });
+T("a blocked entity gets no block of its own", !/^Beta:/m.test(BLK));
+T("...and cannot leak through another character's pair dynamics", !/With Beta/.test(BLK));
+T("...and is absent from the reasons panel", !api.getReasons().some(r => /^Beta /.test(r)));
+T("the unblocked character is untouched", /Rose Oriana:/.test(BLK));
+
+console.log("[v0.33 facts are deduped against what is PRINTED]");
+sandbox.__settings.cache = {
+    "rose oriana": { name: "Rose Oriana", found: true, wiki: "w", aliases: [], kind: "character", rel: {},
+        sections: { identity: "Second princess of Oriana." },
+        dossier: { identity: "Second princess of Oriana.",
+                   brief: "She is a student at Midgar Academy who carries her kingdom quietly.",
+                   facts: ["She is a student at Midgar Academy", "Her sister Iris is the strongest knight"],
+                   secrets: [], voice: [], abilities: [], dynamics: {}, related: [] } },
+};
+const DUP = api.relevantCanonNote(["Rose Oriana walks in."], ["Rose Oriana"], undefined, {});
+T("a fact the BRIEF already states is not printed twice",
+  (DUP.match(/student at Midgar Academy/g) || []).length === 1);
+T("a fact the brief does NOT state still rides", /sister Iris/.test(DUP));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

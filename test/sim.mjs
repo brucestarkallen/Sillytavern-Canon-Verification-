@@ -73,6 +73,18 @@ Kid Healchar.png|As a child.
 Healchar is a fair-skinned woman with emerald eyes and copper hair.
 == Personality ==
 Calm.` } } }) };
+    if (page === "Blademaster") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'''Blademaster''' is a wandering duelist.
+{{Infobox
+| hair = ash grey
+| relative = Kestrel (sister)
+}}
+== Appearance ==
+Blademaster is a lean figure with ash grey hair.
+== Personality ==
+Terse.
+== Powers and Abilities ==
+His signature technique is '''Falling Star''', a downward cut that shatters guard. He also uses '''Wind Read''' to anticipate a blade.` } } }) };
     if (page === "Tailchar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
 `'''Tailchar''' is a knight-commander.
 {{Infobox
@@ -85,7 +97,11 @@ ${"Tailchar is stern, unyielding, and utterly devoted to duty. ".repeat(10)}Yet 
 };
 
 const parseQueue = [];
-const svc = { sendRequest: () => new Promise((resolve, reject) => parseQueue.push({ resolve, reject })) };
+const sentPrompts = [];
+const svc = { sendRequest: (id, messages) => {
+    sentPrompts.push((messages || []).map(m => m.content).join("\n"));
+    return new Promise((resolve, reject) => parseQueue.push({ resolve, reject }));
+} };
 
 let injections = [];
 globalThis.__ctx = {
@@ -374,6 +390,36 @@ const run17 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 await run17;
 T("depth setting is honored live", globalThis.__lastDepth === 3);
 S.injectDepth = 9999;
+
+console.log("[18] powers reach the model, and only when the scene is about them");
+S.llmDossier = true; S.abilities = true; S.relationshipKeywords = "relative";
+const q18 = parseQueue.length;
+globalThis.__ctx.chat.push(msg("At the gate stands Blademaster, silent.", false));
+const run18 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+parseQueue[q18]?.resolve('["Blademaster"]');
+await run18;
+await sleep(40);   // ensureGrounded finishes, scheduleDossier queues its call
+const digest18 = sentPrompts[sentPrompts.length - 1] || "";
+T("the curator is shown the ABILITIES section", /Falling Star/.test(digest18) && /Wind Read/.test(digest18));
+T("the curator is shown the INFOBOX", /INFOBOX:/.test(digest18) && /Kestrel/.test(digest18));
+parseQueue[parseQueue.length - 1]?.resolve(JSON.stringify({
+    identity: "A wandering duelist.", brief: "A terse swordsman who speaks with the blade.",
+    facts: ["Travels alone"], secrets: [], voice: [],
+    abilities: ["Falling Star: downward cut that shatters guard", "Wind Read: anticipates a blade"],
+    dynamics: {}, related: [],
+}));
+await sleep(40);
+const cache18 = globalThis.__ctx.chatMetadata.canon_grounding_cache;
+T("the dossier carries abilities", (cache18.blademaster?.dossier?.abilities || []).length === 2);
+S.parserEveryTurn = false;
+globalThis.__ctx.chat.push(msg("They share bread by the fire and say little.", true));
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+T("a quiet scene pays nothing for powers", !/Abilities:/.test(lastInjection()));
+globalThis.__ctx.chat.push(msg("Steel rings as he draws to fight.", true));
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+T("a fight gets the arsenal", /Abilities:.*Falling Star/.test(lastInjection()));
+S.llmDossier = false; S.abilities = false;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
