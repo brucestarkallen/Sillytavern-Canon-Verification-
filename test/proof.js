@@ -63,6 +63,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          splitEvidenceStrength,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
+         infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -1001,6 +1002,59 @@ const DUP = api.relevantCanonNote(["Rose Oriana walks in."], ["Rose Oriana"], un
 T("a fact the BRIEF already states is not printed twice",
   (DUP.match(/student at Midgar Academy/g) || []).length === 1);
 T("a fact the brief does NOT state still rides", /sister Iris/.test(DUP));
+
+// ------------------------------------------------- v0.34.0: a fact must be a fact
+console.log("[v0.34 fields come from the INFOBOX, not the page]");
+const UKI_REAL = "{{Character\n|name = Ukitake\n|height = 187 cm (6'1\u00bd\")\n|eyes = Green\n}}";
+const UKI_JUNK_FIRST = "{{Scroll box\n|height = 2.3\n|content = x\n}}\n" + UKI_REAL;
+const UKI_JUNK_LAST  = UKI_REAL + "\n{{Scroll box\n|height = 2.3\n|content = x\n}}";
+const PF = ["hair", "eyes", "height"];
+eq("a layout template BEFORE the infobox cannot donate the height",
+   api.extractInfoboxFields(UKI_JUNK_FIRST, PF), "height: 187 cm (6'1\u00bd\"); eyes: Green");
+eq("...nor after it",
+   api.extractInfoboxFields(UKI_JUNK_LAST, PF), "height: 187 cm (6'1\u00bd\"); eyes: Green");
+T("scope falls back to the whole page when no template wraps the fields",
+  /height: 187 cm/.test(api.extractInfoboxFields("|height = 187 cm\n|eyes = Green", PF)));
+// Isolates SCOPING from validity: both values are perfectly plausible, so only
+// knowing which template is the infobox can tell them apart.
+eq("a foreign template cannot donate a plausible-looking field either",
+   api.extractInfoboxFields("{{Appearances\n|eyes = Blue\n|note = anime colouring\n}}\n" + UKI_REAL, PF),
+   "height: 187 cm (6'1\u00bd\"); eyes: Green");
+T("an unnamed box with enough params still counts as the infobox",
+  /height: 187 cm/.test(api.extractInfoboxFields(
+    "{{Datasheet\n|name = X\n|height = 187 cm\n|eyes = Green\n|hair = White\n}}", PF)));
+
+console.log("[v0.34 a measurement must look like one]");
+T("bare decimal rejected (the reported 2.3)", !api.plausibleFieldValue("height", "2.3"));
+T("bare integer rejected", !api.plausibleFieldValue("height", "250"));
+T("css size rejected", !api.plausibleFieldValue("height", "250px"));
+T("percentage rejected", !api.plausibleFieldValue("width", "80%"));
+T("centimetres accepted", api.plausibleFieldValue("height", "187 cm (6'1\u00bd\")"));
+T("metres accepted", api.plausibleFieldValue("height", "1.87 m"));
+T("feet and inches accepted", api.plausibleFieldValue("height", "6'1\""));
+T("kilograms accepted", api.plausibleFieldValue("weight", "72 kg (159 lbs)"));
+T("prose measurement accepted (no digits to doubt)", api.plausibleFieldValue("height", "Tall"));
+// Isolates the UNIT rule from the bare-number rule: this is not a bare number,
+// so only "a measurement with digits must name its unit" can reject it.
+T("digits without a unit rejected even when other words are present",
+  !api.plausibleFieldValue("height", "2.3 (approx)"));
+T("...and accepted the moment a unit appears",
+  api.plausibleFieldValue("height", "187 cm (approx)"));
+T("non-measurement fields are not unit-checked", api.plausibleFieldValue("eyes", "Green"));
+eq("a rejected value does NOT claim the label \u2014 a real one later still wins",
+   api.extractInfoboxFields("{{Character\n|height = 2.3\n|height2 = 187 cm\n|eyes = Green\n}}", PF),
+   "height: 187 cm; eyes: Green");
+eq("nothing beats a lie when there is no real value",
+   api.extractInfoboxFields("{{Character\n|height = 2.3\n}}", PF), "");
+
+console.log("[v0.34 poisoned caches heal themselves]");
+T("a cached implausible height IS poison",
+  api.entryPoisoned({ sections: { physical: "height: 2.3; eyes: green" } }));
+T("a cached real height is not",
+  !api.entryPoisoned({ sections: { physical: "height: 187 cm; eyes: green" } }));
+T("the 'notably:' prose tail is never mistaken for a measurement",
+  !api.entryPoisoned({ sections: { physical: "eyes: green; notably: He has a mole under his left eye." } }));
+T("markup poison still detected", api.entryPoisoned({ sections: { look: "Kid Foo.png|As a child." } }));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

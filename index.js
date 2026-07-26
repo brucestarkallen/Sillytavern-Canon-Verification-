@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.33.0";
+const CG_VERSION = "0.34.0";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -796,8 +796,66 @@ function cleanWikitext(wt) {
         .trim();
 }
 
+/** Every balanced top-level {{ … }} block on the page, with its offset. */
+function templateBlocks(wikitext) {
+    const out = [];
+    let depth = 0, start = -1;
+    for (let i = 0; i < wikitext.length - 1; i++) {
+        if (wikitext[i] === "{" && wikitext[i + 1] === "{") {
+            if (depth === 0) start = i;
+            depth++; i++;
+        } else if (wikitext[i] === "}" && wikitext[i + 1] === "}") {
+            if (depth > 0) {
+                depth--; i++;
+                if (depth === 0 && start !== -1) { out.push({ start, text: wikitext.slice(start, i + 1) }); start = -1; }
+            }
+        }
+    }
+    return out;
+}
+
+const INFOBOX_NAME = /^\{\{\s*[A-Za-z0-9_ -]*\b(?:infobox|character|charbox|profile|person|persona|hero|villain|creature|species|weapon|location|organi[sz]ation)\b[A-Za-z0-9_ -]*\s*(?:\||\}\})/i;
+const PARAM_LINE = /\n\s*\|\s*[A-Za-z][A-Za-z0-9 _()'-]*\s*=/g;
+/**
+ * WHERE the fields live. The extractor was named for the infobox but had no
+ * notion of one — it scanned the ENTIRE page, so any template anywhere could
+ * donate a field. A scroll box, navbox, or layout wrapper carrying its own
+ * "|height = 2.3" outranked the character's real "|height = 187 cm" purely by
+ * sitting earlier in the source, and did it identically on every page of that
+ * wiki. Scope to the infobox; fall back to the whole page only when no infobox
+ * can be identified, so nothing that worked before stops working.
+ */
+function infoboxScope(wikitext) {
+    if (!wikitext) return "";
+    const blocks = templateBlocks(wikitext);
+    if (!blocks.length) return wikitext;
+    const named = blocks.filter(b => INFOBOX_NAME.test(b.text));
+    const pick = named.length ? named
+        : blocks.filter(b => b.start < 3000 && (b.text.match(PARAM_LINE) || []).length >= 4).slice(0, 1);
+    return pick.length ? pick.map(b => b.text).join("\n") : wikitext;
+}
+
+// Layout numbers masquerading as facts. A human height is "187 cm", never
+// "2.3" — a bare number is a row height, an image ratio, or a stat weight. The
+// old filter rejected bare INTEGERS only, so every decimal walked straight in.
+const LAYOUT_VALUE = /^\d+(?:\.\d+)?\s*(?:px|em|rem|pt|%)?$/i;
+const MEASURE_LABEL = /\b(height|weight|width|length|depth|size|mass|bust|waist|hips?)\b/i;
+const MEASURE_UNIT = /\d\s*(?:cm|mm|kms?|ms?\b|ft|in\b|kgs?|lbs?|g\b|meters?|metres?|feet|foot|inch(?:es)?|stone|['’"″′])/i;
+/**
+ * Is this value a FACT, or is it markup that happened to sit under a matching
+ * field name? A measurement that carries digits must carry a unit with them;
+ * prose ("Tall", "Average") is fine, a naked number is not. Rejected values do
+ * NOT claim the label, so a real "height" later in the box still wins.
+ */
+function plausibleFieldValue(label, val) {
+    if (LAYOUT_VALUE.test(val)) return false;
+    if (MEASURE_LABEL.test(label) && /\d/.test(val) && !MEASURE_UNIT.test(val)) return false;
+    return true;
+}
+
 /** Extract infobox fields whose NAME contains any of the given keywords. */
-function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
+function extractInfoboxFields(wikitextRaw, keywords, maxLen = 240) {
+    const wikitext = infoboxScope(wikitextRaw);
     if (!wikitext) return "";
     const kw = keywords.map(k => k.trim().toLowerCase()).filter(Boolean);
     const out = [];
@@ -837,7 +895,11 @@ function extractInfoboxFields(wikitext, keywords, maxLen = 240) {
         }
         const val = cleanWikitext(raw);
         if (!val || seen.has(label.toLowerCase())) continue;
-        if (/^\d+\s*px$/i.test(val) || /\.(png|jpe?g|gif|webp|svg)$/i.test(val) || /^\d+$/.test(val)) continue;
+        if (/\.(png|jpe?g|gif|webp|svg)$/i.test(val)) continue;
+        if (!plausibleFieldValue(label, val)) {
+            debug(`infobox "${rawKey}" = "${clip(val, 40)}" rejected as layout/implausible for ${label}`);
+            continue;   // does not claim the label: a real value later still wins
+        }
         seen.add(label.toLowerCase());
         out.push(`${label}: ${val}`);
     }
@@ -1096,9 +1158,25 @@ const NEGATIVE_TTL = 1000 * 60 * 60 * 24; // don't re-search a "not found" for 2
 // was built by a pre-containment extractor (or an unknown dialect leaked) — the
 // self-heal below rebuilds it from a fresh fetch with the current extractor.
 const SECTION_JUNK = /\.(?:png|jpe?g|gif|webp|svg|bmp|tiff?)\b|\{\||__[A-Z]+__|-->|<gallery|\|-\|/i;
+/**
+ * An already-cached "height: 2.3" is a lie that the extractor fix alone can
+ * never reach — the cache is permanent. A rendered physical line whose values
+ * fail the same validity test the extractor now applies IS poison, so the
+ * existing self-heal rebuilds it from a fresh fetch. One definition, both ends.
+ */
+function physicalImplausible(physical) {
+    if (!physical) return false;
+    return String(physical).split(/;\s*/).some(part => {
+        const i = part.indexOf(":");
+        if (i < 0) return false;
+        const val = part.slice(i + 1).trim();
+        return !!val && !plausibleFieldValue(part.slice(0, i).trim(), val);
+    });
+}
 function entryPoisoned(entry) {
     const sec = entry && entry.sections;
     if (!sec) return false;
+    if (physicalImplausible(sec.physical)) return true;
     return ["look", "physical", "identity", "personality", "relationship", "biography", "abilities", "trivia", "voice"]
         .some(k => sec[k] && SECTION_JUNK.test(sec[k]));
 }
@@ -2990,7 +3068,9 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             const store = cache();
             for (const key of Object.keys(store)) {
                 const e = store[key];
-                if (!e || !e.found || !e.wiki || e.healTs || !entryPoisoned(e)) continue;
+                if (!e || !e.found || !e.wiki || !entryPoisoned(e)) continue;
+                if (e.healV === CG_VERSION) continue;   // this version already rebuilt it
+                e.healV = CG_VERSION;
                 e.healTs = Date.now();
                 (async () => {
                     try {

@@ -56,6 +56,42 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.34.0 (an extracted fact must actually be a fact)
+
+Reported: every Bleach character came out `[height: 2.3]`. Three defects
+stacked, each necessary for the wrong number to reach the prompt.
+
+- **The extractor had no notion of an infobox.** `extractInfoboxFields` was
+  named for the infobox but scanned the ENTIRE page, so any template anywhere
+  could donate a field. A layout wrapper carrying its own `|height = 2.3`
+  outranked the character's real `|height = 187 cm` purely by sitting earlier
+  in the source — and did it identically on every page of that wiki, which is
+  exactly why every character had the same nonsense height. Extraction is now
+  scoped to the infobox (matched by template name, else the first param-dense
+  block near the top), falling back to the whole page when no infobox can be
+  identified, so nothing that worked before stops working.
+- **No value was ever checked for being a fact.** The noise filter rejected
+  bare INTEGERS, so every decimal walked straight in. A value that is a naked
+  number or a CSS size is layout, never canon; and a measurement field carrying
+  digits must name its unit (`187 cm`, `1.87 m`, `6'1"` pass — `2.3` and
+  `2.3 (approx)` do not). Prose measurements ("Tall") still pass: the rule is
+  about digits without units, not about prose.
+- **A rejected value no longer claims its label**, so a junk `height` followed
+  by the real one yields the real one rather than shadowing it forever.
+- **The cache is permanent, so the fix had to reach entries already poisoned.**
+  A stored `height: 2.3` now trips `entryPoisoned` — the same self-heal that
+  already rebuilds markup-corrupted sections — and the heal stamp became
+  per-fix-generation instead of once-ever, so an entry cleaned by an older
+  extractor can still benefit from a newer one. Existing chats repair
+  themselves, one entry per turn, with no cache clearing.
+- Rejections are logged with the raw field name and value, so the next instance
+  of this is a five-second answer instead of an inference.
+
+Proven by `test/proof.js` (354) + `test/sim.mjs` (79, including a poisoned
+entry repairing itself across turns). **5 guards negative-verified**, with the
+scoping and unit rules given discriminators that isolate them from the
+bare-number rule — two earlier assertions passed either way and were replaced.
+
 ## Changelog — v0.33.0 (the model can finally read the whole page; wrong facts stop shipping)
 
 An audit of the whole grounding path, from wikitext to injected block. Five of

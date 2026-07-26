@@ -421,5 +421,25 @@ await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 T("a fight gets the arsenal", /Abilities:.*Falling Star/.test(lastInjection()));
 S.llmDossier = false; S.abilities = false;
 
+console.log("[19] a cached lie heals itself, even if an older fix already healed the entry");
+const cache19 = globalThis.__ctx.chatMetadata.canon_grounding_cache;
+cache19.healme = { name: "Healme", found: true, wiki: "testwiki", aliases: [], rel: {},
+    // healTs proves an EARLIER generation of the self-heal already touched this entry.
+    // A one-shot stamp would lock the lie in forever; the stamp is per fix generation.
+    healTs: Date.now() - 999999,
+    sections: { physical: "height: 2.3", identity: "Someone." }, ts: Date.now() };
+S.parserEveryTurn = false;
+// The self-heal is deliberately ONE entry per turn (no stampede), and other
+// entries from earlier scenarios are queued ahead of this one — so drive turns
+// until it comes up rather than asserting it happens immediately.
+for (let turn = 0; turn < 8 && !cache19.healme.healV; turn++) {
+    globalThis.__ctx.chat.push(msg("The fire burns low.", true));
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(40);
+}
+T("the implausible height is gone", !/2\.3/.test(cache19.healme.sections.physical || ""));
+T("the entry was rebuilt from the wiki", /Healme-colored/.test(cache19.healme.sections.physical || ""));
+T("the heal is stamped with the fix generation", !!cache19.healme.healV);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
