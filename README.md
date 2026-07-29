@@ -56,6 +56,35 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.39.0 (turn one injects, and the notes stop talking like a robot)
+
+Proven by `test/proof.js` (398) + `test/sim.mjs` (167); the turn-one path
+negative-tested end to end. Three live reports, three root fixes.
+
+1. **Turn ONE of a new chat now discovers, binds, parses, grounds, and
+   INJECTS — in one interception.** The old hold RACED discovery against a
+   12s timer while the discovery LLM had a 30s budget, so on slower backends
+   discovery lost, grounding ran unbound, and the injection landed after
+   generation had already started — the panel said "injected" while the
+   model's context was empty, and canon only appeared from turn two. A brand
+   new chat has no story to stall: within the opening (first two messages)
+   an unbound chat now WAITS for discovery outright, the discovery call gets
+   a snappy 15s-capped budget, and grounding proceeds on the freshly bound
+   universe in the same turn. Automatic now feels like manual.
+2. **The header speaks the model's language.** "[CANON NOTES — this series'
+   wiki, refreshing your memory. You already know this world; the notes
+   below are the sharp version of memories gone fuzzy… trust the note: it IS
+   the accurate memory." Same authority, zero barked overrides — models
+   comply better with a memory they own than with orders to obey. Old chats'
+   already-injected blocks still carry the old opener, so the scene-scrub
+   marker list detects BOTH.
+3. **The behavior block: same laws, a third of the words.** Descriptive-not-
+   script, react-to-now, pressure-through-the-trait, the escalation/
+   repetition law (kept verbatim), 'With <name>' override, voice lines as
+   style samples never recited, fresh behavior with contradictions — all
+   retained; the lecture and the torture vignette cut. Fewer, better-chosen
+   tokens is the whole doctrine.
+
 ## Changelog — v0.38.0 (each chat is its own universe — no more leaks between fandoms)
 
 Proven by `test/proof.js` (398) + `test/sim.mjs` (159); four negative-tested
