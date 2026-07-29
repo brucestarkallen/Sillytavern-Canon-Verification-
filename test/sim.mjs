@@ -296,7 +296,7 @@ await run11;
 T("absolutist head still present (top of section preserved)", /stern, unyielding/.test(lastInjection()));
 T("humanizing TAIL survives into the injected baseline", /laughs easily and forgives quickly/.test(lastInjection()));
 T("head+tail seam marks the sample", /\[…\]/.test(lastInjection()));
-T("anti-rigidity header rides every note", /Under pressure \(danger, pain, temptation, grief, exhaustion\)/.test(lastInjection()));
+T("anti-rigidity header rides every note", /identical reaction repeated while circumstances escalate/.test(lastInjection()));
 extension_settings.canon_grounding.personality = false;
 extension_settings.canon_grounding.maxCharsPerChar = 400;
 
@@ -752,6 +752,31 @@ ctxB29.chat.push(msg("Night falls over the academy.", true));   // message THREE
 await globalThis.CanonGrounding_verifyWiki();
 T("beyond the opening: settled at ZERO cost, forever", parseQueue.length === q29d && fetchLog.length === f29d);
 
+// [31] v0.39.0 — turn ONE of a new chat WAITS for its universe and grounds
+// in the SAME interception: discovery → bind → parse → ground → inject, one turn.
+console.log("[31] turn one: discover, bind, and INJECT in the same interception");
+const ctxD31 = { ...globalThis.__ctx, chat: [], chatMetadata: {} };
+globalThis.__ctx = ctxD31;
+ctxD31.name2 = "Jovan Custom";
+S25.wikis = "testwiki";
+ctxD31.chat.push(msg("#Found Saga. Zar Blade waits by the gate.", true));
+const f31 = fetchLog.length, q31 = parseQueue.length;
+const run31 = intercept(ctxD31.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("discovery consulted FIRST (the turn is holding for it)", parseQueue.length === q31 + 1);
+parseQueue[q31].resolve('{"franchise":"Found Saga","slugs":["foundsaga"],"names":["Zar Blade"]}');
+await sleep(60);
+T("scene parser runs AFTER the universe is bound", parseQueue.length === q31 + 2);
+parseQueue[q31 + 1].resolve('[{"name":"Zar Blade","now":"waiting","evidence":"Zar Blade waits"}]');
+await run31;
+const w31 = fetchLog.slice(f31);
+T("the chat bound before grounding", ctxD31.chatMetadata.canon_grounding_wiki === "foundsaga.wiki.gg");
+T("grounding fetched canon from the DISCOVERED universe",
+    w31.some(u => u.includes("foundsaga.wiki.gg") && u.includes("page=")));
+T("and never from the stale default", !w31.some(u => u.includes("testwiki") && u.includes("page=")));
+T("the injection landed on THIS turn, in the new header voice",
+    /Zar Blade/.test(lastInjection()) && /\[CANON NOTES/.test(lastInjection()));
+
 // [26] v0.36.0 — static witnesses for the discovery wiring.
 console.log("[26] v0.36.0 static witnesses — wiki discovery wiring");
 T("verify the ACTIVE config before spending any discovery LLM",
@@ -774,6 +799,10 @@ T("every grounding path reads the CHAT's universe",
     && /searched: normWikiSet\(activeWikis\(\)\)/.test(src));
 T("an unbound chat HOLDS for its universe on turn one",
     /await Promise\.race\(\[disc,/.test(src));
+T("turn ONE of a NEW chat waits for discovery outright (no race to lose)",
+    /const opening = \(chat \|\| \[\]\)\.length <= 2;/.test(src) && /if \(opening\) \{[\s\S]{0,320}await disc;/.test(src));
+T("the discovery call has a snappy budget — it cannot eat the whole turn",
+    /budgetMs: Math\.min\(Number\(s\.parserBudgetMs\) \|\| 30000, 15000\)/.test(src));
 T("re-checks probe the name that WORKED before (via), zero-LLM",
     /hostKnowsAny\(w, quick\)/.test(src) && /via: String\(via \|\| verifiedName/.test(src));
 T("binding a universe purges foreign canon (one writer)",

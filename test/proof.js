@@ -256,7 +256,7 @@ sandbox.__settings = {
     llmParser: true, contextWindow: 10,
 };
 const note = api.relevantCanonNote(["alpha nodded at cid kagenou"], ["Alpha", "Cid Kagenou"]);
-T("framing: behavior-not-a-rule present", /DESCRIPTIVE — how this person has tended to act — never a rule/.test(note) && /overrides the baseline/.test(note));
+T("framing: behavior-not-a-rule present", /never a script/.test(note));
 T("per-pair dynamics line injected", /- With Cid Kagenou: Around Cid her stoic mask slips/.test(note));
 T("dynamics line sits under Personality", note.indexOf("Personality: Stoic") < note.indexOf("With Cid Kagenou:"));
 T("trivia line injected", /- Trivia: Keeps every note/.test(note));
@@ -296,7 +296,7 @@ sandbox.__settings = {
 const vnote = api.relevantCanonNote(["alpha spoke"], ["Alpha", "Cid Kagenou"]);
 T("voice line injected", /- Voice: "Shadow Garden moves tonight\."/.test(vnote));
 T("voice ordered after dynamics", vnote.indexOf("With Cid Kagenou:") < vnote.indexOf("- Voice:"));
-T("anti-parroting clause in header", /STYLE SAMPLES/.test(vnote) && /never repeat the sample lines/.test(vnote));
+T("anti-parroting clause in header", /style samples/.test(vnote) && /never recite the samples/.test(vnote));
 sandbox.__settings.voice = false;
 T("voice toggle off → no voice line", !/- Voice:/.test(api.relevantCanonNote(["alpha spoke"], ["Alpha"])));
 
@@ -522,11 +522,11 @@ api.setEvidence({});
 
 // ---------------------------------------------------------------- v0.12: prompt overrides
 console.log("[prompt overrides]");
-T("default header applies when override empty", /\[CANON REFERENCE/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])) );
+T("default header applies when override empty", /\[CANON NOTES/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])) );
 sandbox.__settings.promptHeader = "[MY CUSTOM FRAME]\n";
-T("header override replaces the default wholesale", (function(){ const n = api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"]); return /\[MY CUSTOM FRAME\]/.test(n) && !/\[CANON REFERENCE/.test(n); })());
+T("header override replaces the default wholesale", (function(){ const n = api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"]); return /\[MY CUSTOM FRAME\]/.test(n) && !/\[CANON NOTES/.test(n); })());
 sandbox.__settings.promptHeader = "";
-T("empty override falls back to default again", /\[CANON REFERENCE/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
+T("empty override falls back to default again", /\[CANON NOTES/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
 
 // ---------------------------------------------------------------- v0.13: lowercase gate + smart expansion
 console.log("[lowercase gate / smart expansion]");
@@ -768,12 +768,12 @@ T("comment containing '>' removed entirely", api.cleanWikitext("A. <!-- x > y --
 // ---------------------------------------------------------------- v0.26: anti-rigidity payload
 console.log("[anti-rigidity]");
 const hdrNote = api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"]);
-T("header: behavior material declared DESCRIPTIVE, never a rule", /DESCRIPTIVE — how this person has tended to act — never a rule/.test(hdrNote));
-T("header: under-pressure clause present (danger/pain/grief)", /Under pressure \(danger, pain, temptation, grief, exhaustion\)/.test(hdrNote));
-T("header: stubborn-under-torture is named and de-robotized", /stubborn character threatened with torture is not a wall/.test(hdrNote));
+T("header: behavior is remembered tendency, never a script", /how they've TENDED to be/.test(hdrNote) && /never a script/.test(hdrNote));
+T("header: pressure shows THROUGH a trait, not instead of it", /Pressure shows THROUGH a trait, not instead of it/.test(hdrNote));
+T("header: pressure texture kept (strain, leak, shift)", /defiance strains, fear leaks, tactics shift/.test(hdrNote));
 T("header: identical repetition under escalation = portrayal error", /identical reaction repeated while circumstances escalate is a portrayal error/.test(hdrNote));
-T("header: reacts to what JUST happened", /react to what JUST happened/.test(hdrNote));
-T("header: hard-facts authority scoped away from behavior", /HARD FACTS \(appearance, relations, history, events\)/.test(hdrNote));
+T("header: reacts to what just happened", /react to what just happened/.test(hdrNote));
+T("header: facts are the accurate memory; behavior stays unscripted", /it IS the accurate memory/.test(hdrNote) && /never a script/.test(hdrNote));
 T("dossier brief: temperament as tendency, not law", /write temperament as living tendency, not law/.test(src));
 T("dossier brief: absolutist wording banned unless sourced", /avoid absolutist wording \("always", "never", "nothing can"\) unless the source itself insists/.test(src));
 T("regex personality routes through head+tail sampling", /personality: join\(\s*extractInfoboxFields\(wikitext, perKw\),\s*sampleSection\(extractSection\(wikitext, perKw, 4000\), 500\)\s*\)/.test(src));
