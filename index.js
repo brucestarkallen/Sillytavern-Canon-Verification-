@@ -384,14 +384,31 @@ function settings() {
     return st;
 }
 
+/** HTML-escape a string before it goes anywhere near innerHTML-land. */
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/**
+ * THE ONLY way this extension toasts. Toast payloads routinely contain model
+ * output (lastLlmError embeds the parser's raw reply), wiki-derived text, and
+ * entity names — and toastr renders HTML by default. We escape EXPLICITLY here
+ * rather than relying on toastr.options.escapeHtml: that global is shared
+ * state another extension can flip, and a hostile/compromised LLM endpoint
+ * would otherwise have script execution inside the ST page.
+ */
+function cgToast(kind, msg, opts) {
+    try {
+        if (typeof toastr !== "undefined") toastr?.[kind]?.(escapeHtml(msg), "Canon Grounding", opts);
+    } catch (e) { /* toast is best-effort */ }
+}
+
 // Emit a diagnostic line (console always; toast when debug is on) so we can SEE
 // what grounding actually did for each character instead of guessing.
 function debug(msg) {
     console.log(`[CanonGrounding] ${msg}`);
     try {
-        if (settings().debug && typeof toastr !== "undefined") {
-            toastr.info(msg, "Canon Grounding", { timeOut: 8000, extendedTimeOut: 4000 });
-        }
+        if (settings().debug) cgToast("info", msg, { timeOut: 8000, extendedTimeOut: 4000 });
     } catch (e) { /* toast is best-effort */ }
 }
 
@@ -2986,7 +3003,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 if (myEpoch !== chatEpoch) return;   // chat switched mid-parse: old-chat results must not apply
                 if (parsed === null && Date.now() - lastParseFailToastAt > 300000) {
                     lastParseFailToastAt = Date.now();
-                    try { toastr?.warning?.(`Canon parser failing in background: ${lastLlmError || "unknown"}. Sweep/pins still inject.`); } catch (e) {}
+                    cgToast("warning", `Canon parser failing in background: ${lastLlmError || "unknown"}. Sweep/pins still inject.`);
                 }
                 if (mySerial === parseSerial) {      // a newer parse hasn't superseded this one
                     for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
@@ -3019,7 +3036,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                                     if (!cur || cur.title !== hit.entry.name) {
                                         groundArc(hit.entry.name).then(got => {
                                             if (got) {
-                                                try { toastr?.info?.(`📖 story position → ${got.title}`); } catch (e) {}
+                                                cgToast("info", `📖 story position → ${got.title}`);
                                                 if (renderArcStatus) try { renderArcStatus(); } catch (e) {}
                                             }
                                         }).catch(() => {});
@@ -3610,7 +3627,7 @@ async function addSettingsUI() {
         });
         $(sel + "_reset").on("click", function () {
             s[key] = ""; $(sel).val(def); saveSettingsDebounced();
-            toastr?.info?.("Restored default instruction.");
+            cgToast("info", "Restored default instruction.");
         });
     }
     $("#cg_factory_reset").on("click", function () {
@@ -3628,7 +3645,7 @@ async function addSettingsUI() {
         // (they only rewrite untouched sentinel values). One source of truth.
         Object.assign(s, structuredClone(defaultSettings), keep);
         saveSettingsDebounced();
-        toastr?.success?.("Defaults restored. Reloading UI…");
+        cgToast("success", "Defaults restored. Reloading UI…");
         setTimeout(() => location.reload(), 800);
     });
     $("#cg_pin_global").val(s.pinnedGlobal).on("input", function () {
@@ -3665,7 +3682,7 @@ async function addSettingsUI() {
         $("#cg_ask_status").text("working…");
         const r = await askCanon(q);
         $("#cg_ask_status").text((r.ok ? "✓ " : "✕ ") + r.msg);
-        if (r.ok) { $("#cg_ask").val(""); toastr?.success?.(r.msg); } else toastr?.warning?.(r.msg);
+        if (r.ok) { $("#cg_ask").val(""); cgToast("success", r.msg); } else cgToast("warning", r.msg);
     };
     $("#cg_ask_go").on("click", runAsk);
     $("#cg_ask").on("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); runAsk(); } });
@@ -3761,12 +3778,12 @@ async function addSettingsUI() {
         if (!isNaN(v) && v >= 2) { s.firstMeetWaitMs = Math.round(v * 1000); saveSettingsDebounced(); }
     });
     $("#cg_selftest").on("click", async function () {
-        toastr?.info?.("Parser self-test running…");
+        cgToast("info", "Parser self-test running…");
         const t0 = Date.now();
         const out = await llmCall("You are a connectivity test. Reply with exactly: ok", "Reply with exactly: ok", { maxTokens: 8 });
         const ms = Date.now() - t0;
-        if (out) toastr?.success?.(`Parser backend OK in ${ms}ms — replied: "${clip(out, 40)}"`);
-        else toastr?.error?.(`Parser backend FAILED in ${ms}ms — ${lastLlmError || "unknown"}`);
+        if (out) cgToast("success", `Parser backend OK in ${ms}ms — replied: "${clip(out, 40)}"`);
+        else cgToast("error", `Parser backend FAILED in ${ms}ms — ${lastLlmError || "unknown"}`);
     });
     $("#cg_preview").on("click", function () {
         try {
@@ -3781,11 +3798,11 @@ async function addSettingsUI() {
             lastInjection = note;
             lastInjectionAt = Date.now();
             renderLastInjection();
-            toastr?.[note ? "success" : "warning"]?.(note
+            cgToast(note ? "success" : "warning", note
                 ? `Preview built: ${lastMatchReasons.length} entr${lastMatchReasons.length === 1 ? "y" : "ies"} — see "Last injection" below.`
                 : "Preview is EMPTY: nothing cached is named in the scene window, cast is empty, and no pins/arc are set.");
         } catch (e) {
-            toastr?.error?.(`Preview failed: ${e.message}`);
+            cgToast("error", `Preview failed: ${e.message}`);
         }
     });
     const numHandler = (id, key, min, def) => {
@@ -3811,7 +3828,7 @@ async function addSettingsUI() {
         $("#cg_aliaskw").val(s.aliasKeywords);
         $("#cg_quotekw").val(s.quoteKeywords);
         saveSettingsDebounced();
-        toastr?.info?.("Fields & keywords reset. Clear the cache to re-fetch with the new fields.");
+        cgToast("info", "Fields & keywords reset. Clear the cache to re-fetch with the new fields.");
     });
 
     // Keep the active field and the saved-wiki highlights in sync (single binding).
@@ -3840,24 +3857,24 @@ async function addSettingsUI() {
         lastCast = [];
         lastCastLen = 0;
         renderCacheList();
-        toastr?.info?.("Canon cache cleared. Send a message (or 'Scan current scene now') to re-ground.");
+        cgToast("info", "Canon cache cleared. Send a message (or 'Scan current scene now') to re-ground.");
     });
     $("#cg_rescan").on("click", async function () {
         const st = settings();
-        if (!st.enabled) { toastr?.warning?.("Canon Grounding is disabled."); return; }
+        if (!st.enabled) { cgToast("warning", "Canon Grounding is disabled."); return; }
         const ctx = getContext();
         const sceneText = sceneMessages(ctx, st.contextWindow).join("\n");
-        if (!sceneText.trim()) { toastr?.info?.("No visible scene to scan yet."); return; }
+        if (!sceneText.trim()) { cgToast("info", "No visible scene to scan yet."); return; }
         const myEpoch = chatEpoch;   // switching chats mid-scan must not apply old-chat results
         try {
             if (st.llmParser) {
-                toastr?.info?.("Scanning the current scene…");
+                cgToast("info", "Scanning the current scene…");
                 const mySerial = ++parseSerial;
                 const parsed = await parseSceneCharacters(sceneText);
                 if (myEpoch !== chatEpoch) return;
                 for (const n of extractCandidateNames(sceneText)) parsedWords.add(n.toLowerCase());
                 if (parsed === null) {
-                    toastr?.warning?.(`Parser: ${lastLlmError || "failed"} — nothing changed.`);
+                    cgToast("warning", `Parser: ${lastLlmError || "failed"} — nothing changed.`);
                 } else if (mySerial === parseSerial) {
                     const names = parsed.map(p => p.name);
                     lastCast = names;
@@ -3871,19 +3888,19 @@ async function addSettingsUI() {
                     if (names.length) {
                         await groundNames(names, true);
                         if (myEpoch !== chatEpoch) return;
-                        toastr?.success?.(`Grounded: ${names.join(", ")}`);
+                        cgToast("success", `Grounded: ${names.join(", ")}`);
                     } else {
-                        toastr?.info?.("Parser says no canon entities are in this scene.");
+                        cgToast("info", "Parser says no canon entities are in this scene.");
                     }
                 }
             } else {
                 const names = extractCandidateNames(sceneText);
                 await groundNames(names);
                 if (myEpoch !== chatEpoch) return;
-                toastr?.info?.(`Scanned ${names.length} name(s) from the scene.`);
+                cgToast("info", `Scanned ${names.length} name(s) from the scene.`);
             }
         } catch (e) {
-            toastr?.error?.("Scan failed: " + e.message);
+            cgToast("error", "Scan failed: " + e.message);
         }
         renderCacheList();
     });
