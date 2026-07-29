@@ -3347,6 +3347,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 // ---------------------------------------------------------------------------
 
 async function onMessageReceived() {
+  try {
     const s = settings();
     if (!s.enabled || cgInFlight) return;
     const ctx = getContext();
@@ -3394,6 +3395,12 @@ async function onMessageReceived() {
     if (!s.groundFromReplies) return; // regex fallback is opt-in
     const names = extractCandidateNames(last.mes);
     if (names.length) await groundNames(names); // fills cache; does NOT edit text
+  } catch (e) {
+    // Top-level containment: this handler is an event subscription — a rejection
+    // here is an unhandled promise rejection (fatal on Android webviews) and must
+    // never escape into ST's event pipeline.
+    try { debug(`post-generation scan failed: ${e && e.message ? e.message : e}`); } catch (e2) {}
+  }
 }
 
 // ---------------------------------------------------------------------------
