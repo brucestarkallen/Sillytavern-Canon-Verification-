@@ -56,6 +56,38 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.38.0 (each chat is its own universe — no more leaks between fandoms)
+
+Proven by `test/proof.js` (398) + `test/sim.mjs` (159); four negative-tested
+guards. Root-caused from a live report: a NEW chat still carried the previous
+chat's wiki. Called out, correctly, as flex tape — v0.36/0.37 bolted discovery
+onto a GLOBAL setting and let it settle against an EMPTY chat. This release
+fixes the architecture, not the symptom.
+
+1. **The universe is CHAT-SCOPED state.** Discovery binds the wiki to the
+   CHAT (`canon_grounding_wiki` pin) and never writes the global field again.
+   Every grounding path — search list, negative-cache keying, arc lookup,
+   status UI — reads `activeWikis()`: the chat's own binding first, the
+   global field only as the default for unbound chats. One chat's discovery
+   can no longer leak canon into another chat. (Same architecture rule as
+   Summaryception: each chat is its own universe.)
+2. **Settlement is DECLARATION-AWARE.** The settled pin is keyed on a
+   fingerprint of what discovery actually SAW — card + the chat's OPENING two
+   messages + the effective wiki list. A new chat that settles against an
+   empty chat re-opens the moment "#classroom of the elite" (or any opening
+   content) arrives; from message three on it is immutable. Re-checks while
+   the opening fills remember the canon name that verified last time
+   (`via`) and re-verify with ONE fetch and ZERO LLM.
+3. **Turn one HOLDS for an unbound chat** (bounded by firstMeetWaitMs) — the
+   first-meeting rule applied to universes: a wrong UNIVERSE on the first
+   turn costs more immersion than a short pause. Bound chats pay nothing.
+4. **Binding purges foreign canon.** When a chat's universe changes
+   (discovery, field edit, or a saved-wiki chip tap — both of which are now
+   DECREES binding the current chat and never second-guessed), cached
+   entries from other universes are deleted; misses were already keyed to
+   the wiki list. No stale classroom-of-the-elite entries embedded in a
+   Bleach chat, ever.
+
 ## Changelog — v0.37.0 (ō is a letter, and discovery triggers everywhere)
 
 Proven by `test/proof.js` (394) + `test/sim.mjs` (144); three negative-tested
