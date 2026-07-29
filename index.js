@@ -89,6 +89,9 @@ let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an old
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
 const CG_VERSION = "0.34.0";
+// Tag set on the legacy chat-spliced canon note (old-ST fallback when
+// setExtensionPrompt is unavailable) so every later pass can find and remove it.
+const FALLBACK_TAG = "canon_grounding_fallback";
 
 // ---------------------------------------------------------------------------
 // DEFAULT SYSTEM INSTRUCTIONS — every prompt this extension sends to a model.
@@ -2902,6 +2905,20 @@ function setInjection(text) {
     }
 }
 
+/**
+ * Remove every legacy chat-spliced canon note (tagged FALLBACK_TAG) from a chat
+ * array. The fallback splice mutates the REAL chat, so without this each
+ * generation stacked one more stale note into the chat file. Marker-TEXT
+ * matching is deliberately not used: a user-overridden promptHeader makes the
+ * note's text unrecognizable — the tag is the identity.
+ */
+function removeFallbackSplices(chat) {
+    if (!Array.isArray(chat)) return;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i] && chat[i][FALLBACK_TAG]) chat.splice(i, 1);
+    }
+}
+
 let interceptAnnounced = false;
 globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, type) {
     if (!interceptAnnounced) {
@@ -2917,7 +2934,11 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
     const myEpoch = chatEpoch;   // if the chat switches during any await below, drop everything
     try {
         const s = settings();
-        setInjection("");            // start each generation clean; re-set below if needed
+        const promptApiOk = setInjection("");   // start each generation clean; re-set below if needed
+        // Old-ST fallback (no setExtensionPrompt): the splice lives in the real
+        // chat array, so any note from an earlier turn must come out NOW — before
+        // anything below can return early — or stale notes accumulate forever.
+        if (!promptApiOk) removeFallbackSplices(chat);
         if (!s.enabled) return;
 
         const ctx = getContext();
@@ -3178,8 +3199,12 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         if (note) {
             const ok = setInjection(note);
             if (!ok) {
-                // Fallback for very old ST without setExtensionPrompt.
-                const injected = { is_user: false, is_system: true, name: "Canon", send_date: Date.now(), mes: note };
+                // Fallback for very old ST without setExtensionPrompt. The splice
+                // lands in the REAL chat array, so without cleanup one stale note
+                // accumulated per generation, forever. Remove every previously
+                // tagged splice first: one chat carries at most one canon note.
+                removeFallbackSplices(chat);
+                const injected = { is_user: false, is_system: true, name: "Canon", send_date: Date.now(), mes: note, [FALLBACK_TAG]: true };
                 chat.splice(Math.max(chat.length - 1, 0), 0, injected);
             }
         }
