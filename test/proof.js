@@ -55,7 +55,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
          extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
          clip, cacheEntryFor, pruneStaleCast, isUnhandledName, parseNameArray,
-         relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier,
+         relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier, normalizeDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
          setParsedWords: (a) => { parsedWords = new Set(a); },
@@ -1055,6 +1055,22 @@ T("a cached real height is not",
 T("the 'notably:' prose tail is never mistaken for a measurement",
   !api.entryPoisoned({ sections: { physical: "eyes: green; notably: He has a mole under his left eye." } }));
 T("markup poison still detected", api.entryPoisoned({ sections: { look: "Kid Foo.png|As a child." } }));
+
+// ---------------------------------------------------------------- v0.34.1 fixes
+console.log("[v0.34.1 normalizeDossier — legacy shapes degrade, never throw]");
+const legacy = api.normalizeDossier({ identity: "Old-shape dossier." });  // pre-facts/secrets/voice era
+T("legacy dossier gains empty arrays",
+  [legacy.facts, legacy.secrets, legacy.voice, legacy.abilities, legacy.related].every(Array.isArray));
+eq("dynamics coerced to an object", legacy.dynamics, {});
+T("garbage in → null out", api.normalizeDossier(null) === null);
+sandbox.__settings.cache = {
+    "oldchar": { name: "Oldchar", found: true, wiki: "w", aliases: [], rel: {},
+                 sections: { physical: "hair: grey" },
+                 dossier: { identity: "A veteran of the old shape." } },  // no arrays at all
+};
+const oldNote = api.relevantCanonNote(["oldchar stood watch"], ["Oldchar"]);
+T("legacy dossier renders a note instead of killing the injection", /Oldchar:/.test(oldNote));
+T("legacy dossier still shows its identity", /A veteran of the old shape/.test(oldNote));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

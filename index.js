@@ -1567,7 +1567,7 @@ async function askCanon(request) {
             const hit = cacheEntryFor(t.toLowerCase());
             if (!hit || !hit.entry.found) return { ok: false, msg: `nothing on the wiki for "${t}"` };
             const e = hit.entry;
-            const d = e.dossier;
+            const d = normalizeDossier(e.dossier);
             const bits = [
                 (d && d.identity) || e.sections.identity,
                 d && d.facts.length ? `Facts: ${d.facts.slice(0, 2).join("; ")}` : "",
@@ -2225,7 +2225,9 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         };
         if (entry.dossier) {
             // LLM-curated path: the model read the page and chose what matters.
-            const d = entry.dossier;
+            // normalizeDossier: a legacy-shaped cached dossier must degrade to
+            // empty fields, never throw mid-note and kill the whole injection.
+            const d = normalizeDossier(entry.dossier);
             const identity = d.identity || entry.sections.identity;
             if (s.proseBriefs && d.brief) {
                 // The curator's WRITTEN briefing — prose, not a database row.
@@ -2415,6 +2417,26 @@ function parseDossier(text) {
 }
 
 /**
+ * Coerce a dossier of ANY age/shape to the current contract. Dossiers are cached
+ * forever in chat metadata, so a pre-"related"/"brief"/"abilities" (or otherwise
+ * damaged) dossier can reach a read site with missing keys — an unguarded
+ * `d.facts.length` then threw inside the note builder and silently killed the
+ * whole canon note for the turn. Missing pieces become empty, never a crash.
+ * Mutates and returns the given object (null/non-object passes through).
+ */
+function normalizeDossier(d) {
+    if (!d || typeof d !== "object") return d == null ? null : d;
+    if (typeof d.identity !== "string") d.identity = "";
+    if (typeof d.brief !== "string") d.brief = "";
+    for (const k of ["facts", "secrets", "voice", "abilities"]) {
+        if (!Array.isArray(d[k])) d[k] = [];
+    }
+    if (!Array.isArray(d.related)) d.related = [];
+    if (!d.dynamics || typeof d.dynamics !== "object" || Array.isArray(d.dynamics)) d.dynamics = {};
+    return d;
+}
+
+/**
  * LLM-curated dossier: instead of injecting regex-extracted section fragments, the
  * model READS the page and writes the injection — identity, load-bearing facts,
  * secrets stated as secrets (paired with the KNOWLEDGE SCOPE guard), voice, and
@@ -2496,7 +2518,7 @@ function scheduleDossier(entry, name, wikitext, relRaw) {
     entry.dossierTs = Date.now();
     buildDossier(name, wikitext, relRaw).then(d => {
         if (d) {
-            entry.dossier = d;
+            entry.dossier = normalizeDossier(d);
             debug(`✦ dossier ready: ${name}`);
         }
         saveCache();
@@ -3163,7 +3185,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                                 const wt = await fetchWikitext(e.wiki, e.name);
                                 if (!wt) return;
                                 const d = await buildDossier(e.name, wt, e.relRaw || "");
-                                if (d) { e.dossier = d; debug(`✦ dossier self-upgraded: ${e.name}`); saveCache(); }
+                                if (d) { e.dossier = normalizeDossier(d); debug(`✦ dossier self-upgraded: ${e.name}`); saveCache(); }
                             } catch (err) { /* retry never — one attempt per entity */ }
                         })();
                         break;
@@ -3680,9 +3702,16 @@ async function addSettingsUI() {
         const q = String($("#cg_ask").val() || "").trim();
         if (!q) return;
         $("#cg_ask_status").text("working…");
-        const r = await askCanon(q);
-        $("#cg_ask_status").text((r.ok ? "✓ " : "✕ ") + r.msg);
-        if (r.ok) { $("#cg_ask").val(""); cgToast("success", r.msg); } else cgToast("warning", r.msg);
+        try {
+            const r = await askCanon(q);
+            $("#cg_ask_status").text((r.ok ? "✓ " : "✕ ") + r.msg);
+            if (r.ok) { $("#cg_ask").val(""); cgToast("success", r.msg); } else cgToast("warning", r.msg);
+        } catch (e) {
+            // Containment: a failure here (legacy cache shape, transport hiccup) must
+            // surface in the status line, not strand the UI on "working…" forever.
+            $("#cg_ask_status").text("✕ " + (e && e.message ? e.message : "unexpected error"));
+            cgToast("error", `Ask Canon failed: ${e && e.message ? e.message : e}`);
+        }
     };
     $("#cg_ask_go").on("click", runAsk);
     $("#cg_ask").on("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); runAsk(); } });
