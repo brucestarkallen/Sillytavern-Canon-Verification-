@@ -56,6 +56,20 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.39.1 (the license to break — compression must not cut permissions)
+
+Proven by `test/proof.js` (401) + `test/sim.mjs` (167); the restored clause
+negative-tested. Caught by the obvious pressure test: "can a stubborn person
+still beg?" The v0.39.0 compression kept the anti-repetition law but silently
+dropped the PERMISSION to yield — and a model never told breaking is allowed
+plays the wall. Restored, surgically (~25 words, still well under half the
+original): traits decide HOW someone responds, never WHETHER they respond
+humanly; people bargain, beg, break, or hold at visible cost; and the concrete
+private-warmth example (stoic on duty, warm or petty in private) that anchors
+the Alpha-with-Cid class of modulation. The 'With <name>' pair-dynamic
+injection plus its override law already guaranteed the Cid case at the DATA
+layer; this closes the law layer.
+
 ## Changelog — v0.39.0 (turn one injects, and the notes stop talking like a robot)
 
 Proven by `test/proof.js` (398) + `test/sim.mjs` (167); the turn-one path
