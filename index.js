@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.36.1";
+const CG_VERSION = "0.37.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -587,7 +587,10 @@ function extractCandidateNames(text) {
     // Sentence-start stopwords are stripped from phrase EDGES ("Then Rose Oriana" →
     // "Rose Oriana", "Later He" → nothing) — the old code kept whole phrases verbatim,
     // so sentence-glue words became part of the searched name.
-    const capRe = /\b([A-Z][a-z][A-Za-z'’-]*(?:\s+[A-Z][a-z][A-Za-z'’-]*){0,3})\b/g;
+    // Unicode letters throughout — "Ayanokōji" and "Tōshirō" are ONE token, not
+    // ASCII fragments. \b is ASCII-blind (it fails after a trailing ō), so explicit
+    // letter lookarounds mark the word edges instead.
+    const capRe = /(?<![\p{L}\p{M}])(\p{Lu}[\p{Ll}\p{M}][\p{L}\p{M}'’-]*(?:\s+\p{Lu}[\p{Ll}\p{M}][\p{L}\p{M}'’-]*){0,3})(?![\p{L}\p{M}])/gu;
     let m;
     while ((m = capRe.exec(clean)) !== null) {
         let words = m[1].trim().split(/\s+/).map(normalizeNameWord).filter(w => w.length >= 2);
@@ -1928,7 +1931,11 @@ function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
  * different strings and every exact-match lookup silently misses.
  */
 const APOSTROPHES = /['’‘‛´`]/g;
-function normName(n) { return String(n || "").toLowerCase().replace(APOSTROPHES, "'"); }
+function normName(n) {
+    return String(n || "").toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")   // fold diacritics: Ayanokōji ≡ Ayanokoji
+        .replace(APOSTROPHES, "'");
+}
 /** Regex source for a name that matches any apostrophe dialect. */
 function nameRegexSource(name) { return escapeRegex(String(name)).replace(APOSTROPHES, "['’‘‛´`]"); }
 
@@ -2653,8 +2660,10 @@ async function buildDossier(name, wikitext, relRaw) {
  * "Alya" → alias "Alya" both pass; cross-welded names don't.
  */
 function titleCoversQuery(query, title, aliases) {
-    const hay = [title, ...(aliases || [])].join(" ").toLowerCase();
-    const toks = String(query).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)
+    // normName folds diacritics on BOTH sides: a typed-ASCII query must cover
+    // a macron title ("ayanokoji" ⊂ "Kiyotaka Ayanokōji").
+    const hay = normName([title, ...(aliases || [])].join(" "));
+    const toks = normName(query).split(/[^\p{L}\p{N}'-]+/u)
         .filter(t => t.length >= 3 && !NOISE_WORDS.has(t));
     return toks.every(t => hay.includes(t));
 }
@@ -2977,6 +2986,14 @@ function parseNameArray(text) {
 let lastLlmError = "";       // why the last llmCall returned null — surfaced by rescan
 let lastParseFailToastAt = 0; // throttle for background-failure toasts (silence was the bug)
 
+function wikiStateHint() {
+    try {
+        const ok = chatWikiOk();
+        if (!ok) return " \ud83d\udd2d The wiki is NOT verified for this chat yet — any message (or 'Scan current scene now') triggers discovery.";
+        if (ok.failed) return " \ud83d\udd2d Discovery found no wiki for this chat — the wikis field is the manual override.";
+        return "";
+    } catch (e) { return ""; }
+}
 function chatWikiOk() {
     try {
         const v = getContext().chatMetadata?.canon_grounding_wiki_ok;
@@ -3332,6 +3349,7 @@ function removeFallbackSplices(chat) {
 
 let interceptAnnounced = false;
 globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, type) {
+    verifyOrDiscoverWiki().catch(() => {});   // \ud83d\udd2d self-heals the wiki on ANY turn; the settled pin makes this free
     if (!interceptAnnounced) {
         interceptAnnounced = true;
         console.log(`[CanonGrounding] v${CG_VERSION} interceptor active — if you never see this line, ST is not calling the interceptor at all.`);
@@ -4207,7 +4225,7 @@ async function addSettingsUI() {
             renderLastInjection();
             cgToast(note ? "success" : "warning", note
                 ? `Preview built: ${lastMatchReasons.length} entr${lastMatchReasons.length === 1 ? "y" : "ies"} — see "Last injection" below.`
-                : "Preview is EMPTY: nothing cached is named in the scene window, cast is empty, and no pins/arc are set.");
+                : "Preview is EMPTY: nothing cached is named in the scene window, cast is empty, and no pins/arc are set." + wikiStateHint());
         } catch (e) {
             cgToast("error", `Preview failed: ${e.message}`);
         }
@@ -4274,6 +4292,7 @@ async function addSettingsUI() {
     $("#cg_rescan").on("click", async function () {
         const st = settings();
         if (!st.enabled) { cgToast("warning", "Canon Grounding is disabled."); return; }
+        await verifyOrDiscoverWiki();   // \ud83d\udd2d bounded: settled pin is instant, else one discovery pass
         const ctx = getContext();
         const sceneText = sceneMessages(ctx, st.contextWindow).join("\n");
         if (!sceneText.trim()) { cgToast("info", "No visible scene to scan yet."); return; }
@@ -4446,5 +4465,7 @@ jQuery(async () => {
             setTimeout(() => { verifyOrDiscoverWiki().catch(() => {}); }, 0);
         });
     }
+    // \ud83d\udd2d the already-open chat never gets a CHAT_CHANGED — verify it on load.
+    setTimeout(() => { verifyOrDiscoverWiki().catch(() => {}); }, 2000);
     console.log(`[CanonGrounding] v${CG_VERSION} loaded.`);
 });
