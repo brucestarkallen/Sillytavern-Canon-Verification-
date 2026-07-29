@@ -83,12 +83,13 @@ let castEvidence = {};       // name-lc → the scene words that put them in the
 let lastCastLen = 0;        // visible-chat length when lastCast was last confirmed (drives decay)
 let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
 let renderArcStatus = null;  // set by the settings UI; called on CHAT_CHANGED
+let refreshWikiUi = null;    // set by the settings UI; syncs the wiki field after \ud83d\udd2d discovery
 let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.35.0";
+const CG_VERSION = "0.36.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -192,10 +193,19 @@ const DEFAULT_PROMPT_ARCJUDGE =
         "only the present scene entering the event counts. " +
         'Respond with ONLY {"advance": true} or {"advance": false}. No other text.';
 
+const DEFAULT_PROMPT_DISCOVER = `You identify which MediaWiki fan wiki covers a story. Given a protagonist and story text, output STRICT JSON only:
+{"franchise":"<franchise name>","slugs":["slug1","slug2"]}
+slugs: 3-6 lowercase hyphenated wiki-subdomain candidates for this franchise, most likely FIRST. Include romaji/alternate titles (e.g. Demon Slayer -> "kimetsu-no-yaiba") and common short forms. No prose, no markdown, JSON only.`;
+
 const defaultSettings = {
     enabled: true,
     // Comma-separated Fandom subdomains to search, e.g. "the-eminence-in-shadow,dc".
     wikis: "the-eminence-in-shadow",
+    // \ud83d\udd2d Find the wiki automatically: on a new chat, verify the active wiki actually
+    // knows the protagonist; if not, LLM proposes candidate slugs and the REAL wiki
+    // API verifies them structurally. The wikis field above stays the manual override.
+    autoDiscoverWiki: true,
+    promptDiscover: "",
     // Saved library of subdomains you switch between, shown as one-tap chips.
     savedWikis: [],
     // Which infobox fields count as "physical" facts. Kept to hair/eyes on purpose:
@@ -2794,6 +2804,41 @@ const EVENT_WORDS = /\b(arc|saga|festival|exam|examination|tournament|war|battle
  */
 const COMBAT_WORDS = /\b(fight|fights|fighting|fought|battle|battling|duel|duels|spar|sparring|combat|attack|attacks|attacked|strike|strikes|struck|slash|stab|parry|parries|dodge|dodges|block(?:s|ed)?|clash|clashes|kill|kills|killed|slay|wound|wounded|sword|blade|dagger|spear|bow|gun|fist|magic|mana|spell|spells|cast|casting|technique|techniques|jutsu|quirk|semblance|ability|abilities|power|powers|weapon|weapons|armor|armour|enemy|enemies|ambush|assassin|assassinate|duelist|training|train(?:s|ed)?\s+(?:with|against))\b/i;
 
+/** \ud83d\udd2d Wiki discovery — pure helpers (I/O-free; proven in test/proof.js). */
+function slugifyTitle(t) {
+    return String(t || "").toLowerCase()
+        .replace(/['\u2019\u2018]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+}
+function titleMatchesName(title, name) {
+    const a = normName(title), b = normName(name);
+    if (!a || !b) return false;
+    if (a === b || a.includes(b) || b.includes(a)) return true;
+    const words = new Set(a.split(" ").filter(w => w.length >= 3));
+    return b.split(" ").some(w => w.length >= 3 && words.has(w));
+}
+/** Stale-fork rule: many big fandoms migrated to wiki.gg, leaving a frozen Fandom
+ * copy behind. The wiki with the NEWER last edit is the live one; a host whose
+ * recent-changes can't be read loses to one whose can; total silence -> fandom. */
+function pickLiveHost(rcFandom, rcGg) {
+    if (!rcFandom && !rcGg) return "fandom";
+    if (!rcFandom) return "gg";
+    if (!rcGg) return "fandom";
+    return Date.parse(rcGg) > Date.parse(rcFandom) ? "gg" : "fandom";
+}
+/** LLM proposes, the wiki API disposes: assemble candidate slugs from the model's
+ * JSON plus deterministic fallbacks, deduped, capped — every one gets probed. */
+function discoverCandidates(parsed, franchiseFallback, probeName) {
+    const out = [];
+    const push = (v) => { const c = slugifyTitle(v); if (c && c.length >= 2 && !out.includes(c)) out.push(c); };
+    if (parsed && Array.isArray(parsed.slugs)) for (const x of parsed.slugs) push(x);
+    if (parsed && parsed.franchise) push(parsed.franchise);
+    push(franchiseFallback);
+    push(probeName);
+    return out.slice(0, 8);
+}
+
 const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|city|town|village|kingdom|empire|nation|guild|organization|organisation|company|agency|island|castle|palace|temple|church|dungeon|tower|district|region|world|realm|garden)\b/i;
 
 /**
@@ -2911,6 +2956,94 @@ function parseNameArray(text) {
  */
 let lastLlmError = "";       // why the last llmCall returned null — surfaced by rescan
 let lastParseFailToastAt = 0; // throttle for background-failure toasts (silence was the bug)
+
+function chatWikiOk() {
+    try {
+        const v = getContext().chatMetadata?.canon_grounding_wiki_ok;
+        return v && typeof v === "object" ? v : null;
+    } catch (e) { return null; }
+}
+async function fetchSearchTitles(wikiSpec, name) {
+    try {
+        const url = `${apiBase(wikiSpec)}?action=query&list=search&srlimit=3&format=json&origin=*&srsearch=${encodeURIComponent(name)}`;
+        const res = await fetch(url);
+        if (!res || !res.ok) return null;
+        const data = await res.json();
+        const arr = data?.query?.search;
+        return Array.isArray(arr) ? arr.map(x => String(x?.title || "")) : null;
+    } catch (e) { return null; }
+}
+async function fetchLastEdit(wikiSpec) {
+    try {
+        const url = `${apiBase(wikiSpec)}?action=query&list=recentchanges&rclimit=1&rcprop=timestamp&format=json&origin=*`;
+        const res = await fetch(url);
+        if (!res || !res.ok) return null;
+        const data = await res.json();
+        return data?.query?.recentchanges?.[0]?.timestamp || null;
+    } catch (e) { return null; }
+}
+/** \ud83d\udd2d The wikis FIELD stays the manual override; this makes it optional.
+ * Verify the active wiki actually knows the protagonist; if not, discover one:
+ * the LLM proposes candidate slugs (it knows romaji titles), and every candidate
+ * is verified against the real api.php before use — a hallucinated slug simply
+ * fails its probe. Fails safe: nothing confident found -> one toast, settle,
+ * never nag again until the chat or the wikis field changes. */
+async function verifyOrDiscoverWiki() {
+    const myEpoch = chatEpoch;
+    const s = settings();
+    if (!s.enabled || !s.autoDiscoverWiki) return;
+    const ctx = getContext();
+    const probeName = String(ctx?.name2 || ctx?.characters?.[ctx?.characterId]?.name || "").trim();
+    if (!probeName) return;
+    const ok = chatWikiOk();
+    if (ok && ok.wikis === String(s.wikis || "") && ok.name === probeName) return;   // settled for this chat
+    const active = String(s.wikis || "").split(",").map(x => x.trim()).filter(Boolean);
+    for (const w of active) {
+        const hits = await fetchSearchTitles(w, probeName);
+        if (myEpoch !== chatEpoch) return;
+        if ((hits || []).some(t => titleMatchesName(t, probeName))) {
+            setChatPin("canon_grounding_wiki_ok", { wikis: String(s.wikis || ""), name: probeName, ts: Date.now() });
+            debug(`\ud83d\udd2d wiki verified for ${probeName}: ${w}`);
+            return;
+        }
+    }
+    const desc = String(ctx?.characters?.[ctx?.characterId]?.description || "").slice(0, 600);
+    const opening = (ctx?.chat || []).slice(0, 2).map(m => String(m?.mes || "").slice(0, 300)).join("\n");
+    const out = await llmCall(s.promptDiscover || DEFAULT_PROMPT_DISCOVER,
+        `Protagonist: ${probeName}\n${desc}\n${opening}`, { maxTokens: 120 });
+    if (myEpoch !== chatEpoch) return;
+    let parsed = null;
+    try { parsed = JSON.parse(String(out || "").replace(/```json|```/gi, "").trim()); } catch (e) { /* fails safe */ }
+    const candidates = discoverCandidates(parsed, parsed?.franchise, probeName);
+    for (const slug of candidates) {
+        const [fHits, gHits] = await Promise.all([
+            fetchSearchTitles(slug, probeName),
+            fetchSearchTitles(`${slug}.wiki.gg`, probeName),
+        ]);
+        if (myEpoch !== chatEpoch) return;
+        const fOk = (fHits || []).some(t => titleMatchesName(t, probeName));
+        const gOk = (gHits || []).some(t => titleMatchesName(t, probeName));
+        if (!fOk && !gOk) continue;
+        let stored = fOk ? slug : `${slug}.wiki.gg`;
+        if (fOk && gOk) {
+            const [fRc, gRc] = await Promise.all([fetchLastEdit(slug), fetchLastEdit(`${slug}.wiki.gg`)]);
+            if (myEpoch !== chatEpoch) return;
+            stored = pickLiveHost(fRc, gRc) === "gg" ? `${slug}.wiki.gg` : slug;
+        }
+        s.wikis = stored;
+        s.savedWikis = Array.isArray(s.savedWikis) ? s.savedWikis : [];
+        if (!s.savedWikis.includes(stored)) s.savedWikis.push(stored);
+        try { saveSettingsDebounced(); } catch (e) { /* settings save is best-effort here */ }
+        setChatPin("canon_grounding_wiki_ok", { wikis: stored, name: probeName, ts: Date.now() });
+        try { if (refreshWikiUi) refreshWikiUi(); } catch (e) { /* UI optional */ }
+        cgToast("success", `\ud83d\udd2d Wiki found for ${probeName}: ${stored.includes(".") ? stored : stored + ".fandom.com"}`);
+        debug(`\ud83d\udd2d discovery \u2192 ${stored} (candidate "${slug}")`);
+        return;
+    }
+    setChatPin("canon_grounding_wiki_ok", { wikis: String(s.wikis || ""), name: probeName, failed: true, ts: Date.now() });
+    cgToast("warning", `\ud83d\udd2d No wiki found for "${probeName}" — set it in Canon Grounding \u2699 (the field is the manual override).`);
+}
+globalThis.CanonGrounding_verifyWiki = verifyOrDiscoverWiki;
 
 async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } = {}) {
     const c = getContext();
@@ -3527,8 +3660,10 @@ async function addSettingsUI() {
                 <div class="cg-group-body">
                 <small><b>Wiki</b> — where facts come from:</small>
                 <label>Wiki subdomains (comma-separated) — active for this story</label>
-                <small class="cg-hint">The part before .fandom.com (e.g. the-eminence-in-shadow) — or a FULL host for non-Fandom MediaWiki sites like wiki.gg (e.g. terraria.wiki.gg). Add several, comma-separated, for a crossover.</small>
+                <small class="cg-hint">Found automatically for new chats when \ud83d\udd2d discovery (below) is on — this field is the manual OVERRIDE. The part before .fandom.com (e.g. the-eminence-in-shadow) — or a FULL host for non-Fandom MediaWiki sites like wiki.gg (e.g. terraria.wiki.gg). Add several, comma-separated, for a crossover.</small>
                 <input id="cg_wikis" class="text_pole" type="text" placeholder="the-eminence-in-shadow">
+                <label class="checkbox_label" for="cg_autodiscover"><input id="cg_autodiscover" type="checkbox"><span>\ud83d\udd2d Find the wiki automatically</span></label>
+                <small class="cg-hint">On a new chat, the active wiki is checked against your protagonist's name; if it doesn't know them, candidates are proposed (the LLM suggests slugs — including romaji titles — and the REAL wiki API verifies every one, preferring a live wiki.gg over a frozen Fandom migration fork) and this field is filled for you.</small>
                 <div style="margin-top:4px;">
                     <input id="cg_save_wiki" class="menu_button" type="button" value="+ Save active to library">
                 </div>
@@ -3766,6 +3901,9 @@ async function addSettingsUI() {
                 <textarea id="cg_prompt_auditor" class="text_pole" rows="5"></textarea>
                 <div id="cg_prompt_auditor_reset" class="menu_button" title="Restore default">↺ default</div>
                 <label>📖 Story referee (has the story ENTERED this event?)</label>
+                <label for="cg_prompt_discover">\ud83d\udd2d Wiki discovery — protagonist \u2192 candidate wiki slugs</label>
+                <textarea id="cg_prompt_discover" class="text_pole textarea_compact" rows="4"></textarea>
+                <input id="cg_prompt_discover_reset" class="menu_button" type="button" value="Reset \ud83d\udd2d">
                 <textarea id="cg_prompt_arcjudge" class="text_pole" rows="5"></textarea>
                 <div id="cg_prompt_arcjudge_reset" class="menu_button" title="Restore default">↺ default</div>
                 <label>🗣 Ask Canon router (maps your words to an action)</label>
@@ -3839,6 +3977,7 @@ async function addSettingsUI() {
         ["#cg_prompt_auditor", "promptAuditor", DEFAULT_PROMPT_AUDITOR],
         ["#cg_prompt_ask",     "promptAsk",     DEFAULT_PROMPT_ASK],
         ["#cg_prompt_arcjudge", "promptArcJudge", DEFAULT_PROMPT_ARCJUDGE],
+        ["#cg_prompt_discover", "promptDiscover", DEFAULT_PROMPT_DISCOVER],
     ];
     for (const [sel, key, def] of PROMPTS) {
         $(sel).val((s[key] || "").trim() || def).on("input", function () {
@@ -4065,6 +4204,11 @@ async function addSettingsUI() {
         renderSavedWikis();
     });
 
+    $("#cg_autodiscover").prop("checked", s.autoDiscoverWiki !== false).on("change", function () {
+        s.autoDiscoverWiki = $(this).prop("checked"); saveSettingsDebounced();
+    });
+    refreshWikiUi = () => { try { $("#cg_wikis").val(settings().wikis); renderSavedWikis(); } catch (e) { /* UI optional */ } };
+
     $("#cg_save_wiki").on("click", function () {
         const active = String($("#cg_wikis").val()).split(",").map(x => x.trim()).filter(Boolean);
         s.savedWikis = s.savedWikis || [];
@@ -4257,6 +4401,9 @@ jQuery(async () => {
             try { if (renderArcStatus) renderArcStatus(); } catch (e) { /* UI optional */ }
             try { if (renderChatScoped) renderChatScoped(); } catch (e) { /* UI optional */ }
             try { if (renderCacheHook) renderCacheHook(); } catch (e) { /* UI optional */ }
+            // \ud83d\udd2d fire-and-forget wiki verification/discovery for the newly opened
+            // chat — epoch-guarded inside, so a fast chat switch discards it cleanly.
+            setTimeout(() => { verifyOrDiscoverWiki().catch(() => {}); }, 0);
         });
     }
     console.log(`[CanonGrounding] v${CG_VERSION} loaded.`);
