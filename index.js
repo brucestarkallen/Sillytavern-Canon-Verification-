@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.38.0";
+const CG_VERSION = "0.39.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -100,33 +100,25 @@ const FALLBACK_TAG = "canon_grounding_fallback";
 // means these defaults apply, so prompt improvements in updates still reach
 // everyone who hasn't customized.
 const DEFAULT_PROMPT_HEADER =
-            "[CANON REFERENCE — retrieved from the official wiki for this series.\n" +
-        "HARD FACTS (appearance, relations, history, events) are authoritative: they override " +
-        "your own memory and anything else in this prompt that disagrees — use them, do " +
-        "not second-guess, 'correct', or invent alternatives.\n" +
+            "[CANON NOTES — this series' wiki, refreshing your memory.\n" +
+        "You already know this world; the notes below are the sharp version of memories " +
+        "gone fuzzy. Where a detail here differs from what you recall — a face, a " +
+        "relationship, a past event — trust the note: it IS the accurate memory. Don't " +
+        "argue with it, 'correct' it, or invent an alternative; just know it.\n" +
         "KNOWLEDGE SCOPE: these facts are for YOUR accuracy as the narrator — they are " +
         "NOT public knowledge inside the story. A character may only know, reveal, or " +
         "react to what THEY could know in-story right now. Hidden identities, secret " +
         "affiliations, and unrevealed connections stay hidden: guard them actively, and " +
         "never let a character's dialogue, thoughts, or behavior betray information " +
         "sourced from this reference.\n" +
-        "BEHAVIOR is different: personality, demeanor, and voice material here is " +
-        "DESCRIPTIVE — how this person has tended to act — never a rule for what they " +
-        "do next. They are a living person first: they react to what JUST happened, " +
-        "and company, mood, privacy, and stakes modulate them — a commander stoic on " +
-        "duty can be warm, petty, or openly devoted in private. Under pressure " +
-        "(danger, pain, temptation, grief, exhaustion) the person shows through the " +
-        "trait: fear leaks, tactics shift, voices crack; they stall, bargain, deflect, " +
-        "rage, adapt — sometimes break, sometimes hold at visible, mounting cost. A " +
-        "stubborn character threatened with torture is not a wall replaying one " +
-        "refusal: the defiance strains and changes shape each round even if it never " +
-        "gives. Traits decide HOW someone responds, never WHETHER they respond " +
-        "humanly — an identical reaction repeated while circumstances escalate is a " +
-        "portrayal error. When a 'With <name>' line exists and that person is in the " +
-        "scene, THAT dynamic overrides the baseline. Voice lines are STYLE SAMPLES — " +
-        "match their cadence, vocabulary, and attitude in fresh dialogue; never repeat " +
-        "the sample lines themselves unless the moment canonically calls for it. Never " +
-        "flatten a character to their trait words; show the traits through fresh, " +
+        "BEHAVIOR here is memory of how they've TENDED to be — never a script. They " +
+        "are a person first: they react to what just happened, and mood, company, " +
+        "privacy, and stakes bend them. Pressure shows THROUGH a trait, not instead " +
+        "of it — defiance strains, fear leaks, tactics shift — and an identical " +
+        "reaction repeated while circumstances escalate is a portrayal error. When a " +
+        "'With <name>' line matches someone in the scene, that dynamic overrides the " +
+        "baseline. Voice lines are style samples: match their cadence and attitude " +
+        "in fresh dialogue, never recite the samples. Show traits through fresh, " +
         "situation-specific behavior, contradictions included.]\n";
 const DEFAULT_PROMPT_ASK =
     "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
@@ -1882,7 +1874,7 @@ function setChatArc(note) {
  */
 function sceneMessages(ctx, windowSize) {
     const chat = ctx.chat || [];
-    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[CANON REFERENCE", "[Canonical reference", "[Plot essential"];
+    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[CANON NOTES", "[CANON REFERENCE", "[Canonical reference", "[Plot essential"];
     const visible = chat.filter(m =>
         !m.is_system && !markers.some(mk => (m.mes || "").includes(mk))
     );
@@ -3115,7 +3107,8 @@ async function verifyOrDiscoverWiki() {
     const desc = String(ctx?.characters?.[ctx?.characterId]?.description || "").slice(0, 600);
     const opening = (ctx?.chat || []).slice(0, 2).map(m => String(m?.mes || "").slice(0, 300)).join("\n");
     const out = await llmCall(s.promptDiscover || DEFAULT_PROMPT_DISCOVER,
-        `Protagonist: ${probeName}\n${desc}\n${opening}`, { maxTokens: 120 });
+        `Protagonist: ${probeName}\n${desc}\n${opening}`,
+        { maxTokens: 120, budgetMs: Math.min(Number(s.parserBudgetMs) || 30000, 15000) });
     if (myEpoch !== chatEpoch) return;
     let parsed = null;
     try { parsed = JSON.parse(String(out || "").replace(/```json|```/gi, "").trim()); } catch (e) { /* fails safe */ }
@@ -3416,7 +3409,16 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         const okNow = chatWikiOk();
         const disc = verifyOrDiscoverWiki().catch(() => {});
         if (!okNow && settings().enabled && settings().autoDiscoverWiki) {
-            await Promise.race([disc, new Promise(r => setTimeout(r, Number(settings().firstMeetWaitMs) || 12000))]);
+            const opening = (chat || []).length <= 2;
+            if (opening) {
+                // Turn ONE of a NEW chat: there is no universe yet, so there is no
+                // story to stall — WAIT for discovery and ground THIS very turn.
+                // (This is why manual felt instant and automatic felt late.)
+                await disc;
+            } else {
+                // Unbound mid-chat (rare): first-meeting rule — brief bounded hold.
+                await Promise.race([disc, new Promise(r => setTimeout(r, Number(settings().firstMeetWaitMs) || 12000))]);
+            }
         }
     }
     if (!interceptAnnounced) {
