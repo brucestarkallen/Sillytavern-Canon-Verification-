@@ -690,6 +690,22 @@ T("no candidate machinery ran at all", w27.filter(u => u.includes("recentchanges
 globalThis.__ctx.name2 = "Zar Blade";
 S25.wikis = "testwiki";
 
+// [28] v0.37.0 — ANY turn self-heals the wiki: an ordinary intercept (no names,
+// no parser) is enough to verify and pin an unverified chat, at zero LLM cost.
+console.log("[28] the interceptor itself triggers wiki verification");
+S25.wikis = "foundsaga.wiki.gg";
+globalThis.__ctx.name2 = "Zar Blade";
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+const q28 = parseQueue.length;
+globalThis.__ctx.chat.push(msg("The wind blows through empty halls.", true));
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(80);
+const ok28 = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+T("a plain turn verified and pinned the chat", ok28 && ok28.name === "Zar Blade" && !ok28.failed);
+T("verification cost zero LLM calls", parseQueue.length === q28);
+globalThis.__ctx.name2 = "Zar Blade";
+S25.wikis = "testwiki";
+
 // [26] v0.36.0 — static witnesses for the discovery wiring.
 console.log("[26] v0.36.0 static witnesses — wiki discovery wiring");
 T("verify the ACTIVE config before spending any discovery LLM",
@@ -706,6 +722,12 @@ T("a settled pin short-circuits before any cost",
     /ok\.wikis === String\(s\.wikis \|\| ""\) && ok\.name === probeName\) return;/.test(src));
 T("failure is remembered, not retried forever",
     /failed: true, ts: Date\.now\(\)/.test(src));
+T("discovery self-heals from EVERY entry point: chat change, boot, and the interceptor",
+    (src.match(/verifyOrDiscoverWiki\(\)\.catch\(\(\) => \{\}\)/g) || []).length === 3);
+T("the Scan button AWAITS discovery before scanning",
+    /await verifyOrDiscoverWiki\(\);/.test(src));
+T("an EMPTY preview names the wiki state instead of leaving the user guessing",
+    /wikiStateHint\(\)/.test(src) && /NOT verified for this chat yet/.test(src));
 T("the discovery prompt is user-visible like every other (🧾 wired)",
     /\["#cg_prompt_discover", "promptDiscover", DEFAULT_PROMPT_DISCOVER\]/.test(src) && /cg_prompt_discover_reset/.test(src));
 

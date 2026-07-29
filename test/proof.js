@@ -1128,6 +1128,21 @@ const reachedNote = api.relevantCanonNote([], [], { title: "Feast Arc", wiki: "w
 T("legacy/manual notes keep the original guard byte-for-byte",
   /Only events up to this point have occurred/.test(reachedNote) && !/just beginning/.test(reachedNote));
 
+// ---------------------------------------------------------------- v0.37.0
+console.log("[v0.37.0 unicode names — macrons survive extraction and matching]");
+eq("a macron name is ONE token, start to finish",
+   api.extractCandidateNames("Then Tōshirō Hitsugaya arrived."), ["Tōshirō Hitsugaya"]);
+T("LO's exact report: the full name survives, nothing truncates at ō",
+   api.extractCandidateNames("Mc Ayanokōji at volume x currently on the library.").includes("Mc Ayanokōji"));
+T("a lone mid-sentence macron name is kept",
+   api.extractCandidateNames("She saw Ayanokōji smile.").includes("Ayanokōji"));
+T("no ASCII fragment ever escapes",
+   !api.extractCandidateNames("She saw Ayanokōji smile.").some(n => n.includes("Ayanok") && n !== "Ayanokōji" && !n.includes("ō")));
+eq("normName folds diacritics", api.normName("Ayanokōji"), "ayanokoji");
+eq("folding leaves plain names alone", api.normName("Rukia"), "rukia");
+T("typed-ASCII matches the wiki's macron title",
+   api.titleCoversQuery("ayanokoji", "Kiyotaka Ayanokōji"));
+
 // ---------------------------------------------------------------- v0.36.0
 console.log("[v0.36.0 wiki discovery — pure rules]");
 eq("romaji slugging", api.slugifyTitle("Kimetsu no Yaiba"), "kimetsu-no-yaiba");
