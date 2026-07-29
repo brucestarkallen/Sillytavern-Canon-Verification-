@@ -56,6 +56,50 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.35.0 (📖 the story referee: entering ≠ mentioning, and the position never regresses)
+
+Proven by `test/proof.js` (370) + `test/sim.mjs` (114) — live referee scenarios,
+transition-rule witnesses, and three negative-tested guards (high-water skip,
+referee-must-be-consulted, manual-wipe decree — each bug reintroduced in a
+scratch tree and confirmed to fail its gate red). Root-cause release
+for autonomous story tracking; auto-advance is now trustworthy, not just present.
+
+1. **Occurring vs mentioned — judged, not guessed.** Auto-advance used to fire
+   whenever a canon event ENTERED THE CAST. But the parser lists remembered,
+   discussed, and flashback entities *by design* — so "she missed the Bushin
+   Festival" moved the story position exactly like "the Bushin Festival
+   begins", and a Summaryception flashback could yank the pin backwards and
+   inject a spoiler guard that contradicted the chat's own established history.
+   String heuristics cannot tell the two apart; a model can (the Cast Auditor
+   argument). A dedicated 📖 story-referee call now rules each NEW candidate:
+   only the story actually entering the event advances the position. Fails
+   safe — no verdict, no movement. Its prompt joins 🧾 like every other one.
+2. **The position is a HIGH-WATER MARK.** Superseded positions are remembered
+   per chat (`canon_grounding_arc_reached`; title, query, and triggering
+   entity name all count), and a reached event re-entering the scene is
+   skipped *before* any referee call is spent — the story never slides
+   backward on a memory, and the same event can never re-pin itself in a loop
+   (the old `cur.title !== entry.name` compare re-ground "Bushin Festival"
+   every parse because the pinned page was "Bushin Festival Arc"). Manual
+   pins and Ask Canon are decrees: they wipe the tracker's memory, so a
+   deliberate rewind can be replayed forward through the same arcs again.
+   Clearing the position clears the memory too.
+3. **"Begun" framing — the arc summary stops spoiling its own arc.** The old
+   injection asserted the pinned summary as "events up to this point have
+   occurred" — but an auto-advanced arc has just STARTED, so the model was
+   told the arc's own climax already happened. Auto pins now inject in a
+   `(just beginning)` frame: the summary is the narrator's map of canon that
+   has NOT yet occurred, quarantined from every character's knowledge, free
+   to unfold naturally. Manual/legacy pins keep the original "everything
+   above has occurred" semantics byte-for-byte.
+4. **The AI's own narration moves the story too.** World-state from the cast
+   (current setting + story position) is now ONE function —
+   `applyCastWorldState` — called from every parse path: the pre-generation
+   interceptor, the post-generation scan of the AI's reply, and the manual
+   "Scan current scene now" button. The narrator writing "the Winter Gala
+   begins" advances the position on that very reply, instead of waiting for
+   you to name the event yourself. One definition, three call sites, witnessed.
+
 ## Changelog — v0.34.0 (an extracted fact must actually be a fact)
 
 Reported: every Bleach character came out `[height: 2.3]`. Three defects
