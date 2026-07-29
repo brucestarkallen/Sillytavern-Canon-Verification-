@@ -2138,17 +2138,26 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const order = ["physical", "relationship", "personality", "voice", "biography", "abilities", "trivia"];
 
     const present = [];  // { entry, matchedName }
-    const usedKeysGlobal = new Set();
+    const usedKeysGlobal = new Set();   // CACHE-KEY space
+    const usedNamesGlobal = new Set();  // ENTITY-NAME space — kept strictly separate:
+    // the same person cached under two keys ("ken" + "kenpachi zaraki (bleach)")
+    // must admit once, and two different people must never shadow each other.
     /**
      * The ONE door into `present`. Every tier funnels through it, so the blocklist
      * is enforced once, at admission — not at emit time, where a forbidden entity
      * had already been seen by the pair-dynamics builder ("With <blocked>: …"),
      * by the Context de-dup set, and by the reasons panel. Blocked means absent.
+     * Name-space dedupe also kills the phantom-PAIR bug: a duplicate entry under
+     * a second key is a different OBJECT, so `other === entry` didn't skip it and
+     * a character could get a "With <themselves>: …" dynamics line.
      */
     const admit = (entry, matchedName, key, flags = {}) => {
-        if (!entry || usedKeysGlobal.has(key)) return false;
+        if (!entry) return false;
+        const nk = (entry.name || "").toLowerCase();
+        if (usedKeysGlobal.has(key) || (nk && usedNamesGlobal.has(nk))) return false;
         if (isBlocked(entry, matchedName)) return false;
         usedKeysGlobal.add(key);
+        if (nk) usedNamesGlobal.add(nk);
         present.push({ entry, matchedName, ...flags });
         return true;
     };
@@ -2212,7 +2221,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         for (const key of Object.keys(store)) {
             const entry = store[key];
             if (!entry.found || !entry.sections || usedKeysGlobal.has(key)) continue;
-            if (usedKeysGlobal.has((entry.name || "").toLowerCase())) continue;
+            // (name-space duplicates are rejected inside admit() — see usedNamesGlobal)
             const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
             let hit = "";
             for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.find(n => mentioned(n, lowerMsgs[i])) || "";

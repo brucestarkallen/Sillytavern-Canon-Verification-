@@ -1062,6 +1062,32 @@ T("the 'notably:' prose tail is never mistaken for a measurement",
 T("markup poison still detected", api.entryPoisoned({ sections: { look: "Kid Foo.png|As a child." } }));
 
 // ---------------------------------------------------------------- v0.34.1 fixes
+console.log("[v0.34.1 admit() name-space dedupe — the phantom self-pair]");
+sandbox.__settings = {
+    cache: {
+        // The SAME person grounded under two different keys (alias query + suffixed
+        // canonical query). Admitting both used to put two OBJECTS for one person
+        // into `present` — `other === entry` didn't skip the duplicate, and a
+        // character could receive a "With <themselves>: …" dynamics line.
+        "ken": { name: "Kenpachi Zaraki", found: true, wiki: "w", aliases: ["Ken"],
+                 sections: { physical: "hair: black" }, rel: {},
+                 dossier: { identity: "A battle-hungry captain.", brief: "", facts: [], secrets: [],
+                            voice: [], abilities: [], related: [],
+                            dynamics: { "Kenpachi Zaraki": "his own worst rival" } } },
+        "kenpachi zaraki (bleach)": { name: "Kenpachi Zaraki", found: true, wiki: "w", aliases: [],
+                 sections: { physical: "hair: black" }, rel: {} },
+    },
+    physical: true, personality: false, relationship: false, biography: false, abilities: false,
+    trivia: false, voice: false, relationDynamics: true, smartExpansion: false, proseBriefs: false,
+    maxCharacters: 8, maxCharsPerChar: 1100, maxTotalChars: 6000,
+    arcInject: false, arcNote: null, llmParser: true, contextWindow: 10,
+};
+const phantom = api.relevantCanonNote(["kenpachi zaraki laughed"], ["Kenpachi Zaraki"]);
+T("same person under two cache keys injects exactly one block",
+  (phantom.match(/Kenpachi Zaraki:/g) || []).length === 1);
+T("no phantom 'With <self>' dynamics line from a duplicate entry",
+  !/With Kenpachi Zaraki/.test(phantom));
+
 console.log("[v0.34.1 normalizeDossier — legacy shapes degrade, never throw]");
 const legacy = api.normalizeDossier({ identity: "Old-shape dossier." });  // pre-facts/secrets/voice era
 T("legacy dossier gains empty arrays",
