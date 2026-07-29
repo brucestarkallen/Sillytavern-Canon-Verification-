@@ -152,7 +152,13 @@ extension_settings.canon_grounding = {
     personalityKeywords: "personality", abilitiesKeywords: "power", aliasKeywords: "alias",
     physical: true, personality: false, relationship: false, biography: false, abilities: false,
     contextWindow: 10, maxCharacters: 8, maxCharsPerChar: 400, maxTotalChars: 3000,
-    debug: false, llmParser: true, llmProfileId: "p1", parserEveryTurn: false, llmDossier: false, castAuditor: false, lowercaseNames: false, maxBlockMs: 30000, firstMeetWaitMs: 30000,
+    // 8000, not 30000: two scenarios deliberately WAIT OUT the block to prove the
+    // starvation path, and at 30000 each burned a real 30s of wall clock — 62s of
+    // gate for two assertions. 8000 clears the slowest real scenario (the cache
+    // self-heal chain, which fails at 3000) with headroom, proves the identical
+    // 195, and runs stably. A gate nobody wants to sit through is a gate that
+    // gets skipped. Product defaults are untouched: 2000 block, 12000 first-meet.
+    debug: false, llmParser: true, llmProfileId: "p1", parserEveryTurn: false, llmDossier: false, castAuditor: false, lowercaseNames: false, maxBlockMs: 8000, firstMeetWaitMs: 8000,
     useLedger: false, groundFromReplies: true, cache: {}, migrated_v2: true,
 };
 await import(pathToFileURL(path.join(extDir, "index.js")).href);
@@ -527,8 +533,8 @@ T("a real lowercase name STILL extends the wait (no detection regression)",
 parseQueue[q21b]?.resolve('["Zephira Voss"]');
 await run21b;
 S.lowercaseNames = false;
-S.maxBlockMs = 30000;
-S.firstMeetWaitMs = 30000;
+S.maxBlockMs = 8000;
+S.firstMeetWaitMs = 8000;
 
 // [22] v0.34.1 — static witnesses for the structural fixes.
 console.log("[22] static witnesses");

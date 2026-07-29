@@ -120,6 +120,12 @@ Fixed alongside, from the same report:
 - **Toast names its proof:** `🔭 Universe found via "Seireitei": bleach.fandom.com`.
 - **Candidate probing is bounded** (24 fetches) so a total miss cannot grind a turn.
 
+**Gate latency:** `test/sim.mjs` set `maxBlockMs`/`firstMeetWaitMs` to 30000, and
+two scenarios deliberately wait the block out to prove the starvation path — 62
+seconds of wall clock for two assertions. Lowered to 8000 (the slowest real
+scenario, the cache self-heal chain, fails at 3000): identical 195 assertions,
+stable across repeated runs, gate down to ~34s. Product defaults untouched.
+
 **Harness defect found on the way:** `test/proof.js` had two overlapping slices,
 silently evaluating ~35KB of `index.js` twice. Function redeclaration is legal,
 so it never surfaced — the first `const` added there turned it into a hard
