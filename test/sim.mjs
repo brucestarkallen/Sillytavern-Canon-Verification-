@@ -666,12 +666,38 @@ await globalThis.CanonGrounding_verifyWiki();
 T("a failed chat never nags again", parseQueue.length === q25e && fetchLog.length === f25e);
 S25.wikis = "testwiki";
 
+// [27] v0.36.1 — an ORIGINAL protagonist must not break discovery: the LLM's
+// canon names verify the (correct) ACTIVE config, which settles silently —
+// no candidate probing, no recentchanges, and absolutely no "not found".
+console.log("[27] OC protagonist: canon names settle a correct manual config");
+S25.wikis = "foundsaga.wiki.gg";
+globalThis.__ctx.name2 = "Jovan Custom";
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+const f27 = fetchLog.length, q27 = parseQueue.length;
+const p27 = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+T("card-name probe missed, so the proposer was consulted", parseQueue.length === q27 + 1);
+parseQueue[q27].resolve('{"franchise":"Found Saga","slugs":["foundsaga"],"names":["Zar Blade"]}');
+await p27;
+const w27 = fetchLog.slice(f27);
+T("the correct manual config was NOT touched", S25.wikis === "foundsaga.wiki.gg");
+const ok27 = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+T("chat settled as verified, not failed", ok27 && ok27.name === "Jovan Custom" && !ok27.failed);
+T("exactly two probes: the OC name (miss), then the canon name (hit)",
+    w27.filter(u => u.includes("srsearch")).length === 2);
+T("no candidate machinery ran at all", w27.filter(u => u.includes("recentchanges")).length === 0
+    && !w27.some(u => u.includes("foundsaga.fandom.com")));
+globalThis.__ctx.name2 = "Zar Blade";
+S25.wikis = "testwiki";
+
 // [26] v0.36.0 — static witnesses for the discovery wiring.
 console.log("[26] v0.36.0 static witnesses — wiki discovery wiring");
 T("verify the ACTIVE config before spending any discovery LLM",
     /for \(const w of active\) \{\s*\n\s*const hits = await fetchSearchTitles\(w, probeName\);/.test(src));
-T("structural verification: a probe must HIT the protagonist, fetch-ok is not enough",
-    /const fOk = \(fHits \|\| \[\]\)\.some\(t => titleMatchesName\(t, probeName\)\)/.test(src));
+T("structural verification: a probe must HIT a canon name, fetch-ok is not enough",
+    /if \(\(hits \|\| \[\]\)\.some\(t => titleMatchesName\(t, n\)\)\) return n;/.test(src));
+T("the ACTIVE config is re-verified with CANON names before any candidate",
+    /for \(const w of active\) \{\s*\n\s*const knownAs = await hostKnowsAny\(w, probes\);/.test(src));
 T("both-hosts hit -> the stale-fork rule decides",
     /pickLiveHost\(fRc, gRc\) === "gg" \? `\$\{slug\}\.wiki\.gg` : slug/.test(src));
 T("discovery fires on CHAT_CHANGED, fire-and-forget",

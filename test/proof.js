@@ -65,7 +65,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
-         arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates,
+         arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -1147,6 +1147,11 @@ eq("LLM proposes; dedup, fallbacks, and length filter dispose",
    ["kimetsu-no-yaiba", "demonslayer", "demon-slayer", "tanjiro-kamado"]);
 eq("no JSON at all still yields deterministic fallbacks",
    api.discoverCandidates(null, undefined, "Jovan Oda"), ["jovan-oda"]);
+eq("canon names lead, the card name trails, dupes collapse",
+   api.probeNamesFrom({ names: ["Zar Blade", "zar blade", "Ichi Go"] }, "Zar Blade"), ["Zar Blade", "Ichi Go"]);
+eq("an ORIGINAL protagonist alone is still a valid probe of last resort",
+   api.probeNamesFrom(null, "Jovan Custom"), ["Jovan Custom"]);
+T("junk names filtered", api.probeNamesFrom({ names: ["", null, "   "] }, "X").length === 1);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
