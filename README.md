@@ -56,6 +56,34 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.37.0 (ō is a letter, and discovery triggers everywhere)
+
+Proven by `test/proof.js` (394) + `test/sim.mjs` (144); three negative-tested
+guards. Root-caused from a live report: "Ayanokōji at volume x … Preview is
+EMPTY". Two independent defects, both fixed at the source.
+
+1. **Unicode names — the extractor no longer truncates at a macron.** The
+   capitalized-phrase regex was ASCII (`[A-Z][a-z]…`), so "Ayanokōji" broke
+   into fragments at the ō and never reached the wiki whole; every macron name
+   (Tōshirō, Kūgo, Ayanokōji) failed the same way. The regex now uses Unicode
+   letter classes with explicit letter lookarounds (\b itself is ASCII-blind
+   after a trailing ō). Matching folds diacritics end-to-end via `normName`
+   and `titleCoversQuery`, so a typed-ASCII "Ayanokoji" covers the wiki's
+   "Kiyotaka Ayanokōji" — you never have to type macrons to hit canon.
+2. **Discovery had exactly ONE trigger — a chat SWITCH.** The chat already
+   open when the extension loads never fires CHAT_CHANGED, so 🔭 never ran for
+   it: grounding searched the previous fandom's wiki, missed everything, and
+   negative-cached the misses. Discovery now self-heals from every entry
+   point: chat change, extension load (for the already-open chat), and the
+   interceptor itself on ANY turn — the settled per-chat pin makes the extra
+   calls free. "Scan current scene now" AWAITS a discovery pass first, because
+   that button means "make canon work NOW" and a wrong wiki is the first thing
+   to fix.
+3. **An EMPTY preview now says WHY.** When nothing is cached, the preview
+   names the wiki state — not yet verified for this chat (and what triggers
+   it), or discovery failed (and that the wikis field is the manual override) —
+   instead of leaving an empty report to be guessed at.
+
 ## Changelog — v0.36.1 (🔭 an original protagonist must never break discovery)
 
 Proven by `test/proof.js` (387) + `test/sim.mjs` (139); both new guards
