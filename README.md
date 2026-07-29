@@ -56,6 +56,28 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.36.1 (🔭 an original protagonist must never break discovery)
+
+Proven by `test/proof.js` (387) + `test/sim.mjs` (139); both new guards
+negative-tested. Root-cause follow-up to v0.36.0, caught by the obvious
+question: "my MC is an OC — is that still ok?"
+
+1. **Root defect:** v0.36.0 verified every wiki by searching for the
+   PROTAGONIST's name. An original character is, by definition, in no wiki —
+   so for OC-driven stories (the primary use case), verification failed and
+   discovery then rejected even a CORRECT manual config, ending in a
+   misleading "no wiki found".
+2. **Root fix — verify with canon, not with the OC.** The discovery call now
+   also returns the franchise's most famous CANON character names, and every
+   wiki is verified by whether it knows ANY of them ("does this wiki know
+   Ichigo Kurosaki", not "does it know Jovan"). The card name remains a probe
+   of last resort, so ordinary canon-character cards keep their zero-LLM
+   fast path.
+3. **A correct manual config settles silently.** Before any candidate is
+   probed, the ACTIVE config is re-verified with those canon names — an OC
+   card on a right wiki now pins as verified with exactly two probes and no
+   candidate machinery, instead of being "not found".
+
 ## Changelog — v0.36.0 (🔭 the wiki finds itself: the field becomes an override)
 
 Proven by `test/proof.js` (384) + `test/sim.mjs` (133) — a full live discovery
