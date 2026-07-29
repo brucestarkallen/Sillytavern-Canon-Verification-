@@ -503,5 +503,26 @@ S.lowercaseNames = false;
 S.maxBlockMs = 30000;
 S.firstMeetWaitMs = 30000;
 
+// [22] v0.34.1 — static witnesses for the structural fixes.
+console.log("[22] static witnesses");
+T("default caps ARE the current defaults (stale 400/3000 literals gone)",
+    /maxCharsPerChar: 1100/.test(src) && /maxTotalChars: 6000/.test(src));
+T("factory reset does not re-stamp migrations (stale-cap lock gone)",
+    /Object\.assign\(s, structuredClone\(defaultSettings\), keep\)/.test(src));
+T("related-expansion decoupled from the pair gate", /pairPool\.length > 0/.test(src));
+T("pair dynamics still require an actual pair", /uniq\.size > 1\) \{\s*\n\s*await resolveRelations/.test(src));
+T("fallback splices are tagged and actively removed",
+    /canon_grounding_fallback/.test(src) && /function removeFallbackSplices/.test(src) && /\[FALLBACK_TAG\]: true/.test(src));
+T("every toast goes through the explicit escaping helper (no raw toastr calls)",
+    !/toastr\?\.\w+\?\./.test(src) && /toastr\?\.\[kind\]\?\.\(escapeHtml\(msg\)/.test(src));
+T("dossier reads normalized against legacy shapes",
+    /function normalizeDossier/.test(src) && /const d = normalizeDossier\(entry\.dossier\)/.test(src));
+T("Ask Canon is contained", /const runAsk = async \(\) => \{[\s\S]{0,220}try \{/.test(src));
+T("post-generation scan is contained", /async function onMessageReceived\(\) \{\s*try/.test(src));
+T("decay handles chat shrinkage explicitly",
+    /const delta = visibleLen - lastCastLen;\s*\n\s*if \(delta >= 0 && delta <= s\.contextWindow\)/.test(src));
+T("first-meeting wait applies the common-word lexicon in both branches",
+    (src.match(/COMMON_LOWERCASE\.has\(t\)/g) || []).length === 2);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
