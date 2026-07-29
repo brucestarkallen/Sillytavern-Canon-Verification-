@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.37.0";
+const CG_VERSION = "0.38.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -1424,13 +1424,13 @@ async function ensureGrounded(name, trusted = false) {
             // instead of reusing the untrusted miss; otherwise honor the recent miss —
             // but only if it was searched against every wiki now configured. A miss
             // recorded before the user added a wiki says nothing about that wiki.
-            if (!missCoversCurrentWikis(existing, s.wikis)) {
+            if (!missCoversCurrentWikis(existing, activeWikis())) {
                 debug(`↻ wiki list grew since "${name}" missed — re-searching`);
             } else if (!(existing.reason === "not-character" && trusted)) return existing;
         }
     }
 
-    const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
+    const wikis = activeWikis().split(",").map(w => w.trim()).filter(Boolean);
     let hadError = false;          // network / HTTP / parse failure (transient — retry later)
     let missReason = "no-page";    // upgraded to "not-character" / "no-facts" as we learn more
 
@@ -1502,9 +1502,9 @@ async function ensureGrounded(name, trusted = false) {
     // prevents re-fetching the same dead end every turn. Transient network errors are NOT
     // locked in (hadError skips this), and the 24h TTL lets it retry later.
     if (!hadError) {
-        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, searched: normWikiSet(s.wikis), ts: Date.now() };
+        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, searched: normWikiSet(activeWikis()), ts: Date.now() };
         saveCache();
-        debug(`✕ no usable wiki page for "${name}" on: ${s.wikis}`);
+        debug(`✕ no usable wiki page for "${name}" on: ${activeWikis()}`);
     }
     return c[key] || { name, sections: {}, found: false };
 }
@@ -1675,7 +1675,7 @@ async function groundArc(query, opts = {}) {
     const myEpoch = chatEpoch;   // arc pinning is FOR the chat that asked — a switch during the fetches below must drop it, not re-target it
     const mode = opts.mode === "begun" ? "begun" : "reached";
     const s = settings();
-    const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
+    const wikis = activeWikis().split(",").map(w => w.trim()).filter(Boolean);
     const structural = /\b(arc|saga|chapter|episode|season|volume|part)\b/i;
     for (const wiki of wikis) {
         try {
@@ -2083,7 +2083,7 @@ function isUnhandledName(n) {
     if (cacheEntryFor(lc)) return false;                                        // grounded (any name/alias)
     const neg = cache()[lc];
     if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)
-        && missCoversCurrentWikis(neg, settings().wikis)) return false;         // fresh miss, list unchanged
+        && missCoversCurrentWikis(neg, activeWikis())) return false;         // fresh miss, list unchanged
     return true;
 }
 
@@ -2096,7 +2096,7 @@ function parserMayRevisit(n) {
     if (!isUnhandledName(n)) return false;
     if (!parsedWords.has(lc)) return true;
     const neg = cache()[lc];
-    return !!(neg && !neg.found && !missCoversCurrentWikis(neg, settings().wikis));
+    return !!(neg && !neg.found && !missCoversCurrentWikis(neg, activeWikis()));
 }
 
 /**
@@ -2868,6 +2868,15 @@ function probeNamesFrom(parsed, probeName) {
     return out.slice(0, 6);
 }
 
+/** What discovery SAW: card + the chat's OPENING messages + the effective wiki
+ * list. Settlement is keyed on this — so a fandom DECLARED in the first
+ * message ("#classroom of the elite …") re-opens a settlement made against an
+ * empty chat, instead of being ignored forever. Stable after the opening. */
+function wikiFingerprint(probeName, msgs, wikisCsv) {
+    const head = (msgs || []).slice(0, 2).map(m => String((m && m.mes) || "").slice(0, 200)).join("|");
+    return normName(String(probeName || "") + "|" + head + "|" + String(wikisCsv || ""));
+}
+
 const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|city|town|village|kingdom|empire|nation|guild|organization|organisation|company|agency|island|castle|palace|temple|church|dungeon|tower|district|region|world|realm|garden)\b/i;
 
 /**
@@ -2986,12 +2995,56 @@ function parseNameArray(text) {
 let lastLlmError = "";       // why the last llmCall returned null — surfaced by rescan
 let lastParseFailToastAt = 0; // throttle for background-failure toasts (silence was the bug)
 
+function chatWikiBinding() {
+    try {
+        const v = getContext().chatMetadata?.canon_grounding_wiki;
+        return typeof v === "string" && v.trim() ? v.trim() : "";
+    } catch (e) { return ""; }
+}
+/** THE universe of the CURRENT chat: its own binding first, the global field
+ * only as the default for unbound chats. Every grounding path reads THIS —
+ * never settings().wikis directly — so one chat's discovery can never leak
+ * canon into another chat. */
+function activeWikis() {
+    return chatWikiBinding() || String(settings().wikis || "");
+}
+function purgeForeignEntries(wikisCsv) {
+    try {
+        const keep = normWikiSet(wikisCsv);
+        const st = cache();
+        let dropped = 0;
+        for (const k of Object.keys(st)) {
+            const e = st[k];
+            if (!e) continue;
+            const w = e.wiki ? (normWikiSet(String(e.wiki))[0] || null) : null;
+            if (e.found && w && !keep.includes(w)) { delete st[k]; dropped++; }
+            else if (!e.found && !missCoversCurrentWikis(e, wikisCsv)) { delete st[k]; dropped++; }
+        }
+        if (dropped) { saveCache(); debug(`\ud83d\udd2d universe changed \u2192 purged ${dropped} foreign cache entr${dropped === 1 ? "y" : "ies"}`); }
+    } catch (e) { /* purge is best-effort */ }
+}
+/** ONE writer for a chat's universe: pin the binding, settle the chat, and
+ * purge canon that belongs to a DIFFERENT universe. */
+function bindChatWiki(stored, verifiedName, manual, via) {
+    const effective = String(stored || "") || String(settings().wikis || "");
+    let fpNow = "(manual)";
+    if (!manual) {
+        let msgs = [];
+        try { msgs = getContext().chat || []; } catch (e) { /* fp degrades to card+wikis */ }
+        fpNow = wikiFingerprint(verifiedName, msgs, effective);
+    }
+    setChatPin("canon_grounding_wiki", String(stored || ""));
+    setChatPin("canon_grounding_wiki_ok", manual
+        ? { wikis: String(stored || ""), name: verifiedName, fp: "(manual)", manual: true, ts: Date.now() }
+        : { wikis: String(stored || ""), name: verifiedName, via: String(via || verifiedName || ""), fp: fpNow, ts: Date.now() });
+    purgeForeignEntries(effective);
+}
 function wikiStateHint() {
     try {
         const ok = chatWikiOk();
-        if (!ok) return " \ud83d\udd2d The wiki is NOT verified for this chat yet — any message (or 'Scan current scene now') triggers discovery.";
-        if (ok.failed) return " \ud83d\udd2d Discovery found no wiki for this chat — the wikis field is the manual override.";
-        return "";
+        if (ok && !ok.failed) { const b = chatWikiBinding(); return b ? ` \ud83d\udd2d This chat's universe: ${b} (chat-bound).` : ""; }
+        if (ok && ok.failed) return " \ud83d\udd2d Discovery found no wiki for this chat YET — it re-evaluates as the opening messages arrive; the wikis field is the manual override.";
+        return " \ud83d\udd2d The wiki is NOT verified for this chat yet — any message (or 'Scan current scene now') triggers discovery.";
     } catch (e) { return ""; }
 }
 function chatWikiOk() {
@@ -3040,14 +3093,22 @@ async function verifyOrDiscoverWiki() {
     const probeName = String(ctx?.name2 || ctx?.characters?.[ctx?.characterId]?.name || "").trim();
     if (!probeName) return;
     const ok = chatWikiOk();
-    if (ok && ok.wikis === String(s.wikis || "") && ok.name === probeName) return;   // settled for this chat
-    const active = String(s.wikis || "").split(",").map(x => x.trim()).filter(Boolean);
+    if (ok && ok.manual) return;                       // a manual decree is never second-guessed
+    const fp = wikiFingerprint(probeName, ctx?.chat, activeWikis());
+    if (ok && ok.fp === fp) return;                    // settled — and NOTHING it saw has changed
+    const active = activeWikis().split(",").map(x => x.trim()).filter(Boolean);
+    // Re-checks remember what WORKED: the pin's `via` (the canon name that
+    // verified this chat last time) is probed FIRST — an OC card re-verifies
+    // with one fetch and ZERO LLM instead of re-running discovery.
+    const quick = (ok && ok.via && !ok.manual)
+        ? probeNamesFrom({ names: [ok.via] }, probeName)
+        : probeNamesFrom(null, probeName);
     for (const w of active) {
-        const hits = await fetchSearchTitles(w, probeName);
+        const knownAs = await hostKnowsAny(w, quick);
         if (myEpoch !== chatEpoch) return;
-        if ((hits || []).some(t => titleMatchesName(t, probeName))) {
-            setChatPin("canon_grounding_wiki_ok", { wikis: String(s.wikis || ""), name: probeName, ts: Date.now() });
-            debug(`\ud83d\udd2d wiki verified for ${probeName}: ${w}`);
+        if (knownAs) {
+            bindChatWiki(activeWikis(), probeName, false, knownAs);
+            debug(`\ud83d\udd2d wiki verified for ${probeName} via "${knownAs}": ${w}`);
             return;
         }
     }
@@ -3066,7 +3127,7 @@ async function verifyOrDiscoverWiki() {
         const knownAs = await hostKnowsAny(w, probes);
         if (myEpoch !== chatEpoch) return;
         if (knownAs) {
-            setChatPin("canon_grounding_wiki_ok", { wikis: String(s.wikis || ""), name: probeName, ts: Date.now() });
+            bindChatWiki(activeWikis(), probeName, false, knownAs);
             debug(`\ud83d\udd2d wiki verified for ${probeName} via canon name "${knownAs}": ${w}`);
             return;
         }
@@ -3087,17 +3148,17 @@ async function verifyOrDiscoverWiki() {
             if (myEpoch !== chatEpoch) return;
             stored = pickLiveHost(fRc, gRc) === "gg" ? `${slug}.wiki.gg` : slug;
         }
-        s.wikis = stored;
         s.savedWikis = Array.isArray(s.savedWikis) ? s.savedWikis : [];
         if (!s.savedWikis.includes(stored)) s.savedWikis.push(stored);
-        try { saveSettingsDebounced(); } catch (e) { /* settings save is best-effort here */ }
-        setChatPin("canon_grounding_wiki_ok", { wikis: stored, name: probeName, ts: Date.now() });
+        try { saveSettingsDebounced(); } catch (e) { /* library save is best-effort */ }
+        const via = (stored.endsWith(".wiki.gg") ? gKnown : fKnown) || probeName;
+        bindChatWiki(stored, probeName, false, via);   // the CHAT gets the universe — the global field is untouched
         try { if (refreshWikiUi) refreshWikiUi(); } catch (e) { /* UI optional */ }
         cgToast("success", `\ud83d\udd2d Wiki found for ${probeName}: ${stored.includes(".") ? stored : stored + ".fandom.com"}`);
         debug(`\ud83d\udd2d discovery \u2192 ${stored} (candidate "${slug}")`);
         return;
     }
-    setChatPin("canon_grounding_wiki_ok", { wikis: String(s.wikis || ""), name: probeName, failed: true, ts: Date.now() });
+    setChatPin("canon_grounding_wiki_ok", { wikis: activeWikis(), name: probeName, fp, failed: true, ts: Date.now() });
     cgToast("warning", `\ud83d\udd2d No wiki found for "${probeName}" — set it in Canon Grounding \u2699 (the field is the manual override).`);
 }
 globalThis.CanonGrounding_verifyWiki = verifyOrDiscoverWiki;
@@ -3349,7 +3410,15 @@ function removeFallbackSplices(chat) {
 
 let interceptAnnounced = false;
 globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, type) {
-    verifyOrDiscoverWiki().catch(() => {});   // \ud83d\udd2d self-heals the wiki on ANY turn; the settled pin makes this free
+    {   // \ud83d\udd2d self-heals the wiki on ANY turn; the settled pin makes this free.
+        // An UNBOUND chat additionally HOLDS for discovery (first-meeting rule):
+        // a wrong UNIVERSE on turn one costs more immersion than a short pause.
+        const okNow = chatWikiOk();
+        const disc = verifyOrDiscoverWiki().catch(() => {});
+        if (!okNow && settings().enabled && settings().autoDiscoverWiki) {
+            await Promise.race([disc, new Promise(r => setTimeout(r, Number(settings().firstMeetWaitMs) || 12000))]);
+        }
+    }
     if (!interceptAnnounced) {
         interceptAnnounced = true;
         console.log(`[CanonGrounding] v${CG_VERSION} interceptor active — if you never see this line, ST is not calling the interceptor at all.`);
@@ -4117,7 +4186,7 @@ async function addSettingsUI() {
         $("#cg_arc_status").text("searching…");
         const got = await groundArc(q);
         if (got) renderArc();
-        else $("#cg_arc_status").text("✕ no arc/chapter page found on: " + s.wikis);
+        else $("#cg_arc_status").text("✕ no arc/chapter page found on: " + activeWikis());
     });
     $("#cg_arc_clear").on("click", function () {
         s.arcTitle = ""; setChatArc(null); setChatPin("canon_grounding_arc_reached", []); $("#cg_arc").val("");
@@ -4261,6 +4330,11 @@ async function addSettingsUI() {
         s.wikis = String($(this).val()); saveSettingsDebounced();
         renderSavedWikis();
     });
+    // Committing an edit (blur/change) is a DECREE for the CURRENT chat: bind it,
+    // settle it as manual, purge foreign canon. The field stays the global default.
+    $("#cg_wikis").on("change", function () {
+        bindChatWiki(String($(this).val()).trim(), "(manual)", true);
+    });
 
     $("#cg_autodiscover").prop("checked", s.autoDiscoverWiki !== false).on("change", function () {
         s.autoDiscoverWiki = $(this).prop("checked"); saveSettingsDebounced();
@@ -4379,12 +4453,13 @@ function toggleActiveWiki(w) {
     const val = cur.join(",");
     $("#cg_wikis").val(val);
     s.wikis = val; saveSettingsDebounced();
+    bindChatWiki(val, "(manual)", true);   // a chip tap is a decree for the CURRENT chat too
     renderSavedWikis();
 }
 
 function renderSavedWikis() {
     const s = settings();
-    const active = String(s.wikis || "").split(",").map(x => x.trim()).filter(Boolean);
+    const active = activeWikis().split(",").map(x => x.trim()).filter(Boolean);
     const $box = $("#cg_saved_wikis").empty();
     if (!s.savedWikis || !s.savedWikis.length) {
         $box.append('<span class="cg-empty">Nothing saved yet — tap "+ Save active to library".</span>');
