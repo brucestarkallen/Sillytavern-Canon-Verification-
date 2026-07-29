@@ -286,8 +286,12 @@ const defaultSettings = {
     // bit generously because the LLM parser only returns real, relevant entities (no
     // regex junk), so there's room for present + referenced characters.
     maxCharacters: 8,       // inject at most this many entities (most central first)
-    maxCharsPerChar: 400,   // cap per entity across all its categories
-    maxTotalChars: 3000,    // hard cap on the whole canon block; stop once reached
+    // THESE LITERALS ARE THE CURRENT DEFAULTS — the migrations below only exist to
+    // move OLD installs forward, and the factory reset re-clones this object. When a
+    // migration raises a cap, raise it HERE too, or the reset button silently
+    // restores the stale pre-migration value (the 400/3000 vs 1100/6000 bug).
+    maxCharsPerChar: 1100,  // cap per entity across all its categories
+    maxTotalChars: 6000,    // hard cap on the whole canon block; stop once reached
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
     // LLM parser (Arbiter-style): before generation, a fast model reads the current
@@ -3587,7 +3591,13 @@ async function addSettingsUI() {
         // and the global pin is your authored canon, not a tunable.
         const keep = { savedWikis: s.savedWikis, wikis: s.wikis, llmProfileId: s.llmProfileId, pinnedGlobal: s.pinnedGlobal };
         for (const k of Object.keys(s)) delete s[k];
-        Object.assign(s, structuredClone(defaultSettings), keep, { migrated_v2: true, migrated_v3: true, migrated_v5: true });
+        // Migration stamps are deliberately NOT re-applied here (the old code stamped
+        // v2/v3/v5 — but not v6/v7 — which locked the reset to STALE pre-migration
+        // caps, 400/3000 instead of the current 1100/6000). defaultSettings IS the
+        // current default; with no stamps, the next settings() call re-runs the
+        // migrations, and each one is an idempotent no-op against current defaults
+        // (they only rewrite untouched sentinel values). One source of truth.
+        Object.assign(s, structuredClone(defaultSettings), keep);
         saveSettingsDebounced();
         toastr?.success?.("Defaults restored. Reloading UI…");
         setTimeout(() => location.reload(), 800);
