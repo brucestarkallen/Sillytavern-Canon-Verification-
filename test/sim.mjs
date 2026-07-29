@@ -635,7 +635,8 @@ T("both hosts probed for the candidate",
     && fetchLog.slice(f25).some(u => u.includes("foundsaga.wiki.gg") && u.includes("srsearch")));
 T("stale-fork rule consulted recent changes on both",
     fetchLog.slice(f25).filter(u => u.includes("recentchanges")).length === 2);
-T("live wiki.gg beat the frozen fandom fork", S25.wikis === "foundsaga.wiki.gg");
+T("live wiki.gg beat the frozen fandom fork — as the CHAT's binding", globalThis.__ctx.chatMetadata.canon_grounding_wiki === "foundsaga.wiki.gg");
+T("the GLOBAL field is untouched by discovery", S25.wikis === "");
 T("discovered wiki saved to the library", S25.savedWikis.includes("foundsaga.wiki.gg"));
 const ok25 = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
 T("chat settled with a verified pin", ok25 && ok25.wikis === "foundsaga.wiki.gg" && ok25.name === "Zar Blade" && !ok25.failed);
@@ -652,6 +653,7 @@ const ok25c = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
 T("verification re-pins the chat", ok25c && ok25c.name === "Zar Blade" && !ok25c.failed);
 // failure settles: candidates that exist but DON'T know the protagonist are rejected
 delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki;
 S25.wikis = "";
 const q25d = parseQueue.length;
 const p25d = globalThis.CanonGrounding_verifyWiki();
@@ -665,6 +667,8 @@ const q25e = parseQueue.length, f25e = fetchLog.length;
 await globalThis.CanonGrounding_verifyWiki();
 T("a failed chat never nags again", parseQueue.length === q25e && fetchLog.length === f25e);
 S25.wikis = "testwiki";
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki;
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
 
 // [27] v0.36.1 — an ORIGINAL protagonist must not break discovery: the LLM's
 // canon names verify the (correct) ACTIVE config, which settles silently —
@@ -705,11 +709,53 @@ T("a plain turn verified and pinned the chat", ok28 && ok28.name === "Zar Blade"
 T("verification cost zero LLM calls", parseQueue.length === q28);
 globalThis.__ctx.name2 = "Zar Blade";
 S25.wikis = "testwiki";
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki;
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+
+// [29] v0.38.0 — the universe is CHAT-SCOPED and DECLARATION-AWARE.
+console.log("[29] chat-scoped universe: empty-chat settlement re-opens on the declaration");
+const ctxB29 = { ...globalThis.__ctx, chat: [], chatMetadata: {} };
+globalThis.__ctx = ctxB29;
+ctxB29.name2 = "Jovan Custom";
+S25.wikis = "testwiki";
+const q29 = parseQueue.length;
+const p29a = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+parseQueue[q29].resolve('{"franchise":"Unknown","slugs":["missslug"]}');
+await p29a;
+T("an EMPTY chat settles as failed, not bound",
+    ctxB29.chatMetadata.canon_grounding_wiki_ok?.failed === true && !ctxB29.chatMetadata.canon_grounding_wiki);
+// stale canon from another universe sits in this chat's cache
+ctxB29.chatMetadata.canon_grounding_cache = {
+    "old guy":  { name: "Old Guy",  found: true, wiki: "oldwiki", sections: {} },
+    "zarblade": { name: "Zarblade", found: true, wiki: "foundsaga.wiki.gg", sections: {} },
+};
+// THE DECLARATION ARRIVES — the fingerprint changes, the settlement re-opens
+ctxB29.chat.push(msg("#Found Saga. Mc Jovan at the academy library.", true));
+const q29b = parseQueue.length;
+const p29b = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+T("a fandom declared in message ONE re-opens a failed settlement", parseQueue.length === q29b + 1);
+parseQueue[q29b].resolve('{"franchise":"Found Saga","slugs":["foundsaga"],"names":["Zar Blade"]}');
+await p29b;
+T("the chat received its OWN binding", ctxB29.chatMetadata.canon_grounding_wiki === "foundsaga.wiki.gg");
+T("the GLOBAL field was never touched", S25.wikis === "testwiki");
+T("foreign-universe canon was purged, same-universe canon kept",
+    !ctxB29.chatMetadata.canon_grounding_cache["old guy"] && !!ctxB29.chatMetadata.canon_grounding_cache["zarblade"]);
+const q29c = parseQueue.length;
+ctxB29.chat.push(msg("The rain keeps falling.", true));   // message TWO — the opening is still being written
+await globalThis.CanonGrounding_verifyWiki();
+T("opening still filling: the re-check spends ZERO LLM", parseQueue.length === q29c);
+T("and the binding stands", ctxB29.chatMetadata.canon_grounding_wiki === "foundsaga.wiki.gg");
+const q29d = parseQueue.length, f29d = fetchLog.length;
+ctxB29.chat.push(msg("Night falls over the academy.", true));   // message THREE — beyond the opening
+await globalThis.CanonGrounding_verifyWiki();
+T("beyond the opening: settled at ZERO cost, forever", parseQueue.length === q29d && fetchLog.length === f29d);
 
 // [26] v0.36.0 — static witnesses for the discovery wiring.
 console.log("[26] v0.36.0 static witnesses — wiki discovery wiring");
 T("verify the ACTIVE config before spending any discovery LLM",
-    /for \(const w of active\) \{\s*\n\s*const hits = await fetchSearchTitles\(w, probeName\);/.test(src));
+    /const quick = \(ok && ok\.via && !ok\.manual\)/.test(src) && src.indexOf('hostKnowsAny(w, quick)') < src.indexOf('llmCall(s.promptDiscover'));
 T("structural verification: a probe must HIT a canon name, fetch-ok is not enough",
     /if \(\(hits \|\| \[\]\)\.some\(t => titleMatchesName\(t, n\)\)\) return n;/.test(src));
 T("the ACTIVE config is re-verified with CANON names before any candidate",
@@ -718,8 +764,20 @@ T("both-hosts hit -> the stale-fork rule decides",
     /pickLiveHost\(fRc, gRc\) === "gg" \? `\$\{slug\}\.wiki\.gg` : slug/.test(src));
 T("discovery fires on CHAT_CHANGED, fire-and-forget",
     /setTimeout\(\(\) => \{ verifyOrDiscoverWiki\(\)\.catch\(\(\) => \{\}\); \}, 0\);/.test(src));
-T("a settled pin short-circuits before any cost",
-    /ok\.wikis === String\(s\.wikis \|\| ""\) && ok\.name === probeName\) return;/.test(src));
+T("settlement is keyed on the FINGERPRINT of what discovery saw",
+    /if \(ok && ok\.fp === fp\) return;/.test(src));
+T("a manual decree is never second-guessed",
+    /if \(ok && ok\.manual\) return;/.test(src));
+T("discovery NEVER writes the global field", !/s\.wikis = stored/.test(src));
+T("every grounding path reads the CHAT's universe",
+    (src.match(/const wikis = activeWikis\(\)\.split/g) || []).length === 2
+    && /searched: normWikiSet\(activeWikis\(\)\)/.test(src));
+T("an unbound chat HOLDS for its universe on turn one",
+    /await Promise\.race\(\[disc,/.test(src));
+T("re-checks probe the name that WORKED before (via), zero-LLM",
+    /hostKnowsAny\(w, quick\)/.test(src) && /via: String\(via \|\| verifiedName/.test(src));
+T("binding a universe purges foreign canon (one writer)",
+    (src.match(/purgeForeignEntries\(/g) || []).length === 2);
 T("failure is remembered, not retried forever",
     /failed: true, ts: Date\.now\(\)/.test(src));
 T("discovery self-heals from EVERY entry point: chat change, boot, and the interceptor",

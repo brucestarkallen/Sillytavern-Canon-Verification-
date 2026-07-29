@@ -65,7 +65,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
-         arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom,
+         arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom, wikiFingerprint,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -1142,6 +1142,14 @@ eq("normName folds diacritics", api.normName("Ayanokōji"), "ayanokoji");
 eq("folding leaves plain names alone", api.normName("Rukia"), "rukia");
 T("typed-ASCII matches the wiki's macron title",
    api.titleCoversQuery("ayanokoji", "Kiyotaka Ayanokōji"));
+const fpEmpty = api.wikiFingerprint("Jovan", [], "w");
+const fpDecl  = api.wikiFingerprint("Jovan", [{ mes: "#classroom of the elite. Mc at the library." }], "w");
+T("a declaration in the opening CHANGES the settlement key", fpEmpty !== fpDecl);
+T("the opening window is TWO messages: settlement is immutable from message three on",
+  api.wikiFingerprint("J", [{ mes: "a" }, { mes: "b" }], "w") === api.wikiFingerprint("J", [{ mes: "a" }, { mes: "b" }, { mes: "c" }], "w"));
+T("message TWO can still carry the declaration (window not yet closed)",
+  api.wikiFingerprint("J", [{ mes: "a" }], "w") !== api.wikiFingerprint("J", [{ mes: "a" }, { mes: "#fandom" }], "w"));
+T("a different effective wiki list changes the key", fpDecl !== api.wikiFingerprint("Jovan", [{ mes: "#classroom of the elite. Mc at the library." }], "other"));
 
 // ---------------------------------------------------------------- v0.36.0
 console.log("[v0.36.0 wiki discovery — pure rules]");
