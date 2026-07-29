@@ -56,6 +56,75 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.40.0 (the evidence law: a universe must be proven BY THE CHAT)
+
+Proven by `test/proof.js` (430) + `test/sim.mjs` (195); **all ten guards
+negative-tested** — each fix reintroduced in a scratch tree, each turns the gate
+red. Live report: a brand-new chat, no message sent, nothing written about the
+world, and discovery announced a protagonist named *Assistant* and bound
+`memory-alpha` / `the-magnus-archives`.
+
+**Root cause: the model was grading its own homework.** Discovery asked the LLM
+for candidate wiki slugs AND for the canon names to verify them with, then
+probed one against the other. memory-alpha genuinely has a *Spock* page — so the
+probe always succeeded. It proved that Star Trek exists. It never proved
+anything about this chat. Any hallucinated franchise self-certified with perfect
+reliability, and four smaller defects fed it:
+
+1. **Circular verification.** The proposer supplied both the candidate and the
+   key. **Fix — one law, the same one the cast parser already lives by:** a
+   candidate wiki is bound only when it knows something *this chat actually
+   says*. Keys now come from the chat's own distinctive proper nouns, from
+   proposer names the chat really mentions (`groundedNames`), and from the
+   phrase the proposer quotes back out of the text — verified to be in it.
+   memory-alpha does not know *Seireitei*, so it cannot claim this story.
+2. **Discovery ran on a blank page.** Boot, chat-change and turn one all fired a
+   full discovery pass against an empty chat, and a model asked to name a
+   franchise will name one. **Fix:** with no card name and no proper noun
+   anywhere in the chat, discovery does not run — no LLM call, no probe, and no
+   settled pin, so the next turn re-checks for free and binds the moment the
+   story speaks.
+3. **`Assistant` was treated as a protagonist.** SillyTavern's neutral card is
+   literally named that; it headed the prompt (`Protagonist: Assistant`) and
+   became a probe key that matches an "Assistant Director" page on every wiki
+   alive. **Fix:** placeholder names (`Assistant`, `AI`, `System`, `Narrator`,
+   `User`, `New Character`, …) are never protagonists, never probe keys, and
+   never evidence.
+4. **Titles matched on raw substrings.** `"Yokoda"` claimed `"Oda"`,
+   `"Blade Runner"` claimed `"Zar Blade"`, `"Oda Family"` claimed `"Jovan Oda"`.
+   **Fix:** whole-word token matching — one side's words must all be words of
+   the other, with at least one substantial (≥3 chars), so two-letter glue can
+   never carry a match. (The old proof asserted the shared-surname case as
+   *correct*; that assertion encoded the defect and now asserts its rejection.)
+5. **The card name became a wiki slug.** Card "Alice" → `alice.fandom.com`,
+   proven by searching for *Alice*. **Fix:** candidates carry the chat string
+   that generated them and may never be proven by it — a wiki cannot certify
+   itself.
+
+Fixed alongside, from the same report:
+
+- **Discovery was reading a keyhole.** It saw a 600-char description slice and
+  two 300-char messages — so a world written in the *scenario* field, the
+  greeting, the creator notes or the tags was invisible to it, and so was
+  anything revealed after message two. It now reads the whole card plus the
+  opening *and* the latest scenes.
+- **A `#fandom` declaration is a decree.** "#Found Saga" on line one is the user
+  naming their own universe: that candidate needs no canon-name proof, only to
+  be real. And a chat bound that way re-verifies the way it was *proven* —
+  demanding a stricter proof later re-opened a settled chat every single turn.
+- **"Scan current scene now" now forces discovery.** The explicit user action
+  was being swallowed by the settled-fingerprint short-circuit, so a chat that
+  had settled (or failed) could never be re-scanned.
+- **The proposer is told that guessing is worse than nothing**, and asked to
+  quote its evidence verbatim from the text.
+- **Toast names its proof:** `🔭 Universe found via "Seireitei": bleach.fandom.com`.
+- **Candidate probing is bounded** (24 fetches) so a total miss cannot grind a turn.
+
+**Harness defect found on the way:** `test/proof.js` had two overlapping slices,
+silently evaluating ~35KB of `index.js` twice. Function redeclaration is legal,
+so it never surfaced — the first `const` added there turned it into a hard
+SyntaxError. Boundaries fixed; the overlap is now itself negative-tested.
+
 ## Changelog — v0.39.1 (the license to break — compression must not cut permissions)
 
 Proven by `test/proof.js` (401) + `test/sim.mjs` (167); the restored clause

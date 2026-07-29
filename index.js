@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.39.1";
+const CG_VERSION = "0.40.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -188,10 +188,12 @@ const DEFAULT_PROMPT_ARCJUDGE =
         "only the present scene entering the event counts. " +
         'Respond with ONLY {"advance": true} or {"advance": false}. No other text.';
 
-const DEFAULT_PROMPT_DISCOVER = `You identify which MediaWiki fan wiki covers a story. Given a protagonist and story text, output STRICT JSON only:
-{"franchise":"<franchise name>","slugs":["slug1","slug2"],"names":["Full Name","Full Name"]}
+const DEFAULT_PROMPT_DISCOVER = `You identify which MediaWiki fan wiki covers a story. Given a protagonist and the story's own text, output STRICT JSON only:
+{"franchise":"<franchise name>","evidence":"<verbatim phrase copied from the text>","slugs":["slug1","slug2"],"names":["Full Name","Full Name"]}
+evidence: a phrase COPIED WORD-FOR-WORD from the text above that identifies the franchise — a canon character, place, organization, technique or title. Copy it exactly; do not paraphrase or invent one.
 slugs: 3-6 lowercase hyphenated wiki-subdomain candidates for this franchise, most likely FIRST. Include romaji/alternate titles (e.g. Demon Slayer -> "kimetsu-no-yaiba") and common short forms.
 names: 3-5 full names of this franchise's most famous CANON characters (the protagonist may be an original character who appears in no wiki — never rely on them alone).
+If the text names no recognizable franchise, answer {"franchise":"","evidence":"","slugs":[],"names":[]} — guessing is worse than nothing.
 No prose, no markdown, JSON only.`;
 
 const defaultSettings = {
@@ -2817,12 +2819,29 @@ function slugifyTitle(t) {
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
 }
+/** Word tokens of a title/name — parentheticals dropped ("Jovan Oda (Soul
+ * Reaper)" is Jovan Oda), punctuation split, diacritics folded upstream. */
+function nameTokens(s) {
+    return normName(s).replace(/\(.*?\)/g, " ").split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 2);
+}
+/**
+ * Does this wiki page title actually name this thing? WHOLE WORDS ONLY — the
+ * old rule compared raw substrings and shared single words, so "Yokoda" claimed
+ * "Oda", "Blade Runner" claimed "Zar Blade", and "Oda Family" claimed "Jovan
+ * Oda". Every one of those is a wiki falsely certifying that it knows this
+ * chat. The rule now: one side's words must ALL be words of the other, with at
+ * least one of them substantial (>=3 chars) — so two-letter glue can never
+ * carry a match. Names shorter than that match only exactly.
+ */
 function titleMatchesName(title, name) {
-    const a = normName(title), b = normName(name);
-    if (!a || !b) return false;
-    if (a === b || a.includes(b) || b.includes(a)) return true;
-    const words = new Set(a.split(" ").filter(w => w.length >= 3));
-    return b.split(" ").some(w => w.length >= 3 && words.has(w));
+    const na = normName(title), nb = normName(name);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    const a = nameTokens(title), b = nameTokens(name);
+    if (!a.length || !b.length) return false;
+    const A = new Set(a), B = new Set(b);
+    const covered = (list, other) => list.every(t => other.has(t)) && list.some(t => t.length >= 3);
+    return covered(b, A) || covered(a, B);
 }
 /** Stale-fork rule: many big fandoms migrated to wiki.gg, leaving a frozen Fandom
  * copy behind. The wiki with the NEWER last edit is the live one; a host whose
@@ -2833,16 +2852,148 @@ function pickLiveHost(rcFandom, rcGg) {
     if (!rcGg) return "fandom";
     return Date.parse(rcGg) > Date.parse(rcFandom) ? "gg" : "fandom";
 }
+/**
+ * Names that identify NOBODY: SillyTavern's neutral card is literally called
+ * "Assistant", groups and blank cards leave equally empty labels behind. Such a
+ * name is not a protagonist — it must never head the discovery prompt, never be
+ * a probe key ("Assistant" matches an "Assistant Director" page on any wiki in
+ * existence), and never count as evidence that this chat has a universe.
+ */
+const PLACEHOLDER_NAMES = new Set([
+    "assistant", "ai", "bot", "chatbot", "robot", "system", "narrator", "storyteller",
+    "gm", "dm", "host", "user", "you", "me", "char", "character", "persona", "default",
+    "none", "unknown", "unnamed", "untitled", "new", "test", "example", "sample",
+    "group", "chat", "sillytavern", "gpt", "claude", "gemini", "llama", "model", "llm",
+    "anon", "anonymous", "someone", "somebody", "person", "stranger",
+]);
+function isPlaceholderName(n) {
+    const words = normName(n).replace(/\(.*?\)/g, " ").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    if (!words.length) return true;
+    return words.every(w => PLACEHOLDER_NAMES.has(w));
+}
+
+/**
+ * 🔭 Everything THIS CHAT has actually said about its world: the whole card
+ * (description, personality, scenario, greeting, creator notes, tags) plus the
+ * opening AND the latest scenes. Discovery used to read a 600-char description
+ * and two 300-char messages — so a chat whose world was written in the scenario
+ * field or revealed at message forty looked, to the proposer, like a blank page.
+ */
+function discoveryCorpus(ctx) {
+    const parts = [];
+    const add = (v, n) => { const t = String(v == null ? "" : v).trim(); if (t) parts.push(t.slice(0, n)); };
+    let ch = null;
+    try { ch = (ctx && ctx.characters && ctx.characterId != null) ? ctx.characters[ctx.characterId] : null; } catch (e) { /* no card */ }
+    if (ch) {
+        add(ch.name, 80);
+        add(ch.description, 1500);
+        add(ch.personality, 400);
+        add(ch.scenario, 800);
+        add(ch.first_mes, 800);
+        add(ch.creatorcomment || ch.creator_notes || (ch.data && ch.data.creator_notes), 400);
+        const tags = Array.isArray(ch.tags) ? ch.tags : (ch.data && Array.isArray(ch.data.tags) ? ch.data.tags : null);
+        if (tags) add(tags.join(", "), 200);
+    }
+    const msgs = (ctx && Array.isArray(ctx.chat)) ? ctx.chat : [];
+    const window = msgs.length <= 8 ? msgs : msgs.slice(0, 2).concat(msgs.slice(-6));
+    for (const m of window) add(m && m.mes, 700);
+    return parts.join("\n");
+}
+
+function declaredUniverses(corpus) {
+    const out = [];
+    const re = /(?:^|\n)\s*(?:#|fandom\s*[:=]|universe\s*[:=]|setting\s*[:=]|series\s*[:=])\s*([^\n.,;!?]{3,60})/gi;
+    let d;
+    while ((d = re.exec(String(corpus || ""))) !== null) {
+        const t = d[1].trim().replace(/\s+/g, " ");
+        if (t && !out.some(x => normName(x) === normName(t))) out.push(t);
+    }
+    return out;
+}
+
+/** Hyphens are punctuation, not identity: "found-saga" and "foundsaga" and
+ * "Found Saga" are one declaration. */
+function slugCore(v) { return slugifyTitle(v).replace(/-/g, ""); }
+
+/**
+ * 🔭 THE DECLARATION IS A DECREE. "#Found Saga" on line one is the user naming
+ * their own universe, so a candidate slug that IS that name needs no canon-name
+ * proof — the chat already pointed at it. Everything else must earn its binding
+ * by knowing something the chat says. Returns the declaring term, or "".
+ */
+function declaredCandidate(slug, declarations) {
+    const core = slugCore(slug);
+    if (!core) return "";
+    return (declarations || []).find(t => slugCore(t) === core) || "";
+}
+
+/**
+ * 🔭 The distinctive proper nouns THIS CHAT contains, ranked: an explicit
+ * declaration first (a decree), then multi-word names ("Soul Society"), then
+ * substantial single ones ("Seireitei"), longest first. These are the ONLY keys
+ * a candidate wiki may be verified with — which is why a hallucinated universe
+ * cannot self-certify.
+ */
+function chatEvidenceTerms(corpus, limit = 8) {
+    const text = String(corpus || "");
+    const out = [];
+    const seen = new Set();
+    const push = (v) => {
+        const t = String(v || "").trim().replace(/\s+/g, " ");
+        if (t.length < 3 || t.length > 60) return;
+        if (isPlaceholderName(t)) return;
+        const k = normName(t);
+        if (!k || seen.has(k)) return;
+        seen.add(k); out.push(t);
+    };
+    for (const t of declaredUniverses(text)) push(t);
+    // A universe term is a PROPER NOUN. extractCandidateNames also has a
+    // lowercase fallback for names typed without capitals ("whats rose oriana
+    // hair") — invaluable there, poison here: it turns "how are you doing
+    // today?" into the evidence "am fine" and "doing", which would both lift
+    // the no-evidence hold and burn probes on nothing. Capitals only.
+    const names = extractCandidateNames(text).filter(n => /^\p{Lu}/u.test(n));
+    for (const n of names) if (n.includes(" ")) push(n);
+    for (const n of names.filter(x => !x.includes(" ")).sort((a, b) => b.length - a.length)) {
+        if (n.length >= 4) push(n);
+    }
+    return out.slice(0, limit);
+}
+
+/**
+ * Model-proposed canon names are only usable as PROOF when this chat actually
+ * says them: a substantial word of the name must appear in the corpus. Handed
+ * "Ichigo" by the scene, the model may expand it to "Ichigo Kurosaki" and that
+ * still counts; handed nothing, "Spock" does not.
+ */
+function groundedNames(names, corpus) {
+    const hay = " " + normName(corpus).replace(/[^\p{L}\p{N}]+/gu, " ") + " ";
+    const out = [];
+    for (const n of names || []) {
+        const toks = nameTokens(n).filter(t => t.length >= 4);
+        if (toks.some(t => hay.includes(" " + t + " "))) out.push(n);
+    }
+    return out;
+}
+
 /** LLM proposes, the wiki API disposes: assemble candidate slugs from the model's
- * JSON plus deterministic fallbacks, deduped, capped — every one gets probed. */
+ * JSON plus deterministic fallbacks, deduped, capped — every one gets probed.
+ * Each candidate carries the chat string that GENERATED it (`from`), because a
+ * candidate may never be proven by its own source: the card name "Alice" makes
+ * the slug "alice", and alice.fandom.com of course knows an "Alice". That is a
+ * wiki proving itself, and it is how unrelated domains got bound. */
 function discoverCandidates(parsed, franchiseFallback, probeName) {
     const out = [];
-    const push = (v) => { const c = slugifyTitle(v); if (c && c.length >= 2 && !out.includes(c)) out.push(c); };
-    if (parsed && Array.isArray(parsed.slugs)) for (const x of parsed.slugs) push(x);
-    if (parsed && parsed.franchise) push(parsed.franchise);
-    push(franchiseFallback);
-    push(probeName);
-    return out.slice(0, 8);
+    const push = (v, from) => {
+        const c = slugifyTitle(v);
+        if (!c || c.length < 2 || out.some(x => x.slug === c)) return;
+        out.push({ slug: c, from: String(from || "") });
+    };
+    if (parsed && Array.isArray(parsed.slugs)) for (const x of parsed.slugs) push(x, "");
+    if (parsed && parsed.franchise) push(parsed.franchise, "");
+    push(franchiseFallback, "");
+    push(probeName, probeName);
+    return out.slice(0, 6);
 }
 
 /** Names to verify a wiki WITH: the franchise's famous canon characters (from
@@ -2853,7 +3004,7 @@ function probeNamesFrom(parsed, probeName) {
     const seen = new Set();
     const push = (v) => {
         const t = String(v || "").trim();
-        if (!t) return;
+        if (!t || isPlaceholderName(t)) return;   // "Assistant" matches a page on every wiki alive
         const k = normName(t);
         if (!k || seen.has(k)) return;
         seen.add(k); out.push(t);
@@ -3020,7 +3171,7 @@ function purgeForeignEntries(wikisCsv) {
 }
 /** ONE writer for a chat's universe: pin the binding, settle the chat, and
  * purge canon that belongs to a DIFFERENT universe. */
-function bindChatWiki(stored, verifiedName, manual, via) {
+function bindChatWiki(stored, verifiedName, manual, via, viaDecl) {
     const effective = String(stored || "") || String(settings().wikis || "");
     let fpNow = "(manual)";
     if (!manual) {
@@ -3031,7 +3182,7 @@ function bindChatWiki(stored, verifiedName, manual, via) {
     setChatPin("canon_grounding_wiki", String(stored || ""));
     setChatPin("canon_grounding_wiki_ok", manual
         ? { wikis: String(stored || ""), name: verifiedName, fp: "(manual)", manual: true, ts: Date.now() }
-        : { wikis: String(stored || ""), name: verifiedName, via: String(via || verifiedName || ""), fp: fpNow, ts: Date.now() });
+        : { wikis: String(stored || ""), name: verifiedName, via: String(via || verifiedName || ""), viaDecl: !!viaDecl, fp: fpNow, ts: Date.now() });
     purgeForeignEntries(effective);
 }
 function wikiStateHint() {
@@ -3039,7 +3190,7 @@ function wikiStateHint() {
         const ok = chatWikiOk();
         if (ok && !ok.failed) { const b = chatWikiBinding(); return b ? ` \ud83d\udd2d This chat's universe: ${b} (chat-bound).` : ""; }
         if (ok && ok.failed) return " \ud83d\udd2d Discovery found no wiki for this chat YET — it re-evaluates as the opening messages arrive; the wikis field is the manual override.";
-        return " \ud83d\udd2d The wiki is NOT verified for this chat yet — any message (or 'Scan current scene now') triggers discovery.";
+        return " \ud83d\udd2d The wiki is NOT verified for this chat yet — discovery runs as soon as the story names something (a character, a place, or a #fandom line).";
     } catch (e) { return ""; }
 }
 function chatWikiOk() {
@@ -3067,6 +3218,13 @@ async function fetchLastEdit(wikiSpec) {
         return data?.query?.recentchanges?.[0]?.timestamp || null;
     } catch (e) { return null; }
 }
+/** A DECLARED universe only has to be real: does this host return any content
+ * at all for the name the user declared? A dead subdomain answers nothing; a
+ * live fan wiki always answers something about its own franchise. */
+async function hostHasAnything(wikiSpec, term) {
+    const hits = await fetchSearchTitles(wikiSpec, term);
+    return Array.isArray(hits) && hits.length > 0;
+}
 async function hostKnowsAny(wikiSpec, names) {
     for (const n of names) {
         const hits = await fetchSearchTitles(wikiSpec, n);
@@ -3076,64 +3234,124 @@ async function hostKnowsAny(wikiSpec, names) {
 }
 /** \ud83d\udd2d The wikis FIELD stays the manual override; this makes it optional.
  * Verify the active wiki actually knows the protagonist; if not, discover one:
- * the LLM proposes candidate slugs (it knows romaji titles), and every candidate
- * is verified against the real api.php before use — a hallucinated slug simply
- * fails its probe. Fails safe: nothing confident found -> one toast, settle,
- * never nag again until the chat or the wikis field changes. */
-async function verifyOrDiscoverWiki() {
+ * the LLM proposes candidate slugs (it knows romaji titles) and every candidate
+ * is verified against the real api.php — but a hallucinated slug does NOT simply
+ * fail its probe, and believing it did is what bound memory-alpha to a chat that
+ * had never heard of Star Trek. The proposer named both the wiki AND the canon
+ * names used to test it, so the test could only ever succeed. Verification keys
+ * therefore come from THIS CHAT (see the evidence law below). Fails safe: no
+ * evidence -> nothing spent; nothing proven -> one toast, settle, never nag
+ * again until the chat, the wikis field, or an explicit scan changes it. */
+async function verifyOrDiscoverWiki(opts = {}) {
     const myEpoch = chatEpoch;
     const s = settings();
     if (!s.enabled || !s.autoDiscoverWiki) return;
     const ctx = getContext();
-    const probeName = String(ctx?.name2 || ctx?.characters?.[ctx?.characterId]?.name || "").trim();
-    if (!probeName) return;
+    const rawName = String(ctx?.name2 || ctx?.characters?.[ctx?.characterId]?.name || "").trim();
+    if (!rawName) return;                              // no card at all = context not loaded yet, not "no evidence"
     const ok = chatWikiOk();
     if (ok && ok.manual) return;                       // a manual decree is never second-guessed
-    const fp = wikiFingerprint(probeName, ctx?.chat, activeWikis());
-    if (ok && ok.fp === fp) return;                    // settled — and NOTHING it saw has changed
+    const fp = wikiFingerprint(rawName, ctx?.chat, activeWikis());
+    if (!opts.force && ok && ok.fp === fp) return;     // settled — and NOTHING it saw has changed
+
+    // 🔭 THE EVIDENCE LAW. A universe is a claim about THIS chat, so this chat
+    // has to be the one making it. Read everything the chat says (card + scenes)
+    // and take its distinctive proper nouns; the card name counts only when it
+    // is a name at all — SillyTavern's neutral card is called "Assistant", and
+    // "Protagonist: Assistant" plus a blank page is an invitation to invent.
+    // With NOTHING to go on, discovery does not run: no LLM is spent, no pin is
+    // written, and the next turn re-checks for free the moment the story speaks.
+    const probeName = (rawName && !isPlaceholderName(rawName)) ? rawName : "";
+    const corpus = discoveryCorpus(ctx);
+    const terms = chatEvidenceTerms(corpus);
+    if (!probeName && !terms.length) {
+        debug("\ud83d\udd2d no universe evidence in this chat yet \u2014 discovery holds (nothing spent)");
+        return;
+    }
+
     const active = activeWikis().split(",").map(x => x.trim()).filter(Boolean);
-    // Re-checks remember what WORKED: the pin's `via` (the canon name that
-    // verified this chat last time) is probed FIRST — an OC card re-verifies
-    // with one fetch and ZERO LLM instead of re-running discovery.
+    // Re-checks remember what WORKED: the pin's `via` (the term that verified
+    // this chat last time) is probed FIRST — a bound chat re-verifies with one
+    // fetch and ZERO LLM instead of re-running discovery.
     const quick = (ok && ok.via && !ok.manual)
         ? probeNamesFrom({ names: [ok.via] }, probeName)
         : probeNamesFrom(null, probeName);
+    const reDecl = !!(ok && ok.viaDecl && ok.via);
     for (const w of active) {
-        const knownAs = await hostKnowsAny(w, quick);
+        if (!quick.length && !reDecl) break;
+        const knownAs = reDecl
+            ? (await hostHasAnything(w, ok.via) ? ok.via : "")
+            : await hostKnowsAny(w, quick);
         if (myEpoch !== chatEpoch) return;
         if (knownAs) {
-            bindChatWiki(activeWikis(), probeName, false, knownAs);
-            debug(`\ud83d\udd2d wiki verified for ${probeName} via "${knownAs}": ${w}`);
+            bindChatWiki(activeWikis(), rawName, false, knownAs, reDecl);
+            debug(`\ud83d\udd2d wiki verified for ${rawName} via "${knownAs}": ${w}`);
             return;
         }
     }
-    const desc = String(ctx?.characters?.[ctx?.characterId]?.description || "").slice(0, 600);
-    const opening = (ctx?.chat || []).slice(0, 2).map(m => String(m?.mes || "").slice(0, 300)).join("\n");
     const out = await llmCall(s.promptDiscover || DEFAULT_PROMPT_DISCOVER,
-        `Protagonist: ${probeName}\n${desc}\n${opening}`,
-        { maxTokens: 120, budgetMs: Math.min(Number(s.parserBudgetMs) || 30000, 15000) });
+        `Protagonist: ${probeName || "(unnamed)"}\n<text>\n${clip(corpus, 4000)}\n</text>`,
+        { maxTokens: 140, budgetMs: Math.min(Number(s.parserBudgetMs) || 30000, 15000) });
     if (myEpoch !== chatEpoch) return;
     let parsed = null;
     try { parsed = JSON.parse(String(out || "").replace(/```json|```/gi, "").trim()); } catch (e) { /* fails safe */ }
     const probes = probeNamesFrom(parsed, probeName);
     // An ORIGINAL protagonist is in no wiki — so before touching candidates,
     // re-verify the ACTIVE config with the franchise's CANON names: a correct
-    // manual setup must settle silently, never be told "not found".
+    // manual setup must settle silently, never be told "not found". The active
+    // list is the USER's decree; confirming it needs no evidence gate.
     for (const w of active) {
+        if (!probes.length) break;
         const knownAs = await hostKnowsAny(w, probes);
         if (myEpoch !== chatEpoch) return;
         if (knownAs) {
-            bindChatWiki(activeWikis(), probeName, false, knownAs);
-            debug(`\ud83d\udd2d wiki verified for ${probeName} via canon name "${knownAs}": ${w}`);
+            bindChatWiki(activeWikis(), rawName, false, knownAs);
+            debug(`\ud83d\udd2d wiki verified for ${rawName} via canon name "${knownAs}": ${w}`);
             return;
         }
     }
+
+    // 🔭 CHOOSING a universe is where the evidence law bites. The proposer may
+    // name any wiki it likes, but the keys that verify one come from the CHAT:
+    // the canon names it actually mentions, the phrase the proposer quoted back
+    // out of the text, and the chat's own distinctive proper nouns. Probing
+    // memory-alpha for "Spock" only ever proved that Star Trek exists — under
+    // this law memory-alpha must know something the chat SAYS, or it is not the
+    // chat's universe. A candidate can never be proven by the string that
+    // generated it, so the card name "Alice" cannot certify alice.fandom.com.
+    const quoted = (parsed && typeof parsed.evidence === "string") ? parsed.evidence.trim() : "";
+    const quoteOk = quoted && quoted.length >= 3 &&
+        normName(corpus).replace(/\s+/g, " ").includes(normName(quoted).replace(/\s+/g, " "));
+    const grounded = groundedNames((parsed && Array.isArray(parsed.names)) ? parsed.names : [], corpus);
+    const proofPool = [];
+    const addProof = (v) => {
+        const t = String(v || "").trim();
+        if (!t || proofPool.some(x => normName(x) === normName(t))) return;
+        proofPool.push(t);
+    };
+    if (probeName) addProof(probeName);
+    for (const n of grounded) addProof(n);
+    if (quoteOk) addProof(quoted);
+    for (const t of terms) addProof(t);
+
+    const declarations = declaredUniverses(corpus);
     const candidates = discoverCandidates(parsed, parsed?.franchise, probeName);
-    for (const slug of candidates) {
-        const [fKnown, gKnown] = await Promise.all([
-            hostKnowsAny(slug, probes),
-            hostKnowsAny(`${slug}.wiki.gg`, probes),
-        ]);
+    let probeBudget = 24;                              // bounded work: a total miss cannot grind the turn
+    for (const cand of candidates) {
+        const slug = cand.slug;
+        const declaredAs = declaredCandidate(slug, declarations);
+        const keys = proofPool.filter(t => !cand.from || normName(t) !== normName(cand.from)).slice(0, 4);
+        if ((!keys.length && !declaredAs) || probeBudget <= 0) continue;
+        probeBudget -= Math.max(keys.length, 1);
+        const [fKnown, gKnown] = declaredAs
+            ? await Promise.all([
+                hostHasAnything(slug, declaredAs).then(v => v ? declaredAs : ""),
+                hostHasAnything(`${slug}.wiki.gg`, declaredAs).then(v => v ? declaredAs : ""),
+            ])
+            : await Promise.all([
+                hostKnowsAny(slug, keys),
+                hostKnowsAny(`${slug}.wiki.gg`, keys),
+            ]);
         if (myEpoch !== chatEpoch) return;
         const fOk = !!fKnown;
         const gOk = !!gKnown;
@@ -3148,14 +3366,14 @@ async function verifyOrDiscoverWiki() {
         if (!s.savedWikis.includes(stored)) s.savedWikis.push(stored);
         try { saveSettingsDebounced(); } catch (e) { /* library save is best-effort */ }
         const via = (stored.endsWith(".wiki.gg") ? gKnown : fKnown) || probeName;
-        bindChatWiki(stored, probeName, false, via);   // the CHAT gets the universe — the global field is untouched
+        bindChatWiki(stored, rawName, false, via, !!declaredAs);   // the CHAT gets the universe — the global field is untouched
         try { if (refreshWikiUi) refreshWikiUi(); } catch (e) { /* UI optional */ }
-        cgToast("success", `\ud83d\udd2d Wiki found for ${probeName}: ${stored.includes(".") ? stored : stored + ".fandom.com"}`);
-        debug(`\ud83d\udd2d discovery \u2192 ${stored} (candidate "${slug}")`);
+        cgToast("success", `\ud83d\udd2d Universe found via "${via}": ${stored.includes(".") ? stored : stored + ".fandom.com"}`);
+        debug(`\ud83d\udd2d discovery \u2192 ${stored} (candidate "${slug}", proven by "${via}")`);
         return;
     }
-    setChatPin("canon_grounding_wiki_ok", { wikis: activeWikis(), name: probeName, fp, failed: true, ts: Date.now() });
-    cgToast("warning", `\ud83d\udd2d No wiki found for "${probeName}" — set it in Canon Grounding \u2699 (the field is the manual override).`);
+    setChatPin("canon_grounding_wiki_ok", { wikis: activeWikis(), name: rawName, fp, failed: true, ts: Date.now() });
+    cgToast("warning", `\ud83d\udd2d No wiki matched this story \u2014 set one in Canon Grounding \u2699 (the field is the manual override).`);
 }
 globalThis.CanonGrounding_verifyWiki = verifyOrDiscoverWiki;
 
@@ -4371,7 +4589,7 @@ async function addSettingsUI() {
     $("#cg_rescan").on("click", async function () {
         const st = settings();
         if (!st.enabled) { cgToast("warning", "Canon Grounding is disabled."); return; }
-        await verifyOrDiscoverWiki();   // \ud83d\udd2d bounded: settled pin is instant, else one discovery pass
+        await verifyOrDiscoverWiki({ force: true });   // \ud83d\udd2d an explicit scan re-opens even a settled chat
         const ctx = getContext();
         const sceneText = sceneMessages(ctx, st.contextWindow).join("\n");
         if (!sceneText.trim()) { cgToast("info", "No visible scene to scan yet."); return; }

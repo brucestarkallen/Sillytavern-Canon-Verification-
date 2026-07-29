@@ -28,7 +28,13 @@ const pieces = [
     grab("/** Drop everything inside", "// ------"),
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
     grab("function clip(", "/**\n * Build the canon note."),
-    grab("/**\n * Reasoning models", "async function parseSceneCharacters"),
+    // These two slices used to be ONE ending at parseSceneCharacters, which
+    // swallowed the whole 🔭 discovery block below — every function in it was
+    // evaluated TWICE. Function redeclaration is legal so it never surfaced;
+    // the first `const` added there turned it into a hard SyntaxError. Slices
+    // must not overlap: this one stops where the discovery block begins.
+    grab("/**\n * Reasoning models", "function slugifyTitle"),
+    grab("const PLACE_WORDS", "async function parseSceneCharacters"),
     grab("/**\n * A multi-token query must be COVERED", "/** Fire-and-forget dossier"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
     grab("/**\n * Long wiki sections are CHRONOLOGICAL", "async function buildDossier"),
@@ -66,6 +72,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
          arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom, wikiFingerprint,
+         nameTokens, isPlaceholderName, discoveryCorpus, chatEvidenceTerms, groundedNames,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -1160,7 +1167,13 @@ eq("romaji slugging", api.slugifyTitle("Kimetsu no Yaiba"), "kimetsu-no-yaiba");
 eq("punctuation and apostrophes collapse", api.slugifyTitle("Frieren: Beyond Journey's End"), "frieren-beyond-journeys-end");
 eq("edge junk trimmed", api.slugifyTitle("  --Bleach-- "), "bleach");
 T("containment matches", api.titleMatchesName("Jovan Oda (Soul Reaper)", "Jovan Oda"));
-T("shared significant word matches", api.titleMatchesName("Oda Family", "Jovan Oda"));
+T("a SHARED SURNAME is not a match — this assertion used to demand the opposite,\n     and that loose rule is exactly how an unrelated page certified a wiki",
+  !api.titleMatchesName("Oda Family", "Jovan Oda"));
+T("substring is never a match: Yokoda is not Oda", !api.titleMatchesName("Yokoda", "Oda"));
+T("nor is Blade Runner a Zar Blade page", !api.titleMatchesName("Blade Runner", "Zar Blade"));
+T("whole-word containment still matches: Ichigo -> Ichigo Kurosaki", api.titleMatchesName("Ichigo Kurosaki", "Ichigo"));
+T("word order does not matter", api.titleMatchesName("Kurosaki Ichigo", "Ichigo Kurosaki"));
+T("a parenthetical qualifier is not part of the name", api.titleMatchesName("Bleach (manga)", "Bleach"));
 T("unrelated page does not match", !api.titleMatchesName("List of episodes", "Jovan Oda"));
 T("two-letter words never carry a match", !api.titleMatchesName("On It", "It On Go"));
 eq("stale-fork: total silence -> fandom", api.pickLiveHost(null, null), "fandom");
@@ -1169,12 +1182,68 @@ eq("stale-fork: only live host wins", api.pickLiveHost(null, "2026-01-01T00:00:0
 eq("stale-fork: newer edit wins (migrated fandom fork is frozen)", api.pickLiveHost("2023-05-01T00:00:00Z", "2026-05-01T00:00:00Z"), "gg");
 eq("stale-fork: fandom newer keeps fandom", api.pickLiveHost("2026-05-01T00:00:00Z", "2023-05-01T00:00:00Z"), "fandom");
 eq("LLM proposes; dedup, fallbacks, and length filter dispose",
-   api.discoverCandidates({ franchise: "Demon Slayer", slugs: ["Kimetsu no Yaiba", "kimetsu-no-yaiba", "demonslayer", "a"] }, "Demon Slayer", "Tanjiro Kamado"),
+   api.discoverCandidates({ franchise: "Demon Slayer", slugs: ["Kimetsu no Yaiba", "kimetsu-no-yaiba", "demonslayer", "a"] }, "Demon Slayer", "Tanjiro Kamado")
+      .map(c => c.slug),
    ["kimetsu-no-yaiba", "demonslayer", "demon-slayer", "tanjiro-kamado"]);
 eq("no JSON at all still yields deterministic fallbacks",
-   api.discoverCandidates(null, undefined, "Jovan Oda"), ["jovan-oda"]);
+   api.discoverCandidates(null, undefined, "Jovan Oda").map(c => c.slug), ["jovan-oda"]);
+T("a card-name candidate REMEMBERS it came from the card — it may not prove itself",
+  api.discoverCandidates(null, undefined, "Alice").every(c => c.from === "Alice"));
+T("a franchise-proposed candidate carries no such debt",
+  api.discoverCandidates({ slugs: ["bleach"] }, null, "Jovan Oda")[0].from === "");
 eq("canon names lead, the card name trails, dupes collapse",
    api.probeNamesFrom({ names: ["Zar Blade", "zar blade", "Ichi Go"] }, "Zar Blade"), ["Zar Blade", "Ichi Go"]);
+
+// ---------------------------------------------------------------- v0.40.0
+console.log("[v0.40.0 the evidence law — a universe must be proven BY THE CHAT]");
+T("SillyTavern's neutral card is not a protagonist", api.isPlaceholderName("Assistant"));
+T("nor are the other empty labels", ["AI", "System", "Narrator", "User", "New Character", "assistant (default)", "  "]
+  .every(n => api.isPlaceholderName(n)));
+T("a real name is a real name", !api.isPlaceholderName("Jovan Oda"));
+T("and so is a name that merely CONTAINS a generic word", !api.isPlaceholderName("Ai Hoshino"));
+T("placeholders are never probe keys — 'Assistant' matches a page on every wiki alive",
+  api.probeNamesFrom(null, "Assistant").length === 0);
+T("a placeholder cannot ride in on the model's list either",
+  api.probeNamesFrom({ names: ["Assistant", "Spock"] }, "Assistant").join("|") === "Spock");
+
+const CORPUS = `Jovan Oda walks the halls of the Seireitei.
+The Gotei 13 has summoned him; Rukia Kuchiki waits by the gate.`;
+const terms40 = api.chatEvidenceTerms(CORPUS);
+T("multi-word proper nouns lead the evidence", terms40[0].includes(" "));
+T("the chat's distinctive nouns are all found",
+  ["Rukia Kuchiki", "Seireitei", "Gotei"].every(t => terms40.some(x => x.toLowerCase() === t.toLowerCase())));
+T("an explicit declaration outranks everything",
+  api.chatEvidenceTerms("#classroom of the elite\nHe walked to Room B.")[0].toLowerCase() === "classroom of the elite");
+T("a 'fandom:' line is a declaration too",
+  api.chatEvidenceTerms("fandom: Bleach\nthe hall was quiet")[0] === "Bleach");
+T("a blank page yields NO evidence — this is what stops discovery dead", api.chatEvidenceTerms("").length === 0);
+T("neither does formless lowercase chatter", api.chatEvidenceTerms("hey, how are you doing today? i am fine.").length === 0);
+
+T("a model name the chat actually says is usable proof",
+  api.groundedNames(["Rukia Kuchiki"], CORPUS).length === 1);
+T("a model name expanded from a first name still counts",
+  api.groundedNames(["Ichigo Kurosaki"], "Ichigo drew his blade.").length === 1);
+T("a name the chat NEVER says is not proof — this is the whole bug",
+  api.groundedNames(["Spock", "James T. Kirk"], CORPUS).length === 0);
+
+const CARD = { name: "Jovan Oda", description: "A shinigami.", personality: "Calm.",
+               scenario: "The Gotei 13 summons him to Seireitei.", first_mes: "Hello.",
+               creatorcomment: "Bleach fan work", tags: ["bleach", "anime"] };
+const corp = api.discoveryCorpus({ characters: [CARD], characterId: 0, chat: [{ mes: "Rukia nods." }] });
+T("the corpus reads the SCENARIO field, not just the description", corp.includes("Gotei 13"));
+T("the corpus reads the greeting, the notes and the tags",
+  corp.includes("Hello.") && corp.includes("Bleach fan work") && corp.includes("anime"));
+T("the corpus reads the scene", corp.includes("Rukia nods."));
+T("no card and no chat is an empty corpus", api.discoveryCorpus({}) === "");
+T("a card-less chat still speaks", api.discoveryCorpus({ chat: [{ mes: "The Seireitei gates opened." }] }).includes("Seireitei"));
+
+// The exact live report: an empty chat on the neutral card. There is nothing
+// for a universe to be proven WITH, so nothing can be bound.
+const EMPTY = api.discoveryCorpus({ chat: [] });
+T("LO's case: neutral card + empty chat = no name, no terms, no discovery",
+  api.isPlaceholderName("Assistant") && api.chatEvidenceTerms(EMPTY).length === 0);
+T("and the hallucinated pairing cannot certify itself: memory-alpha's 'Spock' is not in this chat",
+  api.groundedNames(["Spock"], EMPTY).length === 0);
 eq("an ORIGINAL protagonist alone is still a valid probe of last resort",
    api.probeNamesFrom(null, "Jovan Custom"), ["Jovan Custom"]);
 T("junk names filtered", api.probeNamesFrom({ names: ["", null, "   "] }, "X").length === 1);

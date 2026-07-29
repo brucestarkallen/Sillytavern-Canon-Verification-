@@ -42,6 +42,18 @@ globalThis.fetch = async (url) => {
         if (sr) return { ok: true, json: async () => ({ query: { search: [{ title: "Zar Blade" }] } }) };
     }
     if (u.hostname.startsWith("missslug.") && sr) return { ok: true, json: async () => ({ query: { search: [] } }) };
+    if (u.hostname === "memory-alpha.fandom.com" && sr) {
+        // a real Star Trek wiki: it knows Star Trek, and nothing else
+        const hit = /spock|kirk|enterprise|vulcan/i.test(sr) ? [{ title: sr }] : [];
+        return { ok: true, json: async () => ({ query: { search: hit } }) };
+    }
+    if (u.hostname === "alice.fandom.com" && sr) {
+        // a real wiki that happens to share the card's name — it knows "Alice"
+        return { ok: true, json: async () => ({ query: { search: /alice/i.test(sr) ? [{ title: "Alice" }] : [] } }) };
+    }
+    if (u.hostname.endsWith(".wiki.gg") && !u.hostname.startsWith("foundsaga") && sr) {
+        return { ok: false, json: async () => ({}) };   // no wiki.gg fork for these
+    }
     if (u.hostname.startsWith("bleachstub")) {
         if (titles === "Zarblade") return { ok: true, json: async () => ({ query: { pages: { 9: { pageid: 9, title: "Zarblade" } } } }) };
         if (titles) return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };
@@ -784,13 +796,13 @@ T("verify the ACTIVE config before spending any discovery LLM",
 T("structural verification: a probe must HIT a canon name, fetch-ok is not enough",
     /if \(\(hits \|\| \[\]\)\.some\(t => titleMatchesName\(t, n\)\)\) return n;/.test(src));
 T("the ACTIVE config is re-verified with CANON names before any candidate",
-    /for \(const w of active\) \{\s*\n\s*const knownAs = await hostKnowsAny\(w, probes\);/.test(src));
+    /for \(const w of active\) \{\s*\n\s*if \(!probes\.length\) break;\s*\n\s*const knownAs = await hostKnowsAny\(w, probes\);/.test(src));
 T("both-hosts hit -> the stale-fork rule decides",
     /pickLiveHost\(fRc, gRc\) === "gg" \? `\$\{slug\}\.wiki\.gg` : slug/.test(src));
 T("discovery fires on CHAT_CHANGED, fire-and-forget",
     /setTimeout\(\(\) => \{ verifyOrDiscoverWiki\(\)\.catch\(\(\) => \{\}\); \}, 0\);/.test(src));
 T("settlement is keyed on the FINGERPRINT of what discovery saw",
-    /if \(ok && ok\.fp === fp\) return;/.test(src));
+    /if \(!opts\.force && ok && ok\.fp === fp\) return;/.test(src));
 T("a manual decree is never second-guessed",
     /if \(ok && ok\.manual\) return;/.test(src));
 T("discovery NEVER writes the global field", !/s\.wikis = stored/.test(src));
@@ -811,12 +823,124 @@ T("failure is remembered, not retried forever",
     /failed: true, ts: Date\.now\(\)/.test(src));
 T("discovery self-heals from EVERY entry point: chat change, boot, and the interceptor",
     (src.match(/verifyOrDiscoverWiki\(\)\.catch\(\(\) => \{\}\)/g) || []).length === 3);
-T("the Scan button AWAITS discovery before scanning",
-    /await verifyOrDiscoverWiki\(\);/.test(src));
+T("the Scan button AWAITS discovery, and FORCES it — an explicit scan re-opens\n     a settled or failed chat instead of being swallowed by the fingerprint",
+    /await verifyOrDiscoverWiki\(\{ force: true \}\);/.test(src));
 T("an EMPTY preview names the wiki state instead of leaving the user guessing",
     /wikiStateHint\(\)/.test(src) && /NOT verified for this chat yet/.test(src));
 T("the discovery prompt is user-visible like every other (🧾 wired)",
     /\["#cg_prompt_discover", "promptDiscover", DEFAULT_PROMPT_DISCOVER\]/.test(src) && /cg_prompt_discover_reset/.test(src));
+
+// [32] v0.40.0 — LO's live report: SillyTavern's NEUTRAL card on a blank chat.
+// There is no protagonist and nothing the story has said, so there is nothing a
+// universe could be proven with. Discovery must not run at all.
+console.log("[32] the neutral card on a blank chat: nothing is spent, nothing is bound");
+const ctx32 = { ...globalThis.__ctx, chat: [], chatMetadata: {}, characters: undefined, characterId: undefined };
+globalThis.__ctx = ctx32;
+ctx32.name2 = "Assistant";
+S25.wikis = "";
+const q32 = parseQueue.length, f32 = fetchLog.length;
+await globalThis.CanonGrounding_verifyWiki();
+T("no proposer was consulted — the model is never asked to invent a universe", parseQueue.length === q32);
+T("no wiki was probed", fetchLog.length === f32);
+T("nothing was bound", !ctx32.chatMetadata.canon_grounding_wiki);
+T("and nothing was SETTLED either — the next turn re-checks for free",
+    !ctx32.chatMetadata.canon_grounding_wiki_ok);
+// the same blank chat, once the story actually speaks, is allowed to discover
+ctx32.chat.push(msg("#Found Saga. The gates of the academy stood open.", true));
+const q32b = parseQueue.length;
+const p32b = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+T("the moment the chat says something, discovery runs", parseQueue.length === q32b + 1);
+parseQueue[q32b].resolve('{"franchise":"Found Saga","slugs":["foundsaga"],"names":["Zar Blade"]}');
+await p32b;
+T("a DECLARED universe binds on the user's own word", ctx32.chatMetadata.canon_grounding_wiki === "foundsaga.wiki.gg");
+T("and it records that a declaration is what proved it",
+    ctx32.chatMetadata.canon_grounding_wiki_ok?.viaDecl === true);
+
+// [33] v0.40.0 — a hallucinated universe cannot certify itself. memory-alpha
+// really does know Spock; that has never been evidence about THIS chat.
+console.log("[33] the proposer hallucinates a franchise the chat has never mentioned");
+const ctx33 = { ...globalThis.__ctx, chat: [], chatMetadata: {}, characters: undefined, characterId: undefined };
+globalThis.__ctx = ctx33;
+ctx33.name2 = "Jovan Custom";
+S25.wikis = "";
+ctx33.chat.push(msg("Jovan Oda walked the halls of the Seireitei toward the Gotei barracks.", true));
+const q33 = parseQueue.length, f33 = fetchLog.length;
+const p33 = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+parseQueue[q33].resolve('{"franchise":"Star Trek","evidence":"the USS Enterprise","slugs":["memory-alpha"],"names":["Spock","James T. Kirk"]}');
+await p33;
+const w33 = fetchLog.slice(f33).filter(u => u.includes("srsearch"));
+T("memory-alpha was NOT bound", ctx33.chatMetadata.canon_grounding_wiki !== "memory-alpha");
+T("nothing at all was bound", !ctx33.chatMetadata.canon_grounding_wiki);
+T("the chat settled as failed, honestly", ctx33.chatMetadata.canon_grounding_wiki_ok?.failed === true);
+T("\"Spock\" was never used as a key — the chat never says it",
+    !w33.some(u => /srsearch=Spock/i.test(u)));
+T("nor was the invented quote — it is not in the text either",
+    !w33.some(u => /USS\+Enterprise|USS%20Enterprise/i.test(u)));
+T("the keys came from the CHAT: its own proper nouns were probed",
+    w33.some(u => /srsearch=Seireitei/i.test(u)));
+
+// [34] v0.40.0 — the law is not blanket refusal. Let the chat actually mention
+// the canon name and the very same proposal binds.
+console.log("[34] the same proposal, once the chat really says it, binds");
+const ctx34 = { ...globalThis.__ctx, chat: [], chatMetadata: {}, characters: undefined, characterId: undefined };
+globalThis.__ctx = ctx34;
+ctx34.name2 = "Jovan Custom";
+S25.wikis = "";
+ctx34.chat.push(msg("Spock raised an eyebrow as the shuttle docked.", true));
+const q34 = parseQueue.length;
+const p34 = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+parseQueue[q34].resolve('{"franchise":"Star Trek","slugs":["memory-alpha"],"names":["Spock"]}');
+await p34;
+T("a canon name the chat DOES say is proof, and the universe binds",
+    ctx34.chatMetadata.canon_grounding_wiki === "memory-alpha");
+T("the pin records the term that proved it", ctx34.chatMetadata.canon_grounding_wiki_ok?.via === "Spock");
+
+// [35] v0.40.0 — a wiki may not be certified by the string that named it.
+console.log("[35] the card name cannot certify a wiki named after the card");
+const ctx35 = { ...globalThis.__ctx, chat: [], chatMetadata: {}, characters: undefined, characterId: undefined };
+globalThis.__ctx = ctx35;
+ctx35.name2 = "Alice";
+S25.wikis = "";
+ctx35.chat.push(msg("Alice tended the greenhouse in silence.", true));
+const q35 = parseQueue.length;
+const p35 = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+parseQueue[q35].resolve('{"franchise":"","evidence":"","slugs":[],"names":[]}');
+await p35;
+T("alice.fandom.com knowing an \"Alice\" is not evidence — nothing bound",
+    !ctx35.chatMetadata.canon_grounding_wiki);
+T("the chat settled as failed rather than guessing",
+    ctx35.chatMetadata.canon_grounding_wiki_ok?.failed === true);
+
+// [36] v0.40.0 — static witnesses for the evidence law.
+console.log("[36] v0.40.0 static witnesses — the evidence law");
+T("no evidence -> discovery returns BEFORE the proposer is ever called",
+    src.indexOf("if (!probeName && !terms.length)") < src.indexOf("llmCall(s.promptDiscover"));
+T("no evidence -> no pin is written, so the hold costs nothing and re-checks",
+    /if \(!probeName && !terms\.length\) \{[\s\S]{0,200}return;\s*\n\s*\}/.test(src));
+T("a placeholder card name never becomes a protagonist",
+    /const probeName = \(rawName && !isPlaceholderName\(rawName\)\) \? rawName : "";/.test(src));
+T("candidate keys are chat-grounded: model names must survive groundedNames",
+    /const grounded = groundedNames\(/.test(src) && /for \(const n of grounded\) addProof\(n\);/.test(src));
+T("the proposer's quote must be findable in the text before it is trusted",
+    /const quoteOk = quoted && quoted\.length >= 3 &&/.test(src));
+T("a candidate can never be proven by the string that generated it",
+    /proofPool\.filter\(t => !cand\.from \|\| normName\(t\) !== normName\(cand\.from\)\)/.test(src));
+T("a declaration is a decree: it only has to be REAL, not to pass a title match",
+    /const declaredAs = declaredCandidate\(slug, declarations\);/.test(src)
+    && /hostHasAnything\(slug, declaredAs\)/.test(src));
+T("a declared binding re-verifies the way it was PROVEN, not more strictly",
+    /const reDecl = !!\(ok && ok\.viaDecl && ok\.via\);/.test(src));
+T("discovery reads the whole card and the latest scenes, not a 600-char slice",
+    /function discoveryCorpus\(ctx\)/.test(src) && /add\(ch\.scenario, 800\);/.test(src)
+    && /msgs\.slice\(0, 2\)\.concat\(msgs\.slice\(-6\)\)/.test(src));
+T("candidate probing is bounded — a total miss cannot grind the turn",
+    /let probeBudget = 24;/.test(src));
+T("the proposer is told that guessing is worse than nothing",
+    /guessing is worse than nothing/.test(src));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
