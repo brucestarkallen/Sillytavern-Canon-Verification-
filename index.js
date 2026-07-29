@@ -88,7 +88,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.34.1";
+const CG_VERSION = "0.35.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -184,6 +184,13 @@ const DEFAULT_PROMPT_AUDITOR =
         "A name appearing only in a roster, class list, cast enumeration, opening summary, or " +
         "similar catalogue is NOT presence in the scene — answer false for those. " +
         'Respond with ONLY a JSON object mapping each entity name to true or false. No other text.';
+const DEFAULT_PROMPT_ARCJUDGE =
+        "You referee STORY PROGRESSION for a roleplay. You are given a scene and ONE candidate canon event/arc. " +
+        "Decide whether the story itself has MOVED INTO that event: it is beginning, starting, or actively underway " +
+        "in the scene's present moment. Characters merely remembering, discussing, comparing to, planning for, " +
+        "dreading, or being warned about the event does NOT count, and a flashback to it does NOT count — " +
+        "only the present scene entering the event counts. " +
+        'Respond with ONLY {"advance": true} or {"advance": false}. No other text.';
 
 const defaultSettings = {
     enabled: true,
@@ -273,6 +280,7 @@ const defaultSettings = {
     promptAuditor: "",
     promptHeader: "",
     promptAsk: "",
+    promptArcJudge: "",
     // LLM-curated dossiers: the model reads each grounded page once (background,
     // cached forever) and writes the injection itself — identity, load-bearing
     // facts, secrets-as-secrets, voice, per-person dynamics. Regex sections stay
@@ -1648,8 +1656,9 @@ async function askCanon(request) {
     return { ok: false, msg: "unknown action" };
 }
 
-async function groundArc(query) {
+async function groundArc(query, opts = {}) {
     const myEpoch = chatEpoch;   // arc pinning is FOR the chat that asked — a switch during the fetches below must drop it, not re-target it
+    const mode = opts.mode === "begun" ? "begun" : "reached";
     const s = settings();
     const wikis = s.wikis.split(",").map(w => w.trim()).filter(Boolean);
     const structural = /\b(arc|saga|chapter|episode|season|volume|part)\b/i;
@@ -1684,12 +1693,18 @@ async function groundArc(query) {
                 || extractLead(wikitext, 900);
             if (!summary) continue;
             if (myEpoch !== chatEpoch) return null;   // chat switched mid-fetch: pinning now would stamp the OLD story's position onto the NEW chat
-            const note = { query, title, wiki, summary, ts: Date.now() };
-            setChatArc(note);
+            const base = { query, title, wiki, summary, ts: Date.now() };
+            if (opts.name) base.name = opts.name;
+            // ONE writer for the transition: manual (reached) wipes the tracker's
+            // memory — the user redefined the timeline; auto (begun) records the
+            // superseded position so the story can never slide back to it.
+            const t = arcTransition(chatArc(), chatArcReached(), base, mode);
+            setChatArc(t.note);
+            setChatPin("canon_grounding_arc_reached", t.reached);
             s.arcTitle = query;               // remembered globally as input convenience only
             saveSettingsDebounced();
-            debug(`✓ story position → ${title} (${wiki})`);
-            return note;
+            debug(`✓ story position → ${title} (${wiki})${mode === "begun" ? " — just beginning" : ""}`);
+            return t.note;
         } catch (e) {
             debug(`arc ground error on ${wiki}: ${e.message}`);
         }
@@ -1708,6 +1723,39 @@ function pickArcHit(titles, query) {
 }
 
 /**
+ * STORY POSITION is a HIGH-WATER MARK. arcAlreadyReached answers "has this
+ * chat's story already been at this event?" — true for the current position
+ * (under any of its names: resolved title, original query, triggering entity)
+ * and for every position the auto-tracker has superseded. A reached event
+ * re-entering the scene is a reference, a memory, or a flashback: the position
+ * must not regress to it, and no referee call is spent on it.
+ */
+function arcAlreadyReached(candidate, curNote, reached) {
+    const lc = normName(candidate);
+    if (!lc) return false;
+    if (curNote && [curNote.title, curNote.query, curNote.name].some(x => x && normName(x) === lc)) return true;
+    return (Array.isArray(reached) ? reached : []).some(x => normName(x) === lc);
+}
+
+/**
+ * ONE writer for a story-position transition. mode "reached" is a USER DECREE
+ * (settings box, Ask Canon): the user redefined the timeline, so the tracker's
+ * memory of superseded positions is wiped — the story may be replayed forward
+ * through them again. mode "begun" is the AUTO-TRACKER advancing: the outgoing
+ * position joins the reached list (title, query, and triggering entity name
+ * all count) so the story can never slide back to it on a mention.
+ */
+function arcTransition(prevNote, reached, note, mode) {
+    if (mode !== "begun") return { note: { ...note, mode: "reached" }, reached: [] };
+    const out = (Array.isArray(reached) ? reached : []).map(x => normName(x)).filter(Boolean);
+    for (const x of prevNote ? [prevNote.title, prevNote.query, prevNote.name] : []) {
+        const lc = normName(x || "");
+        if (lc && !out.includes(lc)) out.push(lc);
+    }
+    return { note: { ...note, mode: "begun" }, reached: out };
+}
+
+/**
  * Story position is PER-CHAT state (a pinned Eminence arc must not bleed into a
  * Roshidere chat), stored in chat metadata. settings().arcNote remains as a legacy
  * fallback for pre-v0.5 pins and for very old ST builds without chat metadata.
@@ -1718,6 +1766,13 @@ function chatArc() {
         if (md && md.canon_grounding_arc !== undefined) return md.canon_grounding_arc;
     } catch (e) { /* no context yet */ }
     return settings().arcNote;
+}
+/** The auto-tracker's per-chat memory of superseded positions (see arcTransition). */
+function chatArcReached() {
+    try {
+        const r = getContext().chatMetadata?.canon_grounding_arc_reached;
+        return Array.isArray(r) ? r : [];
+    } catch (e) { return []; }
 }
 function chatPin() {
     try { return getContext().chatMetadata?.canon_grounding_pin || ""; } catch (e) { return ""; }
@@ -2412,11 +2467,17 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     let arcBlock = "";
     const arcNote = (arc !== undefined) ? arc : s.arcNote;
     if (s.arcInject && arcNote && arcNote.summary) {
-        arcBlock =
-            `STORY POSITION — ${arcNote.title}: ${arcNote.summary}\n` +
-            `(Only events up to this point have occurred. Later canon events, reveals, and ` +
-            `identities are unknown to every character — never foreshadow or use them.)\n`;
-        reasons.push(`story position ← ${arcNote.title}`);
+        // mode "begun" = the auto-tracker just moved here: the arc SUMMARY is the
+        // narrator's map of canon that has NOT happened yet — quarantined from
+        // character knowledge, never asserted as past. Manual/legacy notes keep
+        // the original "everything above has occurred" semantics byte-for-byte.
+        arcBlock = (arcNote.mode === "begun")
+            ? `STORY POSITION — ${arcNote.title} (just beginning): ${arcNote.summary}\n` +
+              `(The story is at the START of this arc: the summary above is the narrator's map of canon events that have NOT yet occurred — let them unfold naturally, never treat them as past, and no character knows them. Events from earlier arcs have occurred. Canon beyond this arc, and every unrevealed identity, is likewise unknown to every character — never foreshadow or use it.)\n`
+            : `STORY POSITION — ${arcNote.title}: ${arcNote.summary}\n` +
+              `(Only events up to this point have occurred. Later canon events, reveals, and ` +
+              `identities are unknown to every character — never foreshadow or use them.)\n`;
+        reasons.push(`story position ← ${arcNote.title}${arcNote.mode === "begun" ? " (just begun)" : ""}`);
     }
 
     let pinBlock = "";
@@ -2734,6 +2795,57 @@ const EVENT_WORDS = /\b(arc|saga|festival|exam|examination|tournament|war|battle
 const COMBAT_WORDS = /\b(fight|fights|fighting|fought|battle|battling|duel|duels|spar|sparring|combat|attack|attacks|attacked|strike|strikes|struck|slash|stab|parry|parries|dodge|dodges|block(?:s|ed)?|clash|clashes|kill|kills|killed|slay|wound|wounded|sword|blade|dagger|spear|bow|gun|fist|magic|mana|spell|spells|cast|casting|technique|techniques|jutsu|quirk|semblance|ability|abilities|power|powers|weapon|weapons|armor|armour|enemy|enemies|ambush|assassin|assassinate|duelist|training|train(?:s|ed)?\s+(?:with|against))\b/i;
 
 const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|city|town|village|kingdom|empire|nation|guild|organization|organisation|company|agency|island|castle|palace|temple|church|dungeon|tower|district|region|world|realm|garden)\b/i;
+
+/**
+ * 📖 THE STORY REFEREE — the auto-tracker's occurring-vs-mentioned judgment.
+ * An event ENTERING THE CAST is not the story entering the event: the parser
+ * lists remembered, discussed, and flashback entities by design, and string
+ * heuristics cannot tell "the Festival begins" from "she missed the Festival".
+ * A model can (the Cast Auditor argument), and this call fires only for a NEW
+ * candidate event — reached ones are skipped before it. Fails safe: no
+ * verdict = no advancement; the position holds until the story really moves.
+ */
+async function judgeArcAdvance(sceneText, eventName, curTitle) {
+    const systemText = (settings().promptArcJudge || "").trim() || DEFAULT_PROMPT_ARCJUDGE;
+    const userText = `<scene>\n${sceneText}\n</scene>\n\nCandidate event: "${eventName}"` +
+        (curTitle ? `\nCurrent story position: "${curTitle}"` : "") + `\n\nJSON verdict:`;
+    const out = await llmCall(systemText, userText, { maxTokens: 60, budgetMs: Math.min(Number(settings().parserBudgetMs) || 30000, 12000) });
+    if (!out) return false;
+    const v = parseJsonCandidates(out, "{", "}", x => x && typeof x === "object" && !Array.isArray(x));
+    return !!(v && v.advance === true);
+}
+
+/**
+ * WORLD STATE from the cast — ONE definition for every parse path (interceptor,
+ * post-generation scan, manual rescan), so a story the AI moves advances the
+ * position exactly like a story the player moves. A PLACE becomes the CURRENT
+ * SETTING; an EVENT/ARC is a candidate to ADVANCE THE STORY POSITION — gated by
+ * the high-water mark (never regress, never re-pin) and the 📖 story referee
+ * (occurring, not merely mentioned). Events are checked first so a "Sports
+ * Festival" moves the story instead of becoming a room.
+ */
+async function applyCastWorldState(names, sceneText, myEpoch) {
+    const s = settings();
+    for (const n of names || []) {
+        const hit = cacheEntryFor(n.toLowerCase());
+        if (!hit) continue;
+        if (s.autoArc && EVENT_WORDS.test(hit.entry.name)) {
+            const cur = chatArc();
+            if (arcAlreadyReached(hit.entry.name, cur, chatArcReached())) continue;
+            const go = await judgeArcAdvance(sceneText, hit.entry.name, cur && cur.title);
+            if (myEpoch !== chatEpoch) return;
+            if (!go) continue;
+            groundArc(hit.entry.name, { mode: "begun", name: hit.entry.name }).then(got => {
+                if (got) {
+                    cgToast("info", `📖 story position → ${got.title}`);
+                    if (renderArcStatus) try { renderArcStatus(); } catch (e) {}
+                }
+            }).catch(() => {});
+        } else if (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name)) {
+            setChatPin("canon_grounding_setting", hit.key);
+        }
+    }
+}
 
 /**
  * Split verified cast by evidence STRENGTH. Strong = the evidence (or name-in-text
@@ -3133,27 +3245,10 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                         if (names.length) {
                             await groundNames(names, true);   // trusted: model chose these (may be lore)
                             if (myEpoch !== chatEpoch) return;
-                            // A PLACE in the cast becomes the CURRENT SETTING; an EVENT/ARC
-                            // in the cast ADVANCES THE STORY POSITION — autonomously, with the
-                            // full plot summary + spoiler guard. Events are checked first so a
-                            // "Sports Festival" moves the story instead of becoming a room.
-                            for (const n of names) {
-                                const hit = cacheEntryFor(n.toLowerCase());
-                                if (!hit) continue;
-                                if (s.autoArc && EVENT_WORDS.test(hit.entry.name)) {
-                                    const cur = chatArc();
-                                    if (!cur || cur.title !== hit.entry.name) {
-                                        groundArc(hit.entry.name).then(got => {
-                                            if (got) {
-                                                cgToast("info", `📖 story position → ${got.title}`);
-                                                if (renderArcStatus) try { renderArcStatus(); } catch (e) {}
-                                            }
-                                        }).catch(() => {});
-                                    }
-                                } else if (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name)) {
-                                    setChatPin("canon_grounding_setting", hit.key);
-                                }
-                            }
+                            // World state from the cast (setting + story position):
+                            // ONE definition, every parse path — see applyCastWorldState.
+                            await applyCastWorldState(names, sceneText, myEpoch);
+                            if (myEpoch !== chatEpoch) return;
                         }
                     }
                 }
@@ -3387,7 +3482,13 @@ async function onMessageReceived() {
                 if (p.now) castFocus[p.name.toLowerCase()] = p.now;
                 if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
             }
-            if (names.length) await groundNames(names, true);
+            if (names.length) {
+                await groundNames(names, true);
+                if (myEpoch !== chatEpoch) return;
+                // The AI is usually the one who moves the story — its own narration
+                // entering an event must advance the position too, same rules.
+                await applyCastWorldState(names, sceneText, myEpoch);
+            }
         }
         return;
     }
@@ -3461,7 +3562,7 @@ async function addSettingsUI() {
                     <input id="cg_autoarc" type="checkbox">
                     <span>Auto-advance story position 📖</span>
                 </label>
-                <small class="cg-hint">When a canon arc/event enters the scene ("the Bushin Festival begins"), the story position advances itself — full plot summary, spoiler guard, supersedes the old pin. Smart autonomous: the story moves, the extension follows.</small>
+                <small class="cg-hint">When the story ENTERS a canon arc/event ("the Bushin Festival begins"), the position advances itself — full plot summary, spoiler guard, supersedes the old pin. A 📖 story-referee call rules occurring vs merely mentioned, so memories, flashbacks, and comparisons never move it — and the position never slides backward to an event the story already passed. Smart autonomous: the story moves, the extension follows.</small>
                 <small class="cg-hint">Adds the arc summary + a spoiler guard ("later events are unknown to every character") on top of the canon note.</small>
                 <hr>
                 <small><b>Pinned canon</b> — your words, always injected, above everything:</small>
@@ -3664,6 +3765,9 @@ async function addSettingsUI() {
                 <label>Cast Auditor 🛡 (judges weak evidence)</label>
                 <textarea id="cg_prompt_auditor" class="text_pole" rows="5"></textarea>
                 <div id="cg_prompt_auditor_reset" class="menu_button" title="Restore default">↺ default</div>
+                <label>📖 Story referee (has the story ENTERED this event?)</label>
+                <textarea id="cg_prompt_arcjudge" class="text_pole" rows="5"></textarea>
+                <div id="cg_prompt_arcjudge_reset" class="menu_button" title="Restore default">↺ default</div>
                 <label>🗣 Ask Canon router (maps your words to an action)</label>
                 <textarea id="cg_prompt_ask" class="text_pole" rows="5"></textarea>
                 <div id="cg_prompt_ask_reset" class="menu_button" title="Restore default">↺ default</div>
@@ -3734,6 +3838,7 @@ async function addSettingsUI() {
         ["#cg_prompt_dossier", "promptDossier", DEFAULT_PROMPT_DOSSIER],
         ["#cg_prompt_auditor", "promptAuditor", DEFAULT_PROMPT_AUDITOR],
         ["#cg_prompt_ask",     "promptAsk",     DEFAULT_PROMPT_ASK],
+        ["#cg_prompt_arcjudge", "promptArcJudge", DEFAULT_PROMPT_ARCJUDGE],
     ];
     for (const [sel, key, def] of PROMPTS) {
         $(sel).val((s[key] || "").trim() || def).on("input", function () {
@@ -3787,7 +3892,7 @@ async function addSettingsUI() {
     // Story position (arc/chapter grounding).
     const renderArc = () => {
         const a = chatArc();
-        $("#cg_arc_status").text(a ? `✓ ${a.title} (${a.wiki}) — this chat` : "—");
+        $("#cg_arc_status").text(a ? `✓ ${a.title}${a.mode === "begun" ? " · just begun" : ""} (${a.wiki}) — this chat` : "—");
     };
     renderArcStatus = renderArc;
     $("#cg_arc").val(s.arcTitle || "");
@@ -3818,7 +3923,7 @@ async function addSettingsUI() {
         else $("#cg_arc_status").text("✕ no arc/chapter page found on: " + s.wikis);
     });
     $("#cg_arc_clear").on("click", function () {
-        s.arcTitle = ""; setChatArc(null); $("#cg_arc").val("");
+        s.arcTitle = ""; setChatArc(null); setChatPin("canon_grounding_arc_reached", []); $("#cg_arc").val("");
         saveSettingsDebounced(); renderArc();
     });
     $("#cg_arc_inject").prop("checked", s.arcInject).on("input", function () {
@@ -4010,6 +4115,8 @@ async function addSettingsUI() {
                     }
                     if (names.length) {
                         await groundNames(names, true);
+                        if (myEpoch !== chatEpoch) return;
+                        await applyCastWorldState(names, sceneText, myEpoch);
                         if (myEpoch !== chatEpoch) return;
                         cgToast("success", `Grounded: ${names.join(", ")}`);
                     } else {
