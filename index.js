@@ -1976,7 +1976,12 @@ function cacheEntryFor(nameLcRaw) {
 function pruneStaleCast(visibleLen, sceneMsgs) {
     if (!lastCast || !lastCast.length) return [];
     const s = settings();
-    if (visibleLen - lastCastLen <= s.contextWindow) return [...lastCast];
+    // A NEGATIVE delta means the chat SHRANK (messages deleted/swiped away) —
+    // the anchor is gone, not the grace period. Falling through to the mention
+    // check against the window that exists NOW is the only sound move; treating
+    // shrinkage as "within grace" froze decay and pinned ghosts forever.
+    const delta = visibleLen - lastCastLen;
+    if (delta >= 0 && delta <= s.contextWindow) return [...lastCast];
     const lower = (sceneMsgs || []).map(m => m.toLowerCase());
     const kept = lastCast.filter(cn => {
         const hit = cacheEntryFor(cn.toLowerCase());

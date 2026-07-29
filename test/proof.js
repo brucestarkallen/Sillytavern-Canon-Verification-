@@ -200,6 +200,11 @@ api.setCast(["Alisa Mikhailovna Kujou", "Cid Kagenou"], 20);
 const pruned = api.pruneStaleCast(40, ["alya leaned closer", "the rain fell"]); // 20 msgs later, only Alya named
 eq("past grace: off-screen char dropped, mentioned (via alias) kept", pruned, ["Alisa Mikhailovna Kujou"]);
 eq("prune writes back (ghost stays gone)", api.getCast(), ["Alisa Mikhailovna Kujou"]);
+// v0.34.1: a NEGATIVE delta (messages deleted, chat shrank below the anchor) used
+// to read as "within grace" forever — decay froze and ghosts pinned permanently.
+api.setCast(["Alisa Mikhailovna Kujou", "Cid Kagenou"], 50);
+const afterDelete = api.pruneStaleCast(10, ["alya is still here"]);   // chat SHRANK 50 → 10
+eq("message deletion does not freeze decay — off-screen still pruned", afterDelete, ["Alisa Mikhailovna Kujou"]);
 api.setCast([], 0);
 eq("empty cast → []", api.pruneStaleCast(50, ["anything"]), []);
 
