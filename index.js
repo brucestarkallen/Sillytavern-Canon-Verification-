@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.36.0";
+const CG_VERSION = "0.36.1";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -194,8 +194,10 @@ const DEFAULT_PROMPT_ARCJUDGE =
         'Respond with ONLY {"advance": true} or {"advance": false}. No other text.';
 
 const DEFAULT_PROMPT_DISCOVER = `You identify which MediaWiki fan wiki covers a story. Given a protagonist and story text, output STRICT JSON only:
-{"franchise":"<franchise name>","slugs":["slug1","slug2"]}
-slugs: 3-6 lowercase hyphenated wiki-subdomain candidates for this franchise, most likely FIRST. Include romaji/alternate titles (e.g. Demon Slayer -> "kimetsu-no-yaiba") and common short forms. No prose, no markdown, JSON only.`;
+{"franchise":"<franchise name>","slugs":["slug1","slug2"],"names":["Full Name","Full Name"]}
+slugs: 3-6 lowercase hyphenated wiki-subdomain candidates for this franchise, most likely FIRST. Include romaji/alternate titles (e.g. Demon Slayer -> "kimetsu-no-yaiba") and common short forms.
+names: 3-5 full names of this franchise's most famous CANON characters (the protagonist may be an original character who appears in no wiki — never rely on them alone).
+No prose, no markdown, JSON only.`;
 
 const defaultSettings = {
     enabled: true,
@@ -2839,6 +2841,24 @@ function discoverCandidates(parsed, franchiseFallback, probeName) {
     return out.slice(0, 8);
 }
 
+/** Names to verify a wiki WITH: the franchise's famous canon characters (from
+ * the LLM) plus the card name itself — because an ORIGINAL protagonist is, by
+ * definition, in no wiki, and must never be the only key we test with. */
+function probeNamesFrom(parsed, probeName) {
+    const out = [];
+    const seen = new Set();
+    const push = (v) => {
+        const t = String(v || "").trim();
+        if (!t) return;
+        const k = normName(t);
+        if (!k || seen.has(k)) return;
+        seen.add(k); out.push(t);
+    };
+    if (parsed && Array.isArray(parsed.names)) for (const n of parsed.names.slice(0, 5)) push(n);
+    push(probeName);
+    return out.slice(0, 6);
+}
+
 const PLACE_WORDS = /\b(school|academy|institute|institution|university|college|city|town|village|kingdom|empire|nation|guild|organization|organisation|company|agency|island|castle|palace|temple|church|dungeon|tower|district|region|world|realm|garden)\b/i;
 
 /**
@@ -2982,6 +3002,13 @@ async function fetchLastEdit(wikiSpec) {
         return data?.query?.recentchanges?.[0]?.timestamp || null;
     } catch (e) { return null; }
 }
+async function hostKnowsAny(wikiSpec, names) {
+    for (const n of names) {
+        const hits = await fetchSearchTitles(wikiSpec, n);
+        if ((hits || []).some(t => titleMatchesName(t, n))) return n;
+    }
+    return "";
+}
 /** \ud83d\udd2d The wikis FIELD stays the manual override; this makes it optional.
  * Verify the active wiki actually knows the protagonist; if not, discover one:
  * the LLM proposes candidate slugs (it knows romaji titles), and every candidate
@@ -3014,15 +3041,28 @@ async function verifyOrDiscoverWiki() {
     if (myEpoch !== chatEpoch) return;
     let parsed = null;
     try { parsed = JSON.parse(String(out || "").replace(/```json|```/gi, "").trim()); } catch (e) { /* fails safe */ }
+    const probes = probeNamesFrom(parsed, probeName);
+    // An ORIGINAL protagonist is in no wiki — so before touching candidates,
+    // re-verify the ACTIVE config with the franchise's CANON names: a correct
+    // manual setup must settle silently, never be told "not found".
+    for (const w of active) {
+        const knownAs = await hostKnowsAny(w, probes);
+        if (myEpoch !== chatEpoch) return;
+        if (knownAs) {
+            setChatPin("canon_grounding_wiki_ok", { wikis: String(s.wikis || ""), name: probeName, ts: Date.now() });
+            debug(`\ud83d\udd2d wiki verified for ${probeName} via canon name "${knownAs}": ${w}`);
+            return;
+        }
+    }
     const candidates = discoverCandidates(parsed, parsed?.franchise, probeName);
     for (const slug of candidates) {
-        const [fHits, gHits] = await Promise.all([
-            fetchSearchTitles(slug, probeName),
-            fetchSearchTitles(`${slug}.wiki.gg`, probeName),
+        const [fKnown, gKnown] = await Promise.all([
+            hostKnowsAny(slug, probes),
+            hostKnowsAny(`${slug}.wiki.gg`, probes),
         ]);
         if (myEpoch !== chatEpoch) return;
-        const fOk = (fHits || []).some(t => titleMatchesName(t, probeName));
-        const gOk = (gHits || []).some(t => titleMatchesName(t, probeName));
+        const fOk = !!fKnown;
+        const gOk = !!gKnown;
         if (!fOk && !gOk) continue;
         let stored = fOk ? slug : `${slug}.wiki.gg`;
         if (fOk && gOk) {
