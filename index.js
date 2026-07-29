@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.39.0";
+const CG_VERSION = "0.39.1";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -112,9 +112,12 @@ const DEFAULT_PROMPT_HEADER =
         "never let a character's dialogue, thoughts, or behavior betray information " +
         "sourced from this reference.\n" +
         "BEHAVIOR here is memory of how they've TENDED to be — never a script. They " +
-        "are a person first: they react to what just happened, and mood, company, " +
-        "privacy, and stakes bend them. Pressure shows THROUGH a trait, not instead " +
-        "of it — defiance strains, fear leaks, tactics shift — and an identical " +
+        "are a person first: traits decide HOW they respond, never WHETHER they " +
+        "respond humanly. They react to what just happened; mood, company, privacy, " +
+        "and stakes bend them — stoic on duty can be warm or petty in private. " +
+        "Pressure shows THROUGH a trait, not instead " +
+        "of it — defiance strains, fear leaks, tactics shift; people bargain, beg, " +
+        "break, or hold at visible cost — and an identical " +
         "reaction repeated while circumstances escalate is a portrayal error. When a " +
         "'With <name>' line matches someone in the scene, that dynamic overrides the " +
         "baseline. Voice lines are style samples: match their cadence and attitude " +

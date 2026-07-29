@@ -774,6 +774,9 @@ T("header: pressure texture kept (strain, leak, shift)", /defiance strains, fear
 T("header: identical repetition under escalation = portrayal error", /identical reaction repeated while circumstances escalate is a portrayal error/.test(hdrNote));
 T("header: reacts to what just happened", /react to what just happened/.test(hdrNote));
 T("header: facts are the accurate memory; behavior stays unscripted", /it IS the accurate memory/.test(hdrNote) && /never a script/.test(hdrNote));
+T("header: HOW they respond, never WHETHER they respond humanly", /HOW they respond, never WHETHER they respond humanly/.test(hdrNote));
+T("header: breaking is licensed — bargain, beg, break, or hold", /bargain, beg, break, or hold at visible cost/.test(hdrNote));
+T("header: private warmth example survives compression", /stoic on duty can be warm or petty in private/.test(hdrNote));
 T("dossier brief: temperament as tendency, not law", /write temperament as living tendency, not law/.test(src));
 T("dossier brief: absolutist wording banned unless sourced", /avoid absolutist wording \("always", "never", "nothing can"\) unless the source itself insists/.test(src));
 T("regex personality routes through head+tail sampling", /personality: join\(\s*extractInfoboxFields\(wikitext, perKw\),\s*sampleSection\(extractSection\(wikitext, perKw, 4000\), 500\)\s*\)/.test(src));
