@@ -467,5 +467,41 @@ T("…and it landed in the cache as a found entry", !!(cache20["solo kingdom"] &
 S.parserEveryTurn = false;
 S.llmDossier = false;
 
+// [21] v0.34.1 — the first-meeting wait fired on ANY pair of novel lowercase
+// tokens, so ordinary prose ("the river water runs cold") bought the same 12s
+// stall as a real first meeting. A candidate/pair built ENTIRELY from common
+// English words is prose; one uncommon token keeps the signal.
+console.log("[21] first-meeting wait: prose pairs ignored, real names still wait");
+S.lowercaseNames = true;
+S.maxBlockMs = 250;
+S.firstMeetWaitMs = 1500;
+const q21a = parseQueue.length;
+const logs21a = [];
+const origLog21 = console.log;
+console.log = (...a) => { logs21a.push(a.join(" ")); };
+globalThis.__ctx.chat.push(msg("the river water runs cold", true));
+const t21a = Date.now();
+const run21a = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(30);
+parseQueue[q21a]?.resolve('[]');   // the parser gate itself still fires — cheap, and it converges
+await run21a;
+console.log = origLog21;
+T("common prose pair: NO first-meeting wait", !logs21a.some(l => l.includes("first meeting")));
+T("common prose pair: turn returned near the normal ceiling", Date.now() - t21a < 1200);
+const q21b = parseQueue.length;
+const logs21b = [];
+console.log = (...a) => { logs21b.push(a.join(" ")); };
+globalThis.__ctx.chat.push(msg("zephira voss walks in", true));
+const run21b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(30);
+console.log = origLog21;
+T("a real lowercase name STILL extends the wait (no detection regression)",
+    logs21b.some(l => l.includes("first meeting")));
+parseQueue[q21b]?.resolve('["Zephira Voss"]');
+await run21b;
+S.lowercaseNames = false;
+S.maxBlockMs = 30000;
+S.firstMeetWaitMs = 30000;
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -460,6 +460,75 @@ const LOWER_TRIGGERS = new Set([
     "met", "meet", "find", "search", "lookup", "look", "wiki", "canon", "info",
 ]);
 
+// High-frequency English words that are never the distinguishing half of a typed
+// name. The first-meeting wait (needsFirstMeetWait) used to fire on ANY pair of
+// novel lowercase tokens — "the fire burns low" bought a 12-second stall once,
+// exactly like a real first meeting. A pair/candidate whose tokens are ALL in
+// this lexicon is prose, not a person. Deliberately EXCLUDES words the docs and
+// tests use as real names (rose, shadow, alpha…) so "rose oriana walks in"
+// still extends the wait: one uncommon token is enough to keep the signal.
+const COMMON_LOWERCASE = new Set([
+    // motion & action verbs (3rd-person and base forms as they appear in prose)
+    "walks", "walked", "walking", "runs", "running", "sits", "sitting", "stands",
+    "stood", "standing", "nods", "nodded", "nodding", "smiles", "smiled", "laughs",
+    "laughed", "sighs", "sighed", "whispers", "whispered", "shouts", "shouted",
+    "screams", "screamed", "cries", "cried", "looks", "looked", "looking", "turns",
+    "turned", "says", "said", "asks", "asked", "answers", "answered", "speaks",
+    "spoke", "talks", "talked", "tells", "told", "hears", "heard", "listens",
+    "listened", "watches", "watched", "sees", "saw", "moves", "moved", "stays",
+    "stayed", "waits", "waited", "opens", "opened", "closes", "closed", "falls",
+    "fell", "falling", "rises", "risen", "breaks", "broke", "takes", "took",
+    "gives", "gave", "makes", "made", "comes", "came", "coming", "goes", "went",
+    "gone", "knows", "knew", "thinks", "thought", "feels", "felt", "seems",
+    "seemed", "wants", "wanted", "needs", "needed", "likes", "liked", "loves",
+    "loved", "hates", "hated", "tries", "tried", "starts", "started", "stops",
+    "stopped", "keeps", "kept", "leaves", "left", "finds", "found", "loses",
+    "lost", "wins", "won", "dies", "died", "kills", "killed", "fights", "fought",
+    "sleeps", "slept", "wakes", "woke", "eats", "ate", "drinks", "drank",
+    "works", "worked", "plays", "played", "reads", "writes", "wrote", "calls",
+    "called", "follows", "followed", "leads", "led", "holds", "held", "pulls",
+    "pulled", "pushes", "pushed", "catches", "caught", "throws", "threw", "cuts",
+    "draws", "drew", "wears", "wore", "carries", "carried", "builds", "built",
+    "burns", "burned", "burning", "flies", "flew", "enters", "entered",
+    "approaches", "approached", "returns", "returned", "remains", "remained",
+    "continues", "continued", "begins", "began", "pauses", "paused", "steps",
+    "stepped", "crosses", "crossed", "reaches", "reached", "touches", "touched",
+    "grabs", "grabbed", "glances", "glanced", "stares", "stared", "blinks",
+    "blinked", "frowns", "frowned", "shrugs", "shrugged", "leans", "leaned",
+    "kneels", "knelt", "bows", "bowed", "gestures", "gestured", "replies",
+    "replied", "responds", "responded", "mutters", "muttered", "mumbles",
+    "grins", "grinned", "smirks", "smirked", "chuckles", "chuckled", "growls",
+    "snarls", "yawns", "stretches", "settles", "settled", "drifts", "drifted",
+    "flickers", "flickered", "glows", "glowed", "shines", "shone", "hangs",
+    "hung", "lies", "lay", "lain", "rests", "rested", "passes", "passed",
+    // scene nouns
+    "fire", "fires", "flame", "flames", "smoke", "ashes", "dust", "door",
+    "doors", "window", "windows", "room", "rooms", "table", "tables", "chair",
+    "chairs", "floor", "floors", "wall", "walls", "ceiling", "hall", "hallway",
+    "corridor", "stairs", "gate", "gates", "night", "morning", "evening",
+    "afternoon", "dusk", "dawn", "rain", "snow", "wind", "storm", "thunder",
+    "lightning", "water", "river", "ocean", "lake", "forest", "trees", "tree",
+    "road", "roads", "path", "street", "bridge", "mountain", "hill", "field",
+    "fields", "sky", "skies", "sun", "moon", "light", "lights", "darkness",
+    "ground", "stone", "stones", "rock", "rocks", "wood", "wooden", "metal",
+    "iron", "glass", "paper", "papers", "book", "books", "candle", "candles",
+    "lantern", "hand", "hands", "head", "face", "voice", "sound", "sounds",
+    "silence", "music", "song", "songs", "bell", "bells", "clock", "hour",
+    "hours", "minute", "minutes", "moment", "moments", "second", "seconds",
+    "day", "days", "week", "weeks", "month", "year", "years", "time", "times",
+    "home", "house", "houses", "bed", "beds", "roof", "floorboards", "embers",
+    "campfire", "courtyard", "garden", "tower", "castle",
+    // qualities & manner
+    "low", "high", "soft", "softly", "quiet", "loud", "loudly", "slow", "fast",
+    "hard", "cold", "warm", "hot", "cool", "bright", "dim", "dark", "pale",
+    "heavy", "empty", "full", "small", "large", "big", "little", "long", "tall",
+    "wide", "narrow", "deep", "shallow", "calm", "gentle", "gently", "rough",
+    "smooth", "sharp", "dull", "faint", "faintly", "distant", "nearby", "close",
+    "closer", "far", "away", "ahead", "behind", "beside", "beyond", "around",
+    "above", "below", "inside", "outside", "tonight", "together", "alone",
+    "quietly", "slowly", "softly", "suddenly", "finally", "patiently", "warmly",
+]);
+
 function isNameToken(tok) {
     return /^[A-Za-z][A-Za-z'’-]+$/.test(tok) && tok.length >= 2;
 }
@@ -2881,14 +2950,18 @@ function needsFirstMeetWait(lastUserMsg, priorMsgs) {
         const lc = n.toLowerCase();
         if (cacheEntryFor(lc)) continue;
         // "Oriana" alone is covered by cached "Rose Oriana" — partial references
-        // to known people are NOT first meetings.
-        if (lc.split(/\s+/).every(t => parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t))) continue;
+        // to known people are NOT first meetings. Neither is ordinary prose: a
+        // candidate built ENTIRELY from high-frequency English words ("fire
+        // burns") is a sentence fragment, not a person — waiting 12s for it was
+        // the false-positive stall. One uncommon token keeps the signal alive
+        // ("rose oriana": "oriana" is not in the lexicon → still a first meet).
+        if (lc.split(/\s+/).every(t => parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t) || COMMON_LOWERCASE.has(t))) continue;
         return true;
     }
     if (settings().lowercaseNames) {
         const toks = String(lastUserMsg).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
         const known = (t) => NOISE_WORDS.has(t) || STOPWORDS.has(t[0].toUpperCase() + t.slice(1))
-            || parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t);
+            || parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t) || COMMON_LOWERCASE.has(t);
         for (let i = 0; i < toks.length - 1; i++) {
             if (!known(toks[i]) && !known(toks[i + 1])) return true;
         }
