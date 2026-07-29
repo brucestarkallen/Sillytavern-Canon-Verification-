@@ -34,6 +34,7 @@ const pieces = [
     grab("/**\n * Long wiki sections are CHRONOLOGICAL", "async function buildDossier"),
     grab("/**\n * The identity line", "function extractLead"),
     grab("/** Prefer story-structure titles", "// ------"),
+    grab("function slugifyTitle", "const PLACE_WORDS"),
     grab("function apiBase", "async function"),
     grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
     grab("const DEFAULT_PROMPT_HEADER", "const DEFAULT_PROMPT_PARSER"),
@@ -64,7 +65,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
-         arcAlreadyReached, arcTransition,
+         arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -1126,6 +1127,26 @@ T("begun-mode arc block frames the summary as unhappened",
 const reachedNote = api.relevantCanonNote([], [], { title: "Feast Arc", wiki: "w", summary: "Chaos erupts." });
 T("legacy/manual notes keep the original guard byte-for-byte",
   /Only events up to this point have occurred/.test(reachedNote) && !/just beginning/.test(reachedNote));
+
+// ---------------------------------------------------------------- v0.36.0
+console.log("[v0.36.0 wiki discovery — pure rules]");
+eq("romaji slugging", api.slugifyTitle("Kimetsu no Yaiba"), "kimetsu-no-yaiba");
+eq("punctuation and apostrophes collapse", api.slugifyTitle("Frieren: Beyond Journey's End"), "frieren-beyond-journeys-end");
+eq("edge junk trimmed", api.slugifyTitle("  --Bleach-- "), "bleach");
+T("containment matches", api.titleMatchesName("Jovan Oda (Soul Reaper)", "Jovan Oda"));
+T("shared significant word matches", api.titleMatchesName("Oda Family", "Jovan Oda"));
+T("unrelated page does not match", !api.titleMatchesName("List of episodes", "Jovan Oda"));
+T("two-letter words never carry a match", !api.titleMatchesName("On It", "It On Go"));
+eq("stale-fork: total silence -> fandom", api.pickLiveHost(null, null), "fandom");
+eq("stale-fork: unreadable rival loses", api.pickLiveHost("2026-01-01T00:00:00Z", null), "fandom");
+eq("stale-fork: only live host wins", api.pickLiveHost(null, "2026-01-01T00:00:00Z"), "gg");
+eq("stale-fork: newer edit wins (migrated fandom fork is frozen)", api.pickLiveHost("2023-05-01T00:00:00Z", "2026-05-01T00:00:00Z"), "gg");
+eq("stale-fork: fandom newer keeps fandom", api.pickLiveHost("2026-05-01T00:00:00Z", "2023-05-01T00:00:00Z"), "fandom");
+eq("LLM proposes; dedup, fallbacks, and length filter dispose",
+   api.discoverCandidates({ franchise: "Demon Slayer", slugs: ["Kimetsu no Yaiba", "kimetsu-no-yaiba", "demonslayer", "a"] }, "Demon Slayer", "Tanjiro Kamado"),
+   ["kimetsu-no-yaiba", "demonslayer", "demon-slayer", "tanjiro-kamado"]);
+eq("no JSON at all still yields deterministic fallbacks",
+   api.discoverCandidates(null, undefined, "Jovan Oda"), ["jovan-oda"]);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

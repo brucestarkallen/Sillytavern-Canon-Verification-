@@ -35,6 +35,13 @@ globalThis.fetch = async (url) => {
     const u = new URL(url);
     const titles = u.searchParams.get("titles");
     const page = u.searchParams.get("page");
+    const sr = u.searchParams.get("srsearch");
+    const list = u.searchParams.get("list");
+    if (u.hostname === "foundsaga.fandom.com" || u.hostname === "foundsaga.wiki.gg") {
+        if (list === "recentchanges") return { ok: true, json: async () => ({ query: { recentchanges: [{ timestamp: u.hostname.endsWith("wiki.gg") ? "2026-06-01T00:00:00Z" : "2023-01-01T00:00:00Z" }] } }) };
+        if (sr) return { ok: true, json: async () => ({ query: { search: [{ title: "Zar Blade" }] } }) };
+    }
+    if (u.hostname.startsWith("missslug.") && sr) return { ok: true, json: async () => ({ query: { search: [] } }) };
     if (u.hostname.startsWith("bleachstub")) {
         if (titles === "Zarblade") return { ok: true, json: async () => ({ query: { pages: { 9: { pageid: 9, title: "Zarblade" } } } }) };
         if (titles) return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };
@@ -608,6 +615,73 @@ T("clearing the position also clears the tracker's memory",
     /setChatArc\(null\); setChatPin\("canon_grounding_arc_reached", \[\]\);/.test(src));
 T("the referee prompt is user-visible like every other (🧾 wired)",
     /\["#cg_prompt_arcjudge", "promptArcJudge", DEFAULT_PROMPT_ARCJUDGE\]/.test(src) && /cg_prompt_arcjudge_reset/.test(src));
+
+// [25] v0.36.0 — 🔭 wiki discovery: verify first, discover when needed, settle forever.
+console.log("[25] wiki discovery: verify -> discover -> settle, wiki.gg beats a frozen fork");
+const S25 = extension_settings.canon_grounding;
+S25.autoDiscoverWiki = true;
+S25.promptDiscover = "";
+globalThis.__ctx.name2 = "Zar Blade";
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+S25.wikis = "";
+const f25 = fetchLog.length, q25 = parseQueue.length;
+const p25a = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+T("empty config goes straight to the proposer", parseQueue.length === q25 + 1);
+parseQueue[q25].resolve('{"franchise":"Found Saga","slugs":["foundsaga"]}');
+await p25a;
+T("both hosts probed for the candidate",
+    fetchLog.slice(f25).some(u => u.includes("foundsaga.fandom.com") && u.includes("srsearch"))
+    && fetchLog.slice(f25).some(u => u.includes("foundsaga.wiki.gg") && u.includes("srsearch")));
+T("stale-fork rule consulted recent changes on both",
+    fetchLog.slice(f25).filter(u => u.includes("recentchanges")).length === 2);
+T("live wiki.gg beat the frozen fandom fork", S25.wikis === "foundsaga.wiki.gg");
+T("discovered wiki saved to the library", S25.savedWikis.includes("foundsaga.wiki.gg"));
+const ok25 = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+T("chat settled with a verified pin", ok25 && ok25.wikis === "foundsaga.wiki.gg" && ok25.name === "Zar Blade" && !ok25.failed);
+// settled: a second call must cost NOTHING — no LLM, no fetches
+const f25b = fetchLog.length, q25b = parseQueue.length;
+await globalThis.CanonGrounding_verifyWiki();
+T("settled chat costs zero LLM and zero fetches", parseQueue.length === q25b && fetchLog.length === f25b);
+// verify-path: pin gone but the config is right -> one probe confirms, no LLM spent
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+const q25c = parseQueue.length;
+await globalThis.CanonGrounding_verifyWiki();
+T("a correct existing config is verified without any LLM call", parseQueue.length === q25c);
+const ok25c = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+T("verification re-pins the chat", ok25c && ok25c.name === "Zar Blade" && !ok25c.failed);
+// failure settles: candidates that exist but DON'T know the protagonist are rejected
+delete globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+S25.wikis = "";
+const q25d = parseQueue.length;
+const p25d = globalThis.CanonGrounding_verifyWiki();
+await sleep(20);
+parseQueue[q25d].resolve('{"franchise":"Missing","slugs":["missslug"]}');
+await p25d;
+T("an ok-but-empty wiki is structurally rejected, config untouched", S25.wikis === "");
+const ok25d = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
+T("failure settles with a marked pin", ok25d && ok25d.failed === true);
+const q25e = parseQueue.length, f25e = fetchLog.length;
+await globalThis.CanonGrounding_verifyWiki();
+T("a failed chat never nags again", parseQueue.length === q25e && fetchLog.length === f25e);
+S25.wikis = "testwiki";
+
+// [26] v0.36.0 — static witnesses for the discovery wiring.
+console.log("[26] v0.36.0 static witnesses — wiki discovery wiring");
+T("verify the ACTIVE config before spending any discovery LLM",
+    /for \(const w of active\) \{\s*\n\s*const hits = await fetchSearchTitles\(w, probeName\);/.test(src));
+T("structural verification: a probe must HIT the protagonist, fetch-ok is not enough",
+    /const fOk = \(fHits \|\| \[\]\)\.some\(t => titleMatchesName\(t, probeName\)\)/.test(src));
+T("both-hosts hit -> the stale-fork rule decides",
+    /pickLiveHost\(fRc, gRc\) === "gg" \? `\$\{slug\}\.wiki\.gg` : slug/.test(src));
+T("discovery fires on CHAT_CHANGED, fire-and-forget",
+    /setTimeout\(\(\) => \{ verifyOrDiscoverWiki\(\)\.catch\(\(\) => \{\}\); \}, 0\);/.test(src));
+T("a settled pin short-circuits before any cost",
+    /ok\.wikis === String\(s\.wikis \|\| ""\) && ok\.name === probeName\) return;/.test(src));
+T("failure is remembered, not retried forever",
+    /failed: true, ts: Date\.now\(\)/.test(src));
+T("the discovery prompt is user-visible like every other (🧾 wired)",
+    /\["#cg_prompt_discover", "promptDiscover", DEFAULT_PROMPT_DISCOVER\]/.test(src) && /cg_prompt_discover_reset/.test(src));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
