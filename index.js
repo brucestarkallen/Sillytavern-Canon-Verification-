@@ -3095,8 +3095,12 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
 
         // Per-pair dynamics: with the cast settled, resolve "how A is around B" for every
         // grounded pair on screen (cached forever per pair; subpage fetches budgeted).
+        // The PAIR gate applies ONLY to pair dynamics — background-entity expansion
+        // (resolveRelated) and the dossier self-upgrade need just ONE entity on
+        // screen. Gating them behind >1 made solo-character scenes silently lose
+        // their Context lines and never self-heal legacy dossiers.
         const pairPool = [...(cast || []), ...pinNames];
-        if (pairPool.length > 1) {
+        if (pairPool.length > 0) {
             const uniq = new Map();
             for (const n of pairPool) {
                 const hit = cacheEntryFor(n.toLowerCase());

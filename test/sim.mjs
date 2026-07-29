@@ -441,5 +441,31 @@ T("the implausible height is gone", !/2\.3/.test(cache19.healme.sections.physica
 T("the entry was rebuilt from the wiki", /Healme-colored/.test(cache19.healme.sections.physical || ""));
 T("the heal is stamped with the fix generation", !!cache19.healme.healV);
 
+// [20] v0.34.1 — background-entity expansion was gated behind pairPool.length > 1,
+// so a SOLO character scene never grounded its dossier "related" entities and the
+// Context line could never appear. Pair dynamics need two; expansion needs one.
+console.log("[20] solo scene still grounds background entities (pair-gate decoupled)");
+const cache20 = globalThis.__ctx.chatMetadata.canon_grounding_cache;
+cache20.solochar = { name: "Solochar", found: true, wiki: "testwiki", aliases: [], rel: {},
+    sections: { physical: "hair: red" },
+    dossier: { identity: "A lone knight.", brief: "", facts: [], secrets: [], voice: [], abilities: [],
+               dynamics: {}, related: [{ name: "Solo Kingdom", why: "her homeland" }] }, ts: Date.now() };
+S.llmDossier = true;
+S.parserEveryTurn = true;
+globalThis.__ctx.chat.push(msg("Solochar walks the road alone.", false));
+const q20 = parseQueue.length;
+const f20 = fetchLog.length;
+const run20 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("parser fired for the solo scene", parseQueue.length === q20 + 1);
+parseQueue[q20]?.resolve('["SoloChar"]');
+await run20;
+await sleep(30);
+T("background entity fetched for a ONE-character cast (was gated behind pairs)",
+    fetchLog.slice(f20).some(u => decodeURIComponent(u).toLowerCase().includes("solo kingdom")));
+T("…and it landed in the cache as a found entry", !!(cache20["solo kingdom"] && cache20["solo kingdom"].found));
+S.parserEveryTurn = false;
+S.llmDossier = false;
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
