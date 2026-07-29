@@ -56,6 +56,37 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.36.0 (🔭 the wiki finds itself: the field becomes an override)
+
+Proven by `test/proof.js` (384) + `test/sim.mjs` (133) — a full live discovery
+scenario plus wiring witnesses, with three negative-tested guards. You no longer
+type the wiki; you only correct it if you ever disagree.
+
+1. **Verify before anything.** On every chat open, one cheap probe asks the
+   ACTIVE wiki whether it actually knows your protagonist. Yes → the chat is
+   pinned as settled and discovery never costs another call. This also means an
+   already-correct manual config is confirmed silently, with zero LLM spend.
+2. **The LLM proposes, the wiki API disposes.** When the config is empty or
+   wrong for this chat, a small call proposes candidate wiki slugs from the
+   character card — including romaji titles ("Demon Slayer" lives at
+   `kimetsu-no-yaiba`, which no string heuristic derives) — and EVERY candidate
+   is verified structurally against the real `api.php`: a search for the
+   protagonist must actually hit. A hallucinated slug simply fails its probe;
+   an existing-but-wrong wiki (fetch-ok, zero relevant results) is rejected the
+   same way. Nothing unverified can ever land in your config.
+3. **A live wiki.gg beats a frozen Fandom fork.** When both hosts answer for
+   the same slug, `recentchanges` timestamps decide: the wiki with the newer
+   last edit is the live one (many big fandoms migrated to wiki.gg and left a
+   frozen copy behind). Unreadable recency loses to readable; total silence
+   defaults to Fandom. Deterministic, documented, witnessed.
+4. **Found or failed, the chat settles.** Success fills the field, saves the
+   wiki to your library, and pins the chat; failure toasts ONCE and pins a
+   failed marker — no nagging, ever, until the chat or the wikis field changes
+   (editing the field invalidates the pin, and the negative-miss cache was
+   already keyed to the wiki list). The field's hint now says what it is: the
+   manual OVERRIDE. Toggle: 🔭 Find the wiki automatically (default on); the
+   discovery prompt is visible and editable in 🧾 like every other.
+
 ## Changelog — v0.35.0 (📖 the story referee: entering ≠ mentioning, and the position never regresses)
 
 Proven by `test/proof.js` (370) + `test/sim.mjs` (114) — live referee scenarios,
