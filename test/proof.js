@@ -64,6 +64,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
+         arcAlreadyReached, arcTransition,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -1102,6 +1103,29 @@ sandbox.__settings.cache = {
 const oldNote = api.relevantCanonNote(["oldchar stood watch"], ["Oldchar"]);
 T("legacy dossier renders a note instead of killing the injection", /Oldchar:/.test(oldNote));
 T("legacy dossier still shows its identity", /A veteran of the old shape/.test(oldNote));
+
+console.log("[v0.35.0 story position — high-water mark + begun framing]");
+Object.assign(sandbox.__settings, { arcInject: true, promptHeader: "", maxCharacters: 8, maxCharsPerChar: 1100, maxTotalChars: 6000 });
+T("current position matches by title, query, AND triggering name",
+  ["Feast Arc", "harvest feast", "Harvest Banquet"].every(c =>
+      api.arcAlreadyReached(c, { title: "Feast Arc", query: "harvest feast", name: "Harvest Banquet" }, [])));
+T("reached list blocks a superseded event", api.arcAlreadyReached("Old War", null, ["old war"]));
+T("a NEW event is not 'reached'", !api.arcAlreadyReached("Winter Gala", { title: "Feast Arc", query: "feast" }, ["old war"]));
+T("apostrophe dialects unify in the mark", api.arcAlreadyReached("King\u2019s Trial", null, ["king's trial"]));
+const tr1 = api.arcTransition({ title: "Feast Arc", query: "feast", name: "Harvest Banquet" }, ["old war"],
+    { title: "Winter Gala", query: "gala" }, "begun");
+T("auto transition appends EVERY name of the outgoing position",
+  ["old war", "feast arc", "feast", "harvest banquet"].every(x => tr1.reached.includes(x)) && tr1.note.mode === "begun");
+const tr2 = api.arcTransition({ title: "Winter Gala" }, ["feast arc"], { title: "Feast Arc", query: "feast" }, "reached");
+T("manual transition is a decree: reached list wiped, mode reached",
+  tr2.reached.length === 0 && tr2.note.mode === "reached");
+const begunNote = api.relevantCanonNote([], [], { title: "Feast Arc", wiki: "w", summary: "Chaos erupts.", mode: "begun" });
+T("begun-mode arc block frames the summary as unhappened",
+  /Feast Arc \(just beginning\)/.test(begunNote) && /NOT yet occurred/.test(begunNote)
+  && !/Only events up to this point have occurred/.test(begunNote) && /never foreshadow/.test(begunNote));
+const reachedNote = api.relevantCanonNote([], [], { title: "Feast Arc", wiki: "w", summary: "Chaos erupts." });
+T("legacy/manual notes keep the original guard byte-for-byte",
+  /Only events up to this point have occurred/.test(reachedNote) && !/just beginning/.test(reachedNote));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

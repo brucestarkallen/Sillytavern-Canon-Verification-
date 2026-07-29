@@ -92,6 +92,14 @@ His signature technique is '''Falling Star''', a downward cut that shatters guar
 }}
 == Personality ==
 ${"Tailchar is stern, unyielding, and utterly devoted to duty. ".repeat(10)}Yet in her final year she laughs easily and forgives quickly.` } } }) };
+    if (page === "Harvest Banquet") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`The '''Harvest Banquet''' is the kingdom's grand autumn feast.
+== Summary ==
+Nobles gather at the palace; a poisoning is uncovered; the banquet ends in chaos.` } } }) };
+    if (page === "Winter Gala") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`The '''Winter Gala''' is the capital's midwinter celebration.
+== Summary ==
+The gala opens with a masquerade and closes with a duel on the ice.` } } }) };
     if (page) return { ok: true, json: async () => ({ parse: { wikitext: { "*": `{{Infobox\n| hair = ${page}-colored\n}}\n== Personality ==\nCalm.` } } }) };
     return { ok: true, json: async () => ({}) };
 };
@@ -250,7 +258,7 @@ extension_settings.canon_grounding.llmDossier = false;
 console.log("[9] cross-chat write guards (static witnesses)");
 T("scheduleDossier is entry-bound (signature)", /function scheduleDossier\(entry, name, wikitext, relRaw\)/.test(src));
 T("dossier .then never re-looks-up by key", !/buildDossier\([^)]*\)\.then\(d => \{\s*\n\s*const e = cache\(\)/.test(src));
-T("groundArc captures its epoch at entry", /async function groundArc\(query\) \{\s*\n\s*const myEpoch = chatEpoch;/.test(src));
+T("groundArc captures its epoch at entry", /async function groundArc\(query, opts = \{\}\) \{\s*\n\s*const myEpoch = chatEpoch;/.test(src));
 T("groundArc drops a stale arc instead of pinning it", /if \(myEpoch !== chatEpoch\) return null;\s*\/\/ chat switched mid-fetch/.test(src));
 T("askCanon captures its epoch at entry", /async function askCanon\(request\) \{\s*\n\s*const myEpoch = chatEpoch;/.test(src));
 T("askCanon drops a stale command after the router call", /chat changed while the command was being read/.test(src));
@@ -523,6 +531,83 @@ T("decay handles chat shrinkage explicitly",
     /const delta = visibleLen - lastCastLen;\s*\n\s*if \(delta >= 0 && delta <= s\.contextWindow\)/.test(src));
 T("first-meeting wait applies the common-word lexicon in both branches",
     (src.match(/COMMON_LOWERCASE\.has\(t\)/g) || []).length === 2);
+
+// [23] v0.35.0 — autonomous story position: the story ENTERING an event advances
+// the pin (begun mode); a mere mention does not; and the position never regresses
+// to an event already passed (no referee call is even spent on it).
+console.log("[23] auto story position: enter advances, mention doesn't, never regresses");
+const S23 = extension_settings.canon_grounding;
+const md23 = globalThis.__ctx.chatMetadata;
+delete md23.canon_grounding_arc; delete md23.canon_grounding_arc_reached;
+const q23a = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Lanterns rise as the Harvest Banquet begins around us.", false));
+const run23a = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+T("parser fired for the event", parseQueue.length === q23a + 1);
+parseQueue[q23a].resolve('[{"name":"Harvest Banquet","now":"beginning","evidence":"Harvest Banquet begins"}]');
+await sleep(60);
+T("story referee consulted for a NEW candidate event", parseQueue.length === q23a + 2);
+T("the referee is shown the scene and the candidate", /Candidate event: "Harvest Banquet"/.test(sentPrompts[sentPrompts.length - 1] || ""));
+parseQueue[q23a + 1].resolve('{"advance": true}');
+await run23a;
+await sleep(80);   // fire-and-forget groundArc completes
+T("position advanced to the event", md23.canon_grounding_arc?.title === "Harvest Banquet");
+T("auto pin is BEGUN mode (arc summary is future, not past)", md23.canon_grounding_arc?.mode === "begun");
+globalThis.__ctx.chat.push(msg("And then the music keeps on playing softly.", true));
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+T("begun framing injected: summary marked NOT yet occurred",
+    /Harvest Banquet \(just beginning\)/.test(lastInjection()) && /NOT yet occurred/.test(lastInjection()));
+// --- a mere MENTION of a different event must not move the position ---
+const q23b = parseQueue.length;
+globalThis.__ctx.chat.push(msg("She fondly recalled last year's Winter Gala.", false));
+const run23b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+parseQueue[q23b].resolve('[{"name":"Winter Gala","now":"remembered","evidence":"Winter Gala"}]');
+await sleep(60);
+T("referee consulted for the mentioned event", parseQueue.length === q23b + 2);
+parseQueue[q23b + 1].resolve('{"advance": false}');
+await run23b;
+await sleep(60);
+T("a memory does NOT move the story position", md23.canon_grounding_arc?.title === "Harvest Banquet");
+// --- the story then really enters the Gala ---
+S23.parserEveryTurn = true;
+const q23c = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Snow falls as the Winter Gala begins.", false));
+const run23c = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+parseQueue[q23c].resolve('[{"name":"Winter Gala","now":"beginning","evidence":"Winter Gala begins"}]');
+await sleep(60);
+parseQueue[q23c + 1].resolve('{"advance": true}');
+await run23c;
+await sleep(80);
+T("position advanced to the new event", md23.canon_grounding_arc?.title === "Winter Gala");
+T("superseded position remembered as reached", (md23.canon_grounding_arc_reached || []).includes("harvest banquet"));
+// --- a reference BACK to the passed event: no regression, and no referee spent ---
+const q23d = parseQueue.length;
+globalThis.__ctx.chat.push(msg("Talk of the Harvest Banquet still lingers.", false));
+const run23d = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+parseQueue[q23d].resolve('[{"name":"Harvest Banquet","now":"referenced","evidence":"Harvest Banquet"}]');
+await run23d;
+await sleep(60);
+T("no referee call for an already-reached event", parseQueue.length === q23d + 1);
+T("the position never slid backward", md23.canon_grounding_arc?.title === "Winter Gala");
+S23.parserEveryTurn = false;
+
+// [24] v0.35.0 — static witnesses for the story-referee wiring.
+console.log("[24] v0.35.0 static witnesses — story referee wiring");
+T("world-state applier: ONE definition, three call paths (interceptor, post-gen, rescan)",
+    (src.match(/await applyCastWorldState\(names, sceneText, myEpoch\)/g) || []).length === 3);
+T("high-water mark checked BEFORE a referee call is spent",
+    /arcAlreadyReached\(hit\.entry\.name, cur, chatArcReached\(\)\)\) continue;\s*\n\s*const go = await judgeArcAdvance/.test(src));
+T("referee fails safe: no verdict, no advancement",
+    /async function judgeArcAdvance/.test(src) && /if \(!out\) return false;/.test(src));
+T("manual pin is a decree: reached list wiped; auto appends",
+    /if \(mode !== "begun"\) return \{ note: \{ \.\.\.note, mode: "reached" \}, reached: \[\] \};/.test(src));
+T("clearing the position also clears the tracker's memory",
+    /setChatArc\(null\); setChatPin\("canon_grounding_arc_reached", \[\]\);/.test(src));
+T("the referee prompt is user-visible like every other (🧾 wired)",
+    /\["#cg_prompt_arcjudge", "promptArcJudge", DEFAULT_PROMPT_ARCJUDGE\]/.test(src) && /cg_prompt_arcjudge_reset/.test(src));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
