@@ -56,6 +56,38 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.40.1 (the preview must measure, and the scene must survive a stray bracket)
+
+Proven by `test/proof.js` (440) + `test/sim.mjs` (201); **15/15 guards
+negative-tested**. Live report: preview EMPTY (with the canned three-claim
+toast) while the cache list showed four found characters and "Why each was
+injected" listed them — the panel contradicting itself on one screen.
+
+Four defects, four canonical fixes:
+
+1. **A stray unclosed `[META:` block blinded the entire scene.**
+   `stripMetaBlocks`'s unclosed-block fallback ate to end of MESSAGE
+   (`[^\]]*` crosses newlines) — one cut-off marker anywhere and every
+   paragraph after it vanished before matching, so the matcher saw a blank
+   scene while the prose named the whole cast. Unclosed blocks now strip to
+   the end of their LINE; the stream-cut case (block runs to end of message)
+   the `$` existed for still strips, byte-identical.
+2. **The empty-preview toast asserted three facts it never measured** —
+   "nothing cached is named in the scene window, cast is empty, and no
+   pins/arc are set" was a static string. It is now a measured diagnosis:
+   scene size, found-entry count, cast length, pin list, whether the setting
+   pin actually resolves — and it hunts the nearest miss, naming the two
+   silent scene-killers outright: characters *named ONLY inside `[META:]`
+   blocks* (stripped before matching — Summaryception/ACW presence markers
+   are exactly this shape), and a *dangling setting pin*.
+3. **The ghost panel.** `renderLastInjection` early-returned on an empty
+   injection without touching "Why each was injected", so the previous
+   non-empty turn's reasons sat on screen under a "Nothing injected" banner
+   forever. An empty injection now clears the panel.
+4. **The setting pin was exact-key-or-nothing.** A re-keyed entry (canonical
+   re-ground, corpse burial) silently darkened the pin. It now resolves
+   through `cacheEntryFor` like every other name.
+
 ## Changelog — v0.40.0 (the evidence law: a universe must be proven BY THE CHAT)
 
 Proven by `test/proof.js` (430) + `test/sim.mjs` (195); **all ten guards

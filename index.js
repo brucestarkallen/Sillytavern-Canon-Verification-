@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.40.0";
+const CG_VERSION = "0.40.1";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2174,7 +2174,52 @@ function appearanceLine(entry) {
  *  "[laughs]", and name-tagged dialogue ("[Kiyotaka: …]") survive. An
  *  unclosed block (mid-stream cut) drops to end of message. */
 function stripMetaBlocks(text) {
-    return String(text || "").replace(/\[[A-Z][A-Z0-9 _&-]{1,14}:[^\]]*(\]|$)/g, " ");
+    // Closed [META: …] blocks strip in full (they may span lines). An UNCLOSED
+    // block — a streamed generation cut mid-block — strips only to the end of
+    // ITS LINE: the old rule ate to end of MESSAGE ([^\]]* crosses newlines),
+    // so one stray "[ACW: …" blinded the matcher to every paragraph after it,
+    // and the preview reported an empty scene while the prose named the whole
+    // cast. A stream cut IS the end of the message, so that case still strips.
+    return String(text || "").replace(/\[[A-Z][A-Z0-9 _&-]{1,14}:(?:[^\]]*\]|[^\]\n]*)/g, " ");
+}
+
+/**
+ * Why is the note empty? MEASURED, never asserted. Reports what actually exists
+ * (found entries, scene size, cast, pins, whether the setting pin resolves) and
+ * hunts for the nearest miss: a cached name visible in the RAW scene but not in
+ * the STRIPPED scene means the name lives only inside [META:] blocks — the
+ * matcher is meta-blind by design, and this says so instead of shrugging.
+ */
+function emptyNoteDiagnosis(rawMsgs, castNames, extras = {}) {
+    try {
+        const store = cache();
+        const found = Object.entries(store).filter(([, e]) => e && e.found && e.sections);
+        const raw = (rawMsgs || []).join("\n");
+        const stripped = (rawMsgs || []).map(stripMetaBlocks).join("\n");
+        const rawLc = raw.toLowerCase(), strippedLc = stripped.toLowerCase();
+        const bits = [];
+        bits.push(`scene: ${(rawMsgs || []).length} msg / ${raw.length} chars`);
+        bits.push(`cache: ${found.length} found entr${found.length === 1 ? "y" : "ies"}`);
+        bits.push(`cast: ${(castNames || []).length}`);
+        const pinCt = (extras.pinNames || []).filter(Boolean).length;
+        if (pinCt) bits.push(`pins: ${pinCt}`);
+        if (extras.settingKey) {
+            const sk = String(extras.settingKey).toLowerCase();
+            const ok = (store[sk] && store[sk].found) || cacheEntryFor(sk);
+            bits.push(ok ? `setting pin resolves ("${extras.settingKey}")` : `setting pin DANGLES ("${extras.settingKey}" has no cache entry)`);
+        }
+        const metaOnly = [], nowhere = [];
+        for (const [key, e] of found) {
+            const names = [e.name, key, ...(e.aliases || [])].filter(Boolean).map(n => String(n).toLowerCase());
+            const inRaw = names.some(n => mentioned(n, rawLc));
+            const inStripped = names.some(n => mentioned(n, strippedLc));
+            if (inRaw && !inStripped) metaOnly.push(e.name);
+            else if (!inRaw) nowhere.push(e.name);
+        }
+        if (metaOnly.length) bits.push(`\u26a0 named ONLY inside [META:] blocks (stripped before matching): ${metaOnly.slice(0, 4).join(", ")}`);
+        if (nowhere.length && nowhere.length === found.length) bits.push("no cached name appears anywhere in the window");
+        return bits.join(" \u00b7 ");
+    } catch (e) { return "diagnosis failed: " + e.message; }
 }
 
 function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
@@ -2242,8 +2287,10 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // the parser whenever a place enters the cast; superseded by the next place;
     // removable via the blocklist.
     const store = cache();
-    if (extras.settingKey && store[extras.settingKey]) {
-        admit(store[extras.settingKey], store[extras.settingKey].name, extras.settingKey, { setting: true });
+    if (extras.settingKey) {
+        const sk = String(extras.settingKey).toLowerCase();
+        const direct = store[sk] && store[sk].found ? { key: sk, entry: store[sk] } : cacheEntryFor(sk);
+        if (direct) admit(direct.entry, direct.entry.name, direct.key, { setting: true });
     }
 
     // PRIORITY TIERS (decree over inference): characters the PLAYER just named
@@ -4514,10 +4561,13 @@ async function addSettingsUI() {
             });
             lastInjection = note;
             lastInjectionAt = Date.now();
+            lastSource = "preview";
             renderLastInjection();
             cgToast(note ? "success" : "warning", note
                 ? `Preview built: ${lastMatchReasons.length} entr${lastMatchReasons.length === 1 ? "y" : "ies"} — see "Last injection" below.`
-                : "Preview is EMPTY: nothing cached is named in the scene window, cast is empty, and no pins/arc are set." + wikiStateHint());
+                : `Preview is EMPTY \u2014 ${emptyNoteDiagnosis(scene, cast, {
+                    pinNames: chatPinNames(), settingKey: chatSettingKey(),
+                  })}.` + wikiStateHint());
         } catch (e) {
             cgToast("error", `Preview failed: ${e.message}`);
         }
@@ -4646,6 +4696,11 @@ function renderLastInjection() {
     if (!lastInjection) {
         $el.text("Nothing injected last turn (no grounded character was in the visible scene).");
         $("#cg_inject_time").text("");
+        // The reasons below are from a PREVIOUS non-empty turn. Leaving them up
+        // put "Why each was injected" under a "Nothing injected" banner — a
+        // panel that contradicts itself teaches the user to trust neither line.
+        const $ghost = $("#cg_why");
+        if ($ghost.length) $ghost.empty();
         return;
     }
     $el.text(lastInjection);

@@ -948,5 +948,22 @@ T("candidate probing is bounded — a total miss cannot grind the turn",
 T("the proposer is told that guessing is worse than nothing",
     /guessing is worse than nothing/.test(src));
 
+// [37] v0.40.1 — static witnesses: the preview measures, the ghost panel clears.
+console.log("[37] v0.40.1 static witnesses — measured preview, no ghost reasons");
+T("the empty-preview toast calls the DIAGNOSIS, not a canned three-claim string",
+    /Preview is EMPTY \\u2014 \$\{emptyNoteDiagnosis\(scene, cast, \{/.test(src)
+    && !/nothing cached is named in the scene window, cast is empty, and no pins\/arc are set/.test(src));
+T("the diagnosis is measured: counts, pin resolution, and the meta-only hunt",
+    /function emptyNoteDiagnosis\(rawMsgs, castNames, extras = \{\}\)/.test(src)
+    && /setting pin DANGLES/.test(src) && /ONLY inside \[META:\] blocks/.test(src));
+T("an empty injection CLEARS the why-panel — no reasons under a Nothing banner",
+    /const \$ghost = \$\("#cg_why"\);\s*\n\s*if \(\$ghost\.length\) \$ghost\.empty\(\);/.test(src));
+T("unclosed meta blocks are line-bounded — a stray bracket cannot blind the scene",
+    /\[\^\\\]\\n\]\*/.test(src.match(/function stripMetaBlocks[\s\S]{0,900}?\n\}/)[0]));
+T("the setting pin resolves through cacheEntryFor, not exact-key-or-nothing",
+    /const direct = store\[sk\] && store\[sk\]\.found \? \{ key: sk, entry: store\[sk\] \} : cacheEntryFor\(sk\);/.test(src));
+T("the preview stamps its source",
+    /lastSource = "preview";/.test(src));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -34,6 +34,8 @@ const pieces = [
     // the first `const` added there turned it into a hard SyntaxError. Slices
     // must not overlap: this one stops where the discovery block begins.
     grab("/**\n * Reasoning models", "function slugifyTitle"),
+    // (emptyNoteDiagnosis lives inside the note-builder slice above — see
+    //  "function stripMetaBlocks" .. "function slugifyTitle" span)
     grab("const PLACE_WORDS", "async function parseSceneCharacters"),
     grab("/**\n * A multi-token query must be COVERED", "/** Fire-and-forget dossier"),
     grab("function parseDossier", "/**\n * LLM-curated dossier"),
@@ -68,7 +70,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
-         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks,
+         parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks, emptyNoteDiagnosis,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
          arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom, wikiFingerprint,
@@ -1247,6 +1249,50 @@ T("and the hallucinated pairing cannot certify itself: memory-alpha's 'Spock' is
 eq("an ORIGINAL protagonist alone is still a valid probe of last resort",
    api.probeNamesFrom(null, "Jovan Custom"), ["Jovan Custom"]);
 T("junk names filtered", api.probeNamesFrom({ names: ["", null, "   "] }, "X").length === 1);
+
+// ---------------------------------------------------------------- v0.40.1
+console.log("[v0.40.1 the preview must measure, and the scene must survive a stray bracket]");
+
+// Live report: preview EMPTY with a full cache and a scene that names the cast.
+// Root: ONE unclosed [META: block ate every paragraph after it ([^\]]* crosses
+// newlines), so the matcher saw a blank scene. Unclosed now strips to end of
+// LINE only; the stream-cut case (block runs to end of message) still strips.
+const CUT = "Rain falls. [ACW: Ken Sud\u014d | Gym, drills\nSuzune closed her book. Sakayanagi smiled.";
+const cutOut = api.stripMetaBlocks(CUT);
+T("prose AFTER an unclosed block's line SURVIVES", /Suzune closed her book/.test(cutOut) && /Sakayanagi smiled/.test(cutOut));
+T("the unclosed block's own line is still stripped", !/Sud\u014d|Gym/.test(cutOut));
+T("stream-cut at end of message still strips (the reason $ existed)",
+  api.stripMetaBlocks("Rain falls. [ACW: Ken Sud\u014d | Gym, basketball club drills").trim() === "Rain falls.");
+T("a closed block spanning lines still strips in full",
+  !/Shiina|Library/.test(api.stripMetaBlocks("Dusk. [ACW: Hiyori Shiina |\nLibrary, stacks] The bell rings.")) &&
+  /The bell rings/.test(api.stripMetaBlocks("Dusk. [ACW: Hiyori Shiina |\nLibrary, stacks] The bell rings.")));
+
+// The setting pin resolves through cacheEntryFor — a re-keyed entry must not
+// silently darken the pin.
+sandbox.__settings.cache = {
+  "class 1-c": { name: "Class 1-C (1st Year)", aliases: ["Class 1-C (1st Year)", "class 1-c (1st year)"], sections: { identity: "A first-year homeroom." }, rel: {}, found: true, kind: "place", ts: Date.now() },
+};
+sandbox.__settings.maxCharacters = 8; sandbox.__settings.maxCharsPerChar = 400; sandbox.__settings.maxTotalChars = 3000;
+sandbox.__settings.arcInject = false; sandbox.__settings.relationDynamics = false; sandbox.__settings.proseBriefs = false;
+sandbox.__settings.physical = true; sandbox.__settings.personality = true; sandbox.__settings.trivia = false; sandbox.__settings.voice = false; sandbox.__settings.abilities = false; sandbox.__settings.biography = false; sandbox.__settings.relationships = false;
+sandbox.__settings.llmParser = true; sandbox.__settings.useLedger = false;
+const pinNote = api.relevantCanonNote(["She sat alone."], [], null, { settingKey: "class 1-c (1st year)" });
+T("a re-keyed setting pin still rides (resolved via cacheEntryFor)", /Class 1-C/.test(pinNote || ""));
+
+// The diagnosis MEASURES. Fixture: one found entry named only inside a meta block.
+sandbox.__settings.cache = {
+  "suzune horikita": { name: "Suzune Horikita", aliases: ["Suzune", "Horikita"], sections: { physical: "hair: black" }, rel: {}, found: true, kind: "character", ts: Date.now() },
+};
+const dRaw = ["She closed her book. [IST: Suzune Horikita \u2014 desk 3]"];
+const diag = api.emptyNoteDiagnosis(dRaw, [], { settingKey: "" });
+T("diagnosis counts the scene and the cache", /scene: 1 msg/.test(diag) && /cache: 1 found entry/.test(diag));
+T("diagnosis NAMES the meta-blindness — the name exists but only inside a [META:] block",
+  /ONLY inside \[META:\] blocks/.test(diag) && /Suzune Horikita/.test(diag));
+const diag2 = api.emptyNoteDiagnosis(["The rain kept falling."], [], { settingKey: "vanished key" });
+T("a dangling setting pin is called out by name", /DANGLES/.test(diag2) && /vanished key/.test(diag2));
+T("an absent cast is a number, not an assertion", /cast: 0/.test(diag2));
+const diag3 = api.emptyNoteDiagnosis(["Horikita waited."], [], {});
+T("a name present in plain prose is NOT flagged as meta-only", !/ONLY inside/.test(diag3));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
