@@ -1294,5 +1294,42 @@ T("an absent cast is a number, not an assertion", /cast: 0/.test(diag2));
 const diag3 = api.emptyNoteDiagnosis(["Horikita waited."], [], {});
 T("a name present in plain prose is NOT flagged as meta-only", !/ONLY inside/.test(diag3));
 
+// ---------------------------------------------------------------------------
+console.log("[v0.41.0 a meta block's terminator must be its OWN]");
+
+// LIVE ROOT: v0.40.1 fixed "unclosed runs to end of MESSAGE" but not the other
+// half - the closed-block branch ([^\]]*) was still free to scan PAST a later
+// block's opener and borrow the "]" belonging to it. With Summaryception
+// running, two markers in one message is normal, so one stream-cut marker
+// erased every paragraph up to the next well-formed one and the note came out
+// empty while the prose named the whole cast.
+const BORROW = "[IST: Rukia Kuchiki | Sixth Division\nRukia Kuchiki steps into the courtyard. Renji Abarai is waiting.\n[ACW: Renji Abarai | Sixth Division | tense]";
+const borrowOut = api.stripMetaBlocks(BORROW);
+T("an unclosed marker cannot borrow a LATER marker's closing bracket",
+  /Rukia Kuchiki steps into the courtyard/.test(borrowOut) && /Renji Abarai is waiting/.test(borrowOut));
+T("the unclosed marker's own line is still stripped", !/Sixth Division\b[\s\S]*courtyard/.test(borrowOut));
+T("the later WELL-FORMED marker is still stripped in full", !/tense/.test(borrowOut));
+T("prose after the borrowed-bracket pair survives too",
+  /Carol nods/.test(api.stripMetaBlocks(BORROW + "\nCarol nods.")));
+// The v0.40.1 contracts must hold byte-for-byte.
+T("closed single-line block: unchanged", api.stripMetaBlocks("[IST: awake] Bob walks in.").trim() === "Bob walks in.");
+T("closed MULTI-LINE block still strips whole (blocks legitimately wrap)",
+  !/Library|stacks/.test(api.stripMetaBlocks("Dusk. [ACW: Hiyori |\nLibrary, stacks] The bell rings.")));
+T("stream cut at end of message still strips whole",
+  api.stripMetaBlocks("Rain falls. [ACW: Ken | Gym, drills").trim() === "Rain falls.");
+T("three markers, the FIRST cut: the middle two paragraphs both survive", (() => {
+    const t = "[HUD: hp 9\nAlpha spoke.\n[IST: x]\nBeta answered.\n[ACW: y]";
+    const o = api.stripMetaBlocks(t);
+    return /Alpha spoke/.test(o) && /Beta answered/.test(o) && !/hp 9/.test(o);
+})());
+// A name that lives ONLY in prose after a cut marker must reach the note.
+sandbox.__settings.cache = {
+  "rukia kuchiki": { name: "Rukia Kuchiki", aliases: [], sections: { identity: "A shinigami." }, rel: {}, found: true, kind: "character", ts: Date.now() },
+};
+sandbox.__settings.llmParser = false; sandbox.__settings.useLedger = false;
+sandbox.__settings.arcInject = false; sandbox.__settings.proseBriefs = false; sandbox.__settings.relationDynamics = false;
+const bnote = api.relevantCanonNote([BORROW], null, null, {});
+T("end to end: the cast in the prose is injected, not erased", /Rukia Kuchiki/.test(bnote || ""));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

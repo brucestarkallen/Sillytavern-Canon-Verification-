@@ -965,5 +965,104 @@ T("the setting pin resolves through cacheEntryFor, not exact-key-or-nothing",
 T("the preview stamps its source",
     /lastSource = "preview";/.test(src));
 
+// ---------------------------------------------------------------------------
+// [38] v0.41.0 — ONE discovery at a time, and only on real turns.
+// Four entry points (chat change, boot, interceptor, Scan) all get "not
+// settled" from an unbound chat until a pin is written, so they used to stack:
+// two or three full runs, each spending its own LLM call and probe storm.
+console.log("[38] discovery is single-flight, and quiet generations spend nothing");
+const ctx38 = { ...globalThis.__ctx, chat: [], chatMetadata: {} };
+globalThis.__ctx = ctx38;
+ctx38.name2 = "Jovan Custom";
+S25.wikis = "";
+ctx38.chat.push(msg("#Found Saga. Zar Blade waits by the gate.", true));
+{
+    const q38 = parseQueue.length, f38 = fetchLog.length;
+    // three concurrent callers, exactly as the live entry points collide
+    const a = globalThis.CanonGrounding_verifyWiki();
+    const b = globalThis.CanonGrounding_verifyWiki();
+    const c = globalThis.CanonGrounding_verifyWiki();
+    await sleep(20);
+    T("three concurrent callers spend exactly ONE discovery LLM call", parseQueue.length === q38 + 1);
+    parseQueue[q38].resolve('{"franchise":"Found Saga","slugs":["foundsaga"],"names":["Zar Blade"]}');
+    await Promise.all([a, b, c]);
+    T("all three callers get the same settled result", ctx38.chatMetadata.canon_grounding_wiki === "foundsaga.wiki.gg");
+    T("and only one probe storm was paid for",
+        fetchLog.slice(f38).filter(u => u.includes("srsearch")).length <= 6);
+}
+{
+    // the slot must be RELEASED before the promise resolves, or the very next
+    // caller gets handed the finished run's stale result instead of a new one
+    delete ctx38.chatMetadata.canon_grounding_wiki_ok;
+    delete ctx38.chatMetadata.canon_grounding_wiki;
+    S25.wikis = "";
+    const q38b = parseQueue.length;
+    const p = globalThis.CanonGrounding_verifyWiki();
+    await sleep(20);
+    parseQueue[q38b].resolve('{"franchise":"Found Saga","slugs":["foundsaga"],"names":["Zar Blade"]}');
+    await p;
+    delete ctx38.chatMetadata.canon_grounding_wiki_ok;
+    delete ctx38.chatMetadata.canon_grounding_wiki;
+    S25.wikis = "";
+    const q38c = parseQueue.length;
+    const p2 = globalThis.CanonGrounding_verifyWiki();
+    await sleep(20);
+    T("the in-flight slot is released before resolution — the NEXT call really runs",
+        parseQueue.length === q38c + 1);
+    parseQueue[q38c].resolve('{"franchise":"Found Saga","slugs":["foundsaga"],"names":["Zar Blade"]}');
+    await p2;
+}
+{
+    // a QUIET generation is not a turn: it must not reach discovery at all
+    delete ctx38.chatMetadata.canon_grounding_wiki_ok;
+    delete ctx38.chatMetadata.canon_grounding_wiki;
+    S25.wikis = "";
+    const q38d = parseQueue.length, f38d = fetchLog.length;
+    await intercept(ctx38.chat, 4096, () => {}, "quiet");
+    T("a quiet generation spends no LLM and no fetches", parseQueue.length === q38d && fetchLog.length === f38d);
+    await intercept(ctx38.chat, 4096, () => {}, "impersonate");
+    T("an impersonate generation spends nothing either", parseQueue.length === q38d && fetchLog.length === f38d);
+    T("and nothing was bound behind the user's back", !ctx38.chatMetadata.canon_grounding_wiki_ok);
+}
+
+// [39] v0.41.0 — static witnesses for the three structural fixes.
+console.log("[39] v0.41.0 static witnesses — guards, degradation, and pure tiers");
+T("the genType + in-flight guards sit ABOVE the discovery block",
+    src.indexOf('if (!["normal", "swipe", "regenerate", "continue"].includes(genType)) return;')
+    < src.indexOf("const disc = verifyOrDiscoverWiki().catch(() => {});"));
+T("cgInFlight is claimed before discovery can await",
+    src.indexOf("cgInFlight = true;") < src.indexOf("const disc = verifyOrDiscoverWiki().catch(() => {});"));
+T("a chat switch during the discovery hold is dropped",
+    /if \(myEpoch !== chatEpoch\) return;   \/\/ the chat can switch while discovery holds/.test(src));
+T("a THROW in the heavy task degrades exactly like a TIMEOUT",
+    /heavy\.then\(\(\) => true, \(\) => false\),/.test(src));
+T("discovery is single-flight, and a forced scan queues instead of merging",
+    /if \(discoverInFlight && !opts\.force\) return discoverInFlight;/.test(src)
+    && /if \(prior\) await prior\.catch\(\(\) => \{\}\);/.test(src));
+T("the in-flight slot is released in a finally, not a chained promise",
+    /finally \{ if \(discoverInFlight === self\) discoverInFlight = null; \}/.test(src));
+T("priority tiers are computed AFTER the race, not inside the racing task",
+    src.indexOf("const fresh = await Promise.race([") 
+    < src.indexOf("tierUser = extractCandidateNames(lastUserMsg).filter(n => cacheEntryFor(n.toLowerCase()));"));
+T("the racing task no longer assigns the tiers itself",
+    !/tierUser = userNames\.filter/.test(src) && !/tierLedger = lgNames\.filter\(n => mentioned\(n\.toLowerCase\(\), sceneText\.toLowerCase\(\)\)\);\s*\n\s*if \(tierLedger\.length\)/.test(src));
+T("a meta block's terminator must be its OWN (no borrowing across an opener)",
+    /\[\^\\\]\\\[\]\*\\\]/.test(src.match(/function stripMetaBlocks[\s\S]{0,1400}?\n\}/)[0]));
+T("the four dossier-inert category toggles say so in the UI",
+    (src.match(/Regex fallback only<\/b>/g) || []).length === 4);
+T("the total cap names what it actually budgets",
+    /Max total length of the character blocks/.test(src)
+    && /ride on top of it and are never trimmed/.test(src));
+
+// [40] the stamp must match the manifest. ST decides whether to auto-update by
+// reading manifest.version; a feature commit that bumps only CG_VERSION ships an
+// extension nobody's install will pull. The history has that drift in it.
+console.log("[40] version stamp == manifest version");
+{
+    const mf = JSON.parse(fs.readFileSync(path.join(here, "..", "manifest.json"), "utf8"));
+    const stamp = (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1];
+    T(`manifest ${mf.version} === CG_VERSION ${stamp}`, !!stamp && stamp === mf.version);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

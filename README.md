@@ -56,6 +56,67 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.41.0 (a block's terminator must be its own; guards above discovery)
+
+Proven by `test/proof.js` (449) + `test/sim.mjs` (220); **8 guards negative-tested**
+(each defect reintroduced in a scratch tree, each turns the gate red with exit 1).
+
+Deep audit. Six defects, six canonical fixes — plus one gate that was missing.
+
+1. **v0.40.1 fixed half the meta-block swallow; this fixes the other half.**
+   The closed-block branch (`[^\]]*`) was still free to scan PAST a later
+   block's opener and borrow the `]` belonging to *it*. With Summaryception
+   running, two markers in one message is the normal case — so one stream-cut
+   `[IST: …` erased every paragraph up to the next well-formed marker.
+   Measured: a 3-line message naming two cached characters stripped to `" "`,
+   note EMPTY, reasons `[]`; the same message with the marker closed injected
+   1789 chars. Worse, the v0.40.1 diagnosis then blamed `[META:]` for a cast
+   that was sitting in the prose all along. A block's terminator must be its
+   OWN: the closed branch may cross newlines (blocks legitimately wrap) but
+   never another opener. Stream-cut-at-end-of-message still strips whole.
+2. **A throw inside the heavy task lost the note entirely.**
+   `heavy.then(() => true)` re-rejects, which threw out of the interceptor
+   *after* `setInjection("")` had already cleared the turn — canon fully
+   absent, and `lastInjection` still holding the previous turn's text, so the
+   preview panel lied about it too. The last-known-state fallback exists for
+   exactly this. Throw now degrades identically to timeout.
+3. **Priority tiers evaporated on slow turns.** `tierUser`/`tierLedger` were
+   assigned *inside* the racing task, so any turn that lost the race left them
+   `[]`: the player's own typed names silently lost tier 1 and could be trimmed
+   out of their own scene by the cap — on precisely the crowded turns where the
+   cap bites. They are pure cache filters (no network, no LLM); computed after
+   the race they are correct on fresh and stale turns alike, and the `!fresh`
+   branch needs no special case.
+4. **Discovery ran above both guards.** The 🔭 block sat above the genType
+   filter *and* `cgInFlight`, so every quiet/impersonate generation spent a
+   discovery LLM call plus a probe storm on an unbound chat and could bind a
+   universe behind the user's back. Guards moved above the block; a chat switch
+   during the hold is now dropped.
+5. **Discovery was not single-flight.** Four entry points (chat change, boot,
+   interceptor, Scan) all get "not settled" from an unbound chat until a pin is
+   written, so they stacked — two or three full runs, each with its own LLM call
+   and probe storm, each racing to bind. Concurrent callers now share the run;
+   an explicit `force:true` Scan queues behind rather than merging. The slot is
+   released in a `finally` (before resolution), not from a chained promise:
+   releasing it a microtask late handed the next caller the finished run's
+   stale result — caught by the gate while building this fix.
+6. **Two settings that did not mean what they said.** Measured: with a dossier
+   present, Personality / Relationships / Biography / Trivia ON = 1698 chars,
+   all four OFF = 1698 chars — identical. The dossier path reads only
+   `physical`, `voice`, `abilities`, `relationDynamics`, `smartExpansion`, and a
+   curated dossier has no categorised content to gate, so the honest fix is to
+   say so rather than invent a filter that guesses which fact is "biography".
+   Likewise `maxTotalChars`: set to 300 it produced a 3261-char note (10.9×),
+   because the ~1.6k header, pinned canon, and story position all ride outside
+   the budget — deliberately, since the header carries the rules that make the
+   rest safe to use and pins are decrees. Relabelled to what it budgets, floor
+   raised from 200 (meaningless) to 600.
+
+**New gate:** manifest version vs `CG_VERSION`. ST decides whether to
+auto-update by reading `manifest.version`, so a commit bumping only the code
+stamp ships an extension nobody's install will pull. The history contains that
+drift; it is now a gate failure.
+
 ## Changelog — v0.40.1 (the preview must measure, and the scene must survive a stray bracket)
 
 Proven by `test/proof.js` (440) + `test/sim.mjs` (201); **15/15 guards

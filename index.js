@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.40.1";
+const CG_VERSION = "0.41.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -311,7 +311,9 @@ const defaultSettings = {
     // migration raises a cap, raise it HERE too, or the reset button silently
     // restores the stale pre-migration value (the 400/3000 vs 1100/6000 bug).
     maxCharsPerChar: 1100,  // cap per entity across all its categories
-    maxTotalChars: 6000,    // hard cap on the whole canon block; stop once reached
+    maxTotalChars: 6000,    // budget for the CHARACTER BLOCKS; stop once reached. The
+                            // header, pinned canon, and story position ride on top and
+                            // are deliberately never trimmed (see relevantCanonNote).
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
     debug: false,
     // LLM parser (Arbiter-style): before generation, a fast model reads the current
@@ -1989,7 +1991,6 @@ function relationFor(relWikitext, otherNames, maxLen = 350) {
 
 /** Find the cached, grounded entry for a name (by key, then title/alias). */
 function cacheEntryFor(nameLcRaw) {
-    const s = settings();
     const c = cache();
     const nameLc = normName(nameLcRaw);
     if (c[nameLc] && c[nameLc].found && c[nameLc].sections) {
@@ -2172,15 +2173,19 @@ function appearanceLine(entry) {
  *  character and give the sweep a page of proper-noun names for people who
  *  are nowhere near the scene. ALL-CAPS-tag brackets only, so "[sic]",
  *  "[laughs]", and name-tagged dialogue ("[Kiyotaka: …]") survive. An
- *  unclosed block (mid-stream cut) drops to end of message. */
+ *  unclosed block drops to the end of its LINE. */
 function stripMetaBlocks(text) {
-    // Closed [META: …] blocks strip in full (they may span lines). An UNCLOSED
-    // block — a streamed generation cut mid-block — strips only to the end of
-    // ITS LINE: the old rule ate to end of MESSAGE ([^\]]* crosses newlines),
-    // so one stray "[ACW: …" blinded the matcher to every paragraph after it,
-    // and the preview reported an empty scene while the prose named the whole
-    // cast. A stream cut IS the end of the message, so that case still strips.
-    return String(text || "").replace(/\[[A-Z][A-Z0-9 _&-]{1,14}:(?:[^\]]*\]|[^\]\n]*)/g, " ");
+    // A block's terminator must be its OWN. The closed-block branch may cross
+    // newlines (blocks legitimately wrap) but NOT another block's OPENER: the
+    // old rule ([^\]]*) let an unclosed marker borrow the "]" belonging to a
+    // LATER, well-formed marker and erase every paragraph in between. With
+    // Summaryception running, two markers in one message is the normal case,
+    // so one stream-cut "[IST: ..." blanked the entire scene - the matcher saw
+    // nothing, the note came out empty, and the diagnosis blamed [META:] for a
+    // cast that was sitting in the prose all along.
+    // No terminator of its own => unclosed => strip to the end of its LINE (a
+    // stream cut IS the end of the message, so that case still strips whole).
+    return String(text || "").replace(/\[[A-Z][A-Z0-9 _&-]{1,14}:(?:[^\]\[]*\]|[^\]\n]*)/g, " ");
 }
 
 /**
@@ -3289,7 +3294,34 @@ async function hostKnowsAny(wikiSpec, names) {
  * therefore come from THIS CHAT (see the evidence law below). Fails safe: no
  * evidence -> nothing spent; nothing proven -> one toast, settle, never nag
  * again until the chat, the wikis field, or an explicit scan changes it. */
-async function verifyOrDiscoverWiki(opts = {}) {
+let discoverInFlight = null;   // the ONE discovery currently running, if any
+/**
+ * ONE DISCOVERY AT A TIME. There are four entry points (chat change, boot, the
+ * interceptor, the Scan button) and an unbound chat answers "not settled" to all
+ * of them until a pin is written - so they used to stack: two or three full runs,
+ * each spending its own LLM call and its own probe storm, each racing to bind.
+ * Concurrent callers now share the run in progress. An explicit force:true scan
+ * is a user command, so it never merges - it queues behind and re-evaluates.
+ */
+function verifyOrDiscoverWiki(opts = {}) {
+    if (discoverInFlight && !opts.force) return discoverInFlight;
+    const prior = discoverInFlight;
+    let self = null;
+    self = (async () => {
+        if (prior) await prior.catch(() => {});
+        // The slot is released in a `finally`, which runs BEFORE this promise
+        // resolves. Releasing it from a CHAINED promise instead put the reset a
+        // microtask behind the caller's own `await`, so the very next call still
+        // saw the finished run and handed back its stale result rather than
+        // starting the discovery it asked for.
+        try { return await discoverWikiOnce(opts); }
+        finally { if (discoverInFlight === self) discoverInFlight = null; }
+    })();
+    discoverInFlight = self;
+    self.catch(() => {});   // a rejection here must never surface as unhandled
+    return self;
+}
+async function discoverWikiOnce(opts = {}) {
     const myEpoch = chatEpoch;
     const s = settings();
     if (!s.enabled || !s.autoDiscoverWiki) return;
@@ -3608,8 +3640,6 @@ function needsFirstMeetWait(lastUserMsg, priorMsgs) {
 }
 
 async function parseSceneCharacters(sceneText) {
-    const c = getContext();
-    const s = settings();
     const systemText = (settings().promptParser || "").trim() || DEFAULT_PROMPT_PARSER;
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
     const out = await llmCall(systemText, userText, { maxTokens: 800 });
@@ -3671,36 +3701,42 @@ function removeFallbackSplices(chat) {
 
 let interceptAnnounced = false;
 globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, type) {
-    {   // \ud83d\udd2d self-heals the wiki on ANY turn; the settled pin makes this free.
-        // An UNBOUND chat additionally HOLDS for discovery (first-meeting rule):
-        // a wrong UNIVERSE on turn one costs more immersion than a short pause.
-        const okNow = chatWikiOk();
-        const disc = verifyOrDiscoverWiki().catch(() => {});
-        if (!okNow && settings().enabled && settings().autoDiscoverWiki) {
-            const opening = (chat || []).length <= 2;
-            if (opening) {
-                // Turn ONE of a NEW chat: there is no universe yet, so there is no
-                // story to stall — WAIT for discovery and ground THIS very turn.
-                // (This is why manual felt instant and automatic felt late.)
-                await disc;
-            } else {
-                // Unbound mid-chat (rare): first-meeting rule — brief bounded hold.
-                await Promise.race([disc, new Promise(r => setTimeout(r, Number(settings().firstMeetWaitMs) || 12000))]);
-            }
-        }
-    }
-    if (!interceptAnnounced) {
-        interceptAnnounced = true;
-        console.log(`[CanonGrounding] v${CG_VERSION} interceptor active — if you never see this line, ST is not calling the interceptor at all.`);
-    }
-    // Only real user-facing generations. Skipping quiet/impersonate also prevents our
-    // own parser generateRaw call (a quiet generation) from re-entering this interceptor.
+    // Only real user-facing generations, and never two passes at once. EVERYTHING
+    // below sits under these two guards now - including discovery. It used to run
+    // ABOVE them, which meant (a) every quiet/impersonate generation ST performs
+    // spent a discovery LLM call plus a probe storm on an unbound chat, and (b) a
+    // turn that overlapped the CHAT_CHANGED discovery started a second, identical
+    // one. Skipping quiet/impersonate also prevents our own parser call from
+    // re-entering this interceptor.
     const genType = type || "normal";
     if (!["normal", "swipe", "regenerate", "continue"].includes(genType)) return;
     if (cgInFlight) return;
     cgInFlight = true;
     const myEpoch = chatEpoch;   // if the chat switches during any await below, drop everything
     try {
+        {   // 🔭 self-heals the wiki on ANY turn; the settled pin makes this free.
+            // An UNBOUND chat additionally HOLDS for discovery (first-meeting rule):
+            // a wrong UNIVERSE on turn one costs more immersion than a short pause.
+            const okNow = chatWikiOk();
+            const disc = verifyOrDiscoverWiki().catch(() => {});
+            if (!okNow && settings().enabled && settings().autoDiscoverWiki) {
+                const opening = (chat || []).length <= 2;
+                if (opening) {
+                    // Turn ONE of a NEW chat: there is no universe yet, so there is no
+                    // story to stall - WAIT for discovery and ground THIS very turn.
+                    // (This is why manual felt instant and automatic felt late.)
+                    await disc;
+                } else {
+                    // Unbound mid-chat (rare): first-meeting rule - brief bounded hold.
+                    await Promise.race([disc, new Promise(r => setTimeout(r, Number(settings().firstMeetWaitMs) || 12000))]);
+                }
+            }
+            if (myEpoch !== chatEpoch) return;   // the chat can switch while discovery holds
+        }
+        if (!interceptAnnounced) {
+            interceptAnnounced = true;
+            console.log(`[CanonGrounding] v${CG_VERSION} interceptor active - if you never see this line, ST is not calling the interceptor at all.`);
+        }
         const s = settings();
         const promptApiOk = setInjection("");   // start each generation clean; re-set below if needed
         // Old-ST fallback (no setExtensionPrompt): the splice lives in the real
@@ -3812,15 +3848,14 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             if (userNames.length) {
                 await groundNames(userNames);
                 if (myEpoch !== chatEpoch) return;
-                tierUser = userNames.filter(n => cacheEntryFor(n.toLowerCase()));
             }
         }
         // The story's REAL cast (Summaryception ledger) that is on-screen right now
         // rides ahead of the parser's judgment — in every mode, not just ledger mode.
         if (lgNames) {
-            tierLedger = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
-            if (tierLedger.length) {
-                await groundNames(tierLedger, true);
+            const onScreen = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
+            if (onScreen.length) {
+                await groundNames(onScreen, true);
                 if (myEpoch !== chatEpoch) return;
             }
         }
@@ -3915,8 +3950,15 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             debug(`⏱🤝 first meeting in your message — extending wait ${blockMs}ms → ${meet}ms so the introduction is grounded`);
             blockMs = meet;
         }
+        // A THROW inside `heavy` must degrade exactly like a TIMEOUT. Bare
+        // `heavy.then(() => true)` re-rejects, which threw out of the whole
+        // interceptor: setInjection("") had already cleared this turn's canon,
+        // so the note was never re-set (total canon loss) and lastInjection kept
+        // the PREVIOUS turn's text, so the preview panel lied about it too. The
+        // last-known-state fallback below exists for exactly this failure; both
+        // slow and broken now reach it.
         const fresh = await Promise.race([
-            heavy.then(() => true),
+            heavy.then(() => true, () => false),
             new Promise(r => setTimeout(() => r(false), blockMs)),
         ]);
         if (myEpoch !== chatEpoch) return;
@@ -3925,6 +3967,16 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             if (s.llmParser) cast = pruneStaleCast(visibleLen, scene);
             else if (lgNames) cast = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
         }
+
+        // PRIORITY TIERS are pure filters over the cache - no network, no LLM - so
+        // they belong AFTER the race, not inside the task racing against it.
+        // Assigned inside `heavy` they stayed [] on exactly the slow, crowded
+        // turns where the cap bites: the player's own typed names silently lost
+        // tier 1 and could be trimmed out of their own scene. Computed here they
+        // reflect whatever grounding finished in time, on fresh and stale turns
+        // alike, and the !fresh branch needs no special case.
+        tierUser = extractCandidateNames(lastUserMsg).filter(n => cacheEntryFor(n.toLowerCase()));
+        if (lgNames) tierLedger = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
         // Scene text hasn't changed since the top of the run — reuse it (the old code
@@ -4129,12 +4181,12 @@ async function addSettingsUI() {
                     <input id="cg_personality" type="checkbox">
                     <span>Personality (baseline)</span>
                 </label>
-                <small class="cg-hint">Temperament, injected as a public BASELINE with framing that tells the model to modulate it — not a script. On by default in v0.3.</small>
+                <small class="cg-hint">Temperament, injected as a public BASELINE with framing that tells the model to modulate it — not a script. <b>Regex fallback only</b> — a curated dossier ✦ writes its own block, so this toggle does nothing while one exists.</small>
                 <label class="checkbox_label">
                     <input id="cg_relationship" type="checkbox">
                     <span>Relationships / family</span>
                 </label>
-                <small class="cg-hint">Parents, siblings, key ties. Good for stopping invented family.</small>
+                <small class="cg-hint">Parents, siblings, key ties. Good for stopping invented family. <b>Regex fallback only</b> — a curated dossier ✦ writes its own block, so this toggle does nothing while one exists.</small>
                 <label class="checkbox_label">
                     <input id="cg_dynamics" type="checkbox">
                     <span>Per-pair dynamics ("With Cid: …")</span>
@@ -4169,7 +4221,7 @@ async function addSettingsUI() {
                     <input id="cg_biography" type="checkbox">
                     <span>Biography (role, background)</span>
                 </label>
-                <small class="cg-hint">Role, affiliation, backstory. Verbose — use only if needed.</small>
+                <small class="cg-hint">Role, affiliation, backstory. Verbose — use only if needed. <b>Regex fallback only</b> — a curated dossier ✦ writes its own block, so this toggle does nothing while one exists.</small>
                 <label class="checkbox_label">
                     <input id="cg_abilities" type="checkbox">
                     <span>Powers &amp; Abilities</span>
@@ -4179,7 +4231,7 @@ async function addSettingsUI() {
                     <input id="cg_trivia" type="checkbox">
                     <span>Trivia</span>
                 </label>
-                <small class="cg-hint">"== Trivia ==" bullets — dense fan-level canon (quirks, habits, hidden facts) that humanizes characters beyond the formal sections.</small>
+                <small class="cg-hint">"== Trivia ==" bullets — dense fan-level canon (quirks, habits, hidden facts) that humanizes characters beyond the formal sections. <b>Regex fallback only</b> — a curated dossier ✦ writes its own block, so this toggle does nothing while one exists.</small>
                 <label class="checkbox_label">
                     <input id="cg_voice" type="checkbox">
                     <span>Voice (canon quotes)</span>
@@ -4272,9 +4324,9 @@ async function addSettingsUI() {
                 <label>Max characters (text length) per character</label>
                 <input id="cg_maxper" class="text_pole" type="number" min="80" max="2000" step="50">
                 <small class="cg-hint">Length cap on each character's block. Lower = leaner, trims the wordy categories first.</small>
-                <label>Max total length for the whole canon block</label>
-                <input id="cg_maxtotal" class="text_pole" type="number" min="200" max="20000" step="100">
-                <small class="cg-hint">Overall cap on the whole note. Roughly 4 characters ≈ 1 token (so 2400 ≈ 600 tokens).</small>
+                <label>Max total length of the character blocks</label>
+                <input id="cg_maxtotal" class="text_pole" type="number" min="600" max="20000" step="100">
+                <small class="cg-hint">Budget for the CHARACTER BLOCKS. The fixed header (~1.6k), any pinned canon you wrote, and the story-position note ride on top of it and are never trimmed — the header carries the rules that make the rest safe to use, and your pins are decrees. Roughly 4 characters ≈ 1 token.</small>
                 <div style="margin-top:4px;">
                     <input id="cg_reset_kw" class="menu_button" type="button" value="Reset fields &amp; keywords to defaults">
                 </div>
@@ -4581,7 +4633,7 @@ async function addSettingsUI() {
     };
     numHandler("#cg_maxchars", "maxCharacters", 1, 8);
     numHandler("#cg_maxper", "maxCharsPerChar", 80, 1100);
-    numHandler("#cg_maxtotal", "maxTotalChars", 200, 6000);
+    numHandler("#cg_maxtotal", "maxTotalChars", 600, 6000);
 
     $("#cg_reset_kw").on("click", function () {
         for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords", "quoteKeywords"]) {
@@ -4758,7 +4810,6 @@ function renderSavedWikis() {
 }
 
 function renderCacheList() {
-    const s = settings();
     const $box = $("#cg_cache_list").empty();
     const cc = cache();
     const keys = Object.keys(cc);
