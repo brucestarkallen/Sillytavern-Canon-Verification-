@@ -56,6 +56,51 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.47.0 (whose to inject: capitalisation was never a test, it was a guess about you)
+
+Proven by `test/proof.js` (483) + `test/sim.mjs` (265); **4 guards negative-tested**.
+
+Live report: *"I'm talking with rukia and rukia is the one literally last to
+inject."* Not the wiki, not the gate — **the selection**. And the tier system was
+already right; its input was blind.
+
+**Who caused it.** `bfcf568` (v0.30.0, "token resolution can no longer summon the
+off-screen") made the first-name sweep require PROPER-NOUN casing. `c7aa102`
+(v0.31.0, "injection tiers are decree, not inference") built tier 1 from
+`extractCandidateNames`, which is capitals-only. Both were real fixes for real
+problems. Both used **capitalisation as a proxy for "this token is a name"** — and
+that proxy is not a test of the token, it is a guess about how the player types.
+For anyone who writes `you talk to rukia`, every priority path failed at once:
+
+- **Tier 1 was empty on every single turn.** The tiers are correct and their own
+  comment says so — *"characters the PLAYER just named outrank everything but pins
+  and the setting… Caps always trim from the bottom, so the people you are actually
+  talking to survive."* With a capitals-only input, tier 1 had nobody to protect, so
+  the character being addressed fell through to the sweep — last — and the cap
+  trimmed her.
+- **The sweep couldn't see her either.** Its regex carried the `u` flag and not
+  `i`, so `rukia` only matched once the *AI* wrote `Rukia` with a capital. That is
+  the "it only injects after the scene ended" report, exactly.
+
+**Fix.** One case-blind resolver, `castNamedIn()`, used by tier 1 and shared with
+the sweep through a single `nameTokenOwners()` map. The guard the casing rule was
+standing in for is done properly, and more strictly, by two conditions that hold in
+any language and any typing style: the token must belong to **exactly one** cached
+character, and it must not be **ordinary vocabulary**. 45 words that are both common
+English and plausible names (`rose`, `hope`, `grace`, `ice`, `will`, `dawn`, `may`…)
+were added to the lexicon so that guard has teeth — a cached *Rose Oriana* is not
+summoned by "the rose petals fell", while "you greet rose oriana" still reaches her.
+Mentions are returned in sentence order, so the note follows what you wrote.
+
+**A test that encoded the bug.** `lowercase prose sharing a name token sweeps
+NOBODY` asserted that `"the rukia flowers bloomed"` must not sweep Rukia — a
+synthetic string, since `rukia` is not an English word. Passing it *required*
+lowercase name mentions to be ignored, which is the regression. It is replaced by
+the two protections that are real: a name token that genuinely is ordinary English,
+and a surname two cached characters share. Its replacement was also caught being
+**vacuous** — no *Rose* was cached at that point, so it blocked nothing; the fixture
+now caches her, and removing `rose` from the lexicon turns the suite red.
+
 ## Changelog — v0.46.0 (the lexicon only spoke the narrator's voice — and who caused the regression)
 
 Proven by `test/proof.js` (479) + `test/sim.mjs` (257); **3 guards negative-tested**.

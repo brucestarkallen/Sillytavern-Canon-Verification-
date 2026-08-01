@@ -90,7 +90,7 @@ let renderPromptDefaults = null; // re-resolves persona-dependent instruction de
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.46.0";
+const CG_VERSION = "0.47.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -501,6 +501,17 @@ const LOWER_TRIGGERS = new Set([
 // tests use as real names (rose, shadow, alpha…) so "rose oriana walks in"
 // still extends the wait: one uncommon token is enough to keep the signal.
 const COMMON_LOWERCASE = new Set([
+    // Words that are BOTH ordinary English and plausible names. A cached "Rose
+    // Oriana" must not be summoned by "the rose petals fell", and THIS is the
+    // guard that prevents it — not capitalisation, which only ever guessed at how
+    // the player types. A real name that is also a common word stays reachable by
+    // full name, by alias, and by the parser.
+    "rose", "hope", "grace", "ice", "faith", "joy", "summer", "autumn",
+    "spring", "winter", "may", "june", "april", "august", "art", "will",
+    "mark", "noon", "frost", "star", "sea", "steel", "silver", "gold",
+    "crown", "blade", "sword", "shield", "angel", "saint", "king", "queen",
+    "prince", "princess", "lord", "lady", "hunter", "smith", "cook", "baker",
+    "reed", "brook", "glen", "heath", "dale",
     // Interaction verbs and manner adverbs — the other half of an instruction.
     "meet", "embrace", "hug", "kiss", "join", "help", "offer", "accept",
     "refuse", "decline", "agree", "point", "wave", "raise", "lower", "drop",
@@ -2327,6 +2338,68 @@ function emptyNoteDiagnosis(rawMsgs, castNames, extras = {}) {
 }
 
 /**
+ * token -> the ONE cached character whose name owns it, or a sentinel when two
+ * characters share it ("Kuchiki"). Built from names only; alias/key tokens are
+ * full of generic words and would sweep in characters nowhere near the scene.
+ */
+function nameTokenOwners() {
+    const owner = new Map();
+    for (const e of Object.values(cache())) {
+        if (!e || !e.found || !e.sections) continue;
+        for (const t of String(e.name || "").toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+            if (t.length < 3 || NOISE_WORDS.has(t)) continue;
+            const cur = owner.get(t);
+            if (cur !== undefined && cur !== (e.name || "")) owner.set(t, "\u0000AMBIG");
+            else owner.set(t, e.name || "");
+        }
+    }
+    return owner;
+}
+
+/**
+ * WHO DOES THIS TEXT NAME? Full name, alias, or a name token owned by exactly one
+ * cached character — matched WITHOUT REGARD TO CASE.
+ *
+ * Capitalisation used to be the test, and it is not a test: it is a guess about
+ * how the player types. Someone who writes "you talk to rukia" was invisible to
+ * every priority path at once — tier 1 (which reads only capitalised candidates)
+ * came back empty on every single turn, so the character they were addressing got
+ * no priority, fell through to the sweep, and was trimmed from the bottom by the
+ * cap. The person being spoken to was the last one considered.
+ *
+ * The real discriminator is already here and is strictly stronger: the token must
+ * belong to exactly ONE cached character and must not be ordinary vocabulary. That
+ * holds for any language and any typing style, which capitalisation never did.
+ * Returned in order of first mention, so the note follows the sentence.
+ */
+function castNamedIn(text) {
+    const raw = String(text || "");
+    if (!raw.trim()) return [];
+    const lower = raw.toLowerCase();
+    const owner = nameTokenOwners();
+    const hits = [];
+    for (const e of Object.values(cache())) {
+        if (!e || !e.found || !e.sections || !e.name) continue;
+        let at = -1;
+        for (const n of [e.name, ...(e.aliases || [])]) {
+            const lc = String(n || "").toLowerCase();
+            if (lc.length >= 3 && mentioned(lc, lower)) { const i = lower.indexOf(lc.split(/\s+/)[0]); at = i < 0 ? 0 : i; break; }
+        }
+        if (at < 0) {
+            for (const t of new Set(String(e.name).toLowerCase().split(/[^\p{L}\p{N}'-]+/u))) {
+                if (t.length < 3 || NOISE_WORDS.has(t) || COMMON_LOWERCASE.has(t)) continue;
+                if (STOPWORDS.has(t[0].toUpperCase() + t.slice(1))) continue;
+                if (owner.get(t) !== e.name) continue;          // shared token — never a reference
+                const m = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "iu").exec(lower);
+                if (m) { at = m.index; break; }
+            }
+        }
+        if (at >= 0) hits.push({ name: e.name, at });
+    }
+    return hits.sort((a, b) => a.at - b.at).map(h => h.name);
+}
+
+/**
  * Build the canon note.
  *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
  *    present THIS turn), inject exactly those, in that order. This is pronoun-proof: a
@@ -2456,16 +2529,21 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             let hit = "";
             for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.find(n => mentioned(n, lowerMsgs[i])) || "";
             if (!hit) {
-                // First-name sweep: "you talked to Rukia" must pull Rukia Kuchiki in.
-                // PROPER-NOUN usage required: the token must appear in the scene with
-                // its name casing ("Rukia"), so ordinary prose ("the ice cracked")
-                // can never summon an off-screen character whose name shares a word.
-                const toks = [...new Set(String(entry.name || "").split(/[^\p{L}\p{N}'-]+/u)
-                    .filter(t => t.length >= 3 && /^\p{Lu}/u.test(t) && !NOISE_WORDS.has(t.toLowerCase())
-                        && tokenOwner.get(t.toLowerCase()) === (entry.name || "")))];
+                // First-name sweep: "you talked to rukia" must pull Rukia Kuchiki in.
+                // This used to demand PROPER-NOUN casing, which is a guess about how
+                // the player types rather than a test of whether a token is a name —
+                // and it silently excluded everyone who writes lowercase. The guard
+                // it was standing in for ("the ice cracked" must not summon an
+                // off-screen character) is done properly by the two conditions below:
+                // the token belongs to exactly ONE cached character, and it is not
+                // ordinary vocabulary. Both hold in any language and any casing.
+                const toks = [...new Set(String(entry.name || "").toLowerCase().split(/[^\p{L}\p{N}'-]+/u)
+                    .filter(t => t.length >= 3 && !NOISE_WORDS.has(t) && !COMMON_LOWERCASE.has(t)
+                        && !STOPWORDS.has(t[0].toUpperCase() + t.slice(1))
+                        && tokenOwner.get(t) === (entry.name || "")))];
                 for (let i = msgs.length - 1; i >= 0 && !hit; i--) {
                     const m = msgs[i];
-                    hit = toks.find(t => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "u").test(m)) || "";
+                    hit = toks.find(t => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "iu").test(m)) || "";
                 }
                 if (hit) hit = hit.toLowerCase();
             }
@@ -4105,7 +4183,11 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // tier 1 and could be trimmed out of their own scene. Computed here they
         // reflect whatever grounding finished in time, on fresh and stale turns
         // alike, and the !fresh branch needs no special case.
-        tierUser = extractCandidateNames(lastUserMsg).filter(n => cacheEntryFor(n.toLowerCase()));
+        // Tier 1 is "who did the PLAYER just name". It read capitalised candidates
+        // only, so for a player who types lowercase it was empty on every turn and
+        // the tier system — which is otherwise correct, and trims from the bottom —
+        // had nothing to protect. castNamedIn is case-blind.
+        tierUser = castNamedIn(lastUserMsg);
         if (lgNames) tierLedger = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.

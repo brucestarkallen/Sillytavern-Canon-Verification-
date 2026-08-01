@@ -1064,8 +1064,8 @@ T("discovery is single-flight, and a forced scan queues instead of merging",
 T("the in-flight slot is released in a finally, not a chained promise",
     /finally \{ if \(discoverInFlight === self\) discoverInFlight = null; \}/.test(src));
 T("priority tiers are computed AFTER the race, not inside the racing task",
-    src.indexOf("const fresh = await Promise.race([") 
-    < src.indexOf("tierUser = extractCandidateNames(lastUserMsg).filter(n => cacheEntryFor(n.toLowerCase()));"));
+    src.indexOf("const fresh = await Promise.race([")
+    < src.indexOf("tierUser = castNamedIn(lastUserMsg);"));
 T("the racing task no longer assigns the tiers itself",
     !/tierUser = userNames\.filter/.test(src) && !/tierLedger = lgNames\.filter\(n => mentioned\(n\.toLowerCase\(\), sceneText\.toLowerCase\(\)\)\);\s*\n\s*if \(tierLedger\.length\)/.test(src));
 T("a meta block's terminator must be its OWN (no borrowing across an opener)",
@@ -1273,6 +1273,30 @@ console.log("[46] v0.45.0 the gate: vocabulary, one veto law, and the ledger");
         /nameTokens\(n\)\.some\(t => t\.length >= 3 && !NOISE_WORDS\.has\(t\) && mentioned\(t, lcUser\)\)/.test(src));
     T("it only fires for cast we have not grounded",
         /lgNames\.some\(n =>\s*\n\s*isUnhandledName\(n\) &&/.test(src));
+}
+
+// [47] v0.47.0 — WHOSE TO INJECT. The tier system was already correct ("caps
+// always trim from the bottom, so the people you are actually talking to
+// survive") — its INPUT was blind. Tier 1 read capitalised candidates only, so a
+// player who types "you talk to rukia" produced an empty tier 1 on every turn:
+// the character being addressed got no priority, fell through to the sweep, and
+// was trimmed. Capitalisation is a guess about how someone types, not a test of
+// whether a token is a name.
+console.log("[47] v0.47.0 selection is case-blind");
+{
+    T("tier 1 uses the case-blind resolver", /tierUser = castNamedIn\(lastUserMsg\);/.test(src));
+    T("no capitalisation heuristic feeds tier 1",
+        !/tierUser = extractCandidateNames/.test(src));
+    T("one owner map, one definition", /function nameTokenOwners\(\)/.test(src));
+    const sweep = src.slice(src.indexOf("First-name sweep:"), src.indexOf("if (hit) admit(entry, hit, key"));
+    T("the sweep matches case-insensitively", /"iu"\)\.test\(m\)/.test(sweep));
+    T("the sweep no longer demands proper-noun casing", !/\/\^\\p\{Lu\}\/u\.test\(t\)/.test(sweep));
+    T("the sweep still refuses ordinary vocabulary and shared tokens",
+        /COMMON_LOWERCASE\.has\(t\)/.test(sweep) && /tokenOwner\.get\(t\) === \(entry\.name \|\| ""\)/.test(sweep));
+    T("castNamedIn returns mentions in sentence order",
+        /hits\.sort\(\(a, b\) => a\.at - b\.at\)\.map\(h => h\.name\)/.test(src));
+    T("the tier comment still promises what the code now delivers",
+        /characters the PLAYER just named/.test(src) && /Caps always trim[\s\S]{0,12}from the bottom/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

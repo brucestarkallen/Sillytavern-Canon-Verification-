@@ -927,8 +927,31 @@ sandbox.__settings.cache["rukia"] = { name: "Rukia", sections: {}, found: false,
 T("token hit buries a corpse at the short key too", api.cacheEntryFor("rukia")?.entry.name === "Rukia Kuchiki" && !("rukia" in sandbox.__settings.cache));
 const fnNote = api.relevantCanonNote(["Later, you talked to Rukia by the gate."], ["Zzz Unresolvable"]);
 T("sweep pulls a proper-noun first-name mention into the note", /Rukia Kuchiki/.test(fnNote));
-const lcNote = api.relevantCanonNote(["the rukia flowers bloomed by the gate"], ["Zzz Unresolvable"]);
-T("lowercase prose sharing a name token sweeps NOBODY", !/Rukia Kuchiki/.test(lcNote));
+// THIS ASSERTION USED TO READ: lowercase prose sharing a name token sweeps
+// NOBODY, using "the rukia flowers bloomed". That over-fits to a synthetic
+// string — "rukia" is not an English word — and in doing so it encoded the
+// regression itself: it made "you talk to rukia" unable to inject the person
+// being spoken to. The protection that actually matters is a name token that IS
+// ordinary English, and a token two characters share. Both still hold.
+const lcNote = api.relevantCanonNote(["you talk to rukia by the gate"], ["Zzz Unresolvable"]);
+T("a LOWERCASE first-name mention sweeps the character in", /Rukia Kuchiki/.test(lcNote));
+// Cache a character whose first name IS an ordinary English word, or the
+// assertion below has nothing to summon and proves nothing.
+sandbox.__settings.cache["rose oriana"] = {
+    name: "Rose Oriana", wiki: "w", found: true, ts: Date.now(),
+    sections: { identity: "Rose Oriana is the second princess.", physical: "hair: crimson" },
+    aliases: [], rel: {},
+};
+T("the guard has something to block (Rose is really cached)",
+    api.cacheEntryFor("rose oriana")?.entry.name === "Rose Oriana");
+const proseNote = api.relevantCanonNote(["the rose petals fell across the ice"], ["Zzz Unresolvable"]);
+T("ordinary English that happens to be a name summons nobody", !/Rose Oriana/.test(proseNote));
+const fullNote = api.relevantCanonNote(["you greet rose oriana at the gate"], ["Zzz Unresolvable"]);
+T("but her FULL name in lowercase still reaches her", /Rose Oriana/.test(fullNote));
+// A token two cached characters share is never a reference to either.
+const sharedNote = api.relevantCanonNote(["the kuchiki estate stood silent"], ["Zzz Unresolvable"]);
+T("a shared surname sweeps nobody", !/Rukia Kuchiki/.test(sharedNote) && !/Byakuya Kuchiki/.test(sharedNote));
+delete sandbox.__settings.cache["rose oriana"];
 const ambNote = api.relevantCanonNote(["A Kotetsu waited in the hall."], ["Zzz Unresolvable"]);
 T("ambiguous surname sweeps NEITHER sister", !/Kiyone/.test(ambNote) && !/Isane/.test(ambNote));
 sandbox.__settings.cache["sui-feng"] = { name: "Su\u00ec-F\u0113ng", sections: { physical: "hair: black" }, aliases: ["Bee Commander"], rel: {}, found: true, ts: Date.now() };
