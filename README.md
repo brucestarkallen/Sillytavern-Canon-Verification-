@@ -56,6 +56,45 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.48.0 (why it was worse with the auditor ON, and why the same scene gave different answers)
+
+Proven by `test/proof.js` (490) + `test/sim.mjs` (273); **4 guards negative-tested**.
+
+Live report: Rukia is still inconsistent — sometimes present, sometimes gone,
+**noticeably worse with the Cast Auditor ON**, and the note still favours a
+character the player never mentioned. Two defects, and the auditor clue named them.
+
+1. **Evidence had to be echoed word-for-word, so the answer depended on phrasing.**
+   `verifyCastEvidence` required the parser's evidence to be a literal substring of
+   the scene. But canonicalising a partial mention is part of the parser's job: the
+   scene says `rukia`, the parser answers `Rukia Kuchiki` and quotes the canonical
+   name back as evidence. That was rejected as a *knowledge leak* — so the same
+   character in the same scene survived or vanished depending on whether the model
+   happened to echo the words or the name. Non-deterministic per call, which is
+   exactly "sometimes gone." **Fix:** evidence is grounded if it appears literally
+   *or* if a distinctive token of it appears as a **word** in the scene. Ordinary
+   vocabulary never counts, so `the captain was there` still proves nothing and an
+   entity the model merely knows belongs to this setting still has nothing to point
+   at — verified by keeping the ghost-cast assertions green.
+
+2. **The auditor could delete the person being spoken to.** Weak-evidence entries go
+   to the Cast Auditor — a second LLM call that fails **closed**: `if (!out) return
+   []`. On a slow mobile backend a timeout silently drops every weak item, which is
+   precisely why the cast is *less* reliable with the auditor on than off.
+   **Fix:** the player's own words are authority. An entity the player just named is
+   promoted to strong and never reaches the referee — the player put them in the
+   scene. This is asymmetric in the right direction: it saves the character being
+   addressed and grants nothing to a character the player never mentioned. On the
+   *same* ambiguous evidence, `Rukia` is now strong while `Sui-Feng` still faces the
+   auditor. The player's message is threaded as a parameter through all three parse
+   call sites rather than held in module state, which overlapping parses could stale.
+
+**Also fixed:** the doc block above `novelNameTokens` still described the old
+two-adjacent-token pair rule removed in v0.45.0 — the stranded-doc gate could not
+catch it, because the comment *was* attached to a function; it was simply lying. And
+a witness that pinned the literal text of a `parseSceneCharacters` call now matches
+the call by shape, so adding an argument reads as a signature change rather than a bug.
+
 ## Changelog — v0.47.0 (whose to inject: capitalisation was never a test, it was a guess about you)
 
 Proven by `test/proof.js` (483) + `test/sim.mjs` (265); **4 guards negative-tested**.

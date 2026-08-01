@@ -90,7 +90,7 @@ let renderPromptDefaults = null; // re-resolves persona-dependent instruction de
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.47.0";
+const CG_VERSION = "0.48.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -3304,9 +3304,23 @@ async function applyCastWorldState(names, sceneText, myEpoch) {
  * THIS entity — "her classmates gathered" is in the prose and refers to no one in
  * particular. Weak items are exactly what the Cast Auditor exists to judge.
  */
-function splitEvidenceStrength(cast, sceneText) {
+function splitEvidenceStrength(cast, sceneText, userMsg = "") {
     const strong = [], weak = [];
+    // THE PLAYER'S OWN WORDS ARE AUTHORITY. An entity the player just named does
+    // not need a referee to confirm they are in the scene — the player put them
+    // there. Weak items go to the Cast Auditor, which is a second LLM call that
+    // fails CLOSED: on a slow mobile backend a timeout silently deletes them. That
+    // is why the cast was less reliable with the auditor ON than OFF. Promoting
+    // player-named entities is asymmetric in exactly the right direction: it saves
+    // the character being addressed, and grants nothing to a character the player
+    // never mentioned.
+    const lcUser = String(userMsg || "").toLowerCase();
+    const playerNamed = (name) => !!lcUser && String(name || "").toLowerCase()
+        .split(/[^\p{L}\p{N}'-]+/u)
+        .some(t => t.length >= 3 && !NOISE_WORDS.has(t) && !COMMON_LOWERCASE.has(t)
+            && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "iu").test(lcUser));
     for (const c of cast) {
+        if (playerNamed(c.name)) { strong.push(c.evidence ? c : { ...c, evidence: c.name }); continue; }
         if (!c.evidence) {
             // No evidence supplied = UNPROVEN, not grandfathered. The name does sit
             // somewhere in the window (that's how it passed verify) — but "somewhere"
@@ -3341,9 +3355,24 @@ function verifyCastEvidence(cast, sceneText) {
         const needle = String(frag || "").toLowerCase().replace(/\s+/g, " ").trim();
         return needle.length >= 2 && hay.includes(needle);
     };
+    // A literal substring is not the only honest evidence. The parser's job includes
+    // CANONICALISING a partial mention — the scene says "rukia", it answers
+    // "Rukia Kuchiki" and quotes the canonical name back as its evidence. Demanding
+    // an exact substring dropped exactly that, as a "knowledge leak", so the same
+    // character in the same scene survived or vanished depending on whether the
+    // model happened to echo the words or the name. That is the inconsistency.
+    // A distinctive token of the evidence appearing as a WORD in the scene is still
+    // proof the reference is grounded there; ordinary vocabulary never counts, so
+    // "the school" proves nothing on its own and an entity the model merely knows
+    // belongs to this setting still has nothing to point at.
+    const tokenInScene = (frag) => String(frag || "").toLowerCase()
+        .split(/[^\p{L}\p{N}'-]+/u)
+        .some(t => t.length >= 3 && !NOISE_WORDS.has(t) && !COMMON_LOWERCASE.has(t)
+            && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "iu").test(hay));
     const kept = [];
     for (const c of cast) {
-        if (c.evidence ? inScene(c.evidence) : inScene(c.name)) kept.push(c);
+        const claim = c.evidence || c.name;
+        if (inScene(claim) || tokenInScene(claim) || tokenInScene(c.name)) kept.push(c);
         else debug(`parser listed "${c.name}" with no textual evidence — dropped (knowledge leak)`);
     }
     return kept;
@@ -3738,11 +3767,12 @@ async function auditCastEvidence(sceneText, weak) {
 }
 
 /**
- * Lowercase first-mention detector: two ADJACENT tokens the pipeline has never
- * seen (not noise, not stopwords, not learned, not cached) look like a typed-in
- * name ("rose oriana") regardless of capitals. It only opens the GATE — the
- * parser, evidence check, and auditor still decide who actually exists. Every
- * parsed message's tokens are learned afterwards, so a novel pair gates once.
+ * Tokens of `text` that look like a NAME rather than prose: not noise, not
+ * ordinary vocabulary, not a stopword, not already ruled on while that ruling
+ * stands, not covered by cache. Capitals are irrelevant — "you talk to rukia"
+ * reads the same as "You talk to Rukia". This only opens the GATE; the parser,
+ * the evidence check and the auditor still decide who actually exists. Every
+ * answered parse learns the message's tokens, so a novel token gates once.
  */
 function novelNameTokens(text) {
     const toks = String(text || "").toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
@@ -3822,7 +3852,7 @@ function needsFirstMeetWait(lastUserMsg, priorMsgs) {
  * timeout/failure (caller keeps the previous cast — failure must never be read as
  * "nobody here").
  */
-async function parseSceneCharacters(sceneText) {
+async function parseSceneCharacters(sceneText, userMsg = "") {
     const systemText = (settings().promptParser || "").trim() || DEFAULT_PROMPT_PARSER;
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
     const out = await llmCall(systemText, userText, { maxTokens: 800 });
@@ -3835,7 +3865,7 @@ async function parseSceneCharacters(sceneText) {
     // Every listed entity must be provable against the scene it was parsed from —
     // and evidence that proves nothing in particular goes to the Cast Auditor.
     const verified = resolveAgainstKnown(verifyCastEvidence(cast, sceneText));
-    const { strong, weak } = splitEvidenceStrength(verified, sceneText);
+    const { strong, weak } = splitEvidenceStrength(verified, sceneText, userMsg);
     if (!weak.length || !settings().castAuditor) return settings().castAuditor ? strong : verified;
     const confirmed = await auditCastEvidence(sceneText, weak);
     return [...strong, ...confirmed];
@@ -3985,7 +4015,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
             if (shouldParse) {
                 const mySerial = ++parseSerial;
-                const parsed = await parseSceneCharacters(sceneText);
+                const parsed = await parseSceneCharacters(sceneText, lastUserMsg);
                 if (myEpoch !== chatEpoch) return;   // chat switched mid-parse: old-chat results must not apply
                 if (parsed === null && Date.now() - lastParseFailToastAt > 300000) {
                     lastParseFailToastAt = Date.now();
@@ -4262,7 +4292,8 @@ async function onMessageReceived() {
         const myEpoch = chatEpoch;
         const mySerial = ++parseSerial;
         const visibleLen = chat.filter(m => !m.is_system).length;
-        const parsed = await parseSceneCharacters(sceneText);
+        const lastUser = stripMetaBlocks(([...chat].reverse().find(m => m.is_user) || {}).mes || "");
+        const parsed = await parseSceneCharacters(sceneText, lastUser);
         if (myEpoch !== chatEpoch) return;      // chat switched while parsing: results belong to the OLD chat
         if (mySerial !== parseSerial) return;   // a newer parse (interceptor/rescan) already superseded us
         for (const n of quick) parsedWords.add(n.toLowerCase());
@@ -4926,7 +4957,8 @@ async function addSettingsUI() {
             if (st.llmParser) {
                 cgToast("info", "Scanning the current scene…");
                 const mySerial = ++parseSerial;
-                const parsed = await parseSceneCharacters(sceneText);
+                const lastUser = stripMetaBlocks(([...(ctx.chat || [])].reverse().find(m => m.is_user) || {}).mes || "");
+                const parsed = await parseSceneCharacters(sceneText, lastUser);
                 if (myEpoch !== chatEpoch) return;
                 for (const n of extractCandidateNames(sceneText)) parsedWords.add(n.toLowerCase());
                 if (parsed === null) {

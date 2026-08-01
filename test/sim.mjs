@@ -206,7 +206,10 @@ T("both entities injected", /StaleChar-colored/.test(lastInjection()) && /FreshC
 
 console.log("[3] async-safety wiring (static)");
 T("CHAT_CHANGED bumps epoch", /CHAT_CHANGED[\s\S]{0,400}chatEpoch\+\+/.test(src));
-T("interceptor discards on epoch change after parse", /parseSceneCharacters\(sceneText\);\s*\n\s*if \(myEpoch !== chatEpoch\) return;/.test(src));
+// Matches the call by shape, not by its exact argument list — the property is
+// "the epoch guard is the very next statement", which an added argument does not
+// change. Pinning the literal call made a signature change look like a bug.
+T("interceptor discards on epoch change after parse", /parseSceneCharacters\(sceneText[^)]*\);\s*\n\s*if \(myEpoch !== chatEpoch\) return;/.test(src));
 T("post-gen scan discards on epoch change", /if \(myEpoch !== chatEpoch\) return;\s*\/\/ chat switched while parsing/.test(src));
 T("post-gen scan discards when superseded (serial)", /if \(mySerial !== parseSerial\) return;/.test(src));
 T("post-gen scan no longer holds cgInFlight (starvation fix)", !/cgInFlight = true; \/\/ block the interceptor/.test(src));
@@ -1297,6 +1300,28 @@ console.log("[47] v0.47.0 selection is case-blind");
         /hits\.sort\(\(a, b\) => a\.at - b\.at\)\.map\(h => h\.name\)/.test(src));
     T("the tier comment still promises what the code now delivers",
         /characters the PLAYER just named/.test(src) && /Caps always trim[\s\S]{0,12}from the bottom/.test(src));
+}
+
+// [48] v0.48.0 — the cast pipeline must not depend on how the model phrased its
+// evidence, and the auditor must not be able to delete the person being addressed.
+console.log("[48] v0.48.0 evidence and authority");
+{
+    const v = src.slice(src.indexOf("function verifyCastEvidence"), src.indexOf("function resolveAgainstKnown"));
+    T("evidence may be canonicalised, not only echoed", /const tokenInScene = \(frag\) =>/.test(v));
+    T("the token must be a WORD, not a substring", /\(\?<!\[\\\\p\{L\}\\\\p\{N\}\]\)/.test(v));
+    T("ordinary vocabulary can never be the proof",
+        /!NOISE_WORDS\.has\(t\) && !COMMON_LOWERCASE\.has\(t\)/.test(v));
+    T("the literal check is still tried first", /inScene\(claim\) \|\| tokenInScene\(claim\)/.test(v));
+
+    const sp = src.slice(src.indexOf("function splitEvidenceStrength"), src.indexOf("function verifyCastEvidence"));
+    T("the player's own words are authority", /THE PLAYER'S OWN WORDS ARE AUTHORITY/.test(sp));
+    T("player-named entities skip the referee", /if \(playerNamed\(c\.name\)\) \{ strong\.push/.test(sp));
+    T("authority is threaded as a parameter, not module state",
+        /function splitEvidenceStrength\(cast, sceneText, userMsg = ""\)/.test(src)
+        && !/let lastParsedUserMsg/.test(src));
+    T("every parse call passes the player's message",
+        (src.match(/parseSceneCharacters\(sceneText, /g) || []).length === 4  // 1 definition + 3 call sites
+        && !/parseSceneCharacters\(sceneText\)/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

@@ -771,6 +771,39 @@ sandbox.__settings.lowercaseNames = true;
 // forms top to bottom. Every verb in the player's own voice therefore looked like
 // a novel name, fed the learner, and jammed the gate. A verb belongs here in BOTH
 // forms or neither, and this is the assertion that says so.
+console.log("[v0.48.0 canonicalised evidence, and the player's own words as authority]");
+{
+    const scene = "#time skip Jovan take a move on rukia and now currently talk with rukia";
+    // The parser CANONICALISES a partial mention and quotes the canonical name as
+    // its evidence. Demanding a literal substring called that a knowledge leak, so
+    // the same character in the same scene survived or vanished depending on
+    // whether the model echoed the words or the name.
+    const canon = api.verifyCastEvidence([{ name: "Rukia Kuchiki", evidence: "Rukia Kuchiki" }], scene);
+    T("canonicalised evidence is grounded by its distinctive token", canon.length === 1);
+    const echoed = api.verifyCastEvidence([{ name: "Rukia Kuchiki", evidence: "talk with rukia" }], scene);
+    T("literally echoed evidence still passes", echoed.length === 1);
+    // The anti-hallucination purpose must survive: an entity the model merely knows
+    // belongs to this setting has nothing in the scene to point at.
+    const ghost = api.verifyCastEvidence([{ name: "Sousuke Aizen", evidence: "Sousuke Aizen" }], scene);
+    T("an entity absent from the scene is still dropped", ghost.length === 0);
+    const vague = api.verifyCastEvidence([{ name: "Byakuya Kuchiki", evidence: "the captain was there" }], scene);
+    T("ordinary vocabulary alone proves nothing", vague.length === 0);
+
+    // The auditor is a second LLM call that fails CLOSED — a timeout deletes weak
+    // items, which is why the cast was less reliable with it ON. What the player
+    // typed does not need a referee.
+    const both = [{ name: "Rukia Kuchiki", evidence: "the shinigami stood there" },
+                  { name: "Sui-Feng", evidence: "the shinigami stood there" }];
+    const sc = "you talk to rukia. the shinigami stood there.";
+    const sp = api.splitEvidenceStrength(api.verifyCastEvidence(both, sc), sc, "you talk to rukia");
+    T("the player-named entity is strong on identical evidence",
+        sp.strong.some(c => c.name === "Rukia Kuchiki"));
+    T("an entity the player never named still faces the auditor",
+        sp.weak.some(c => c.name === "Sui-Feng") && !sp.strong.some(c => c.name === "Sui-Feng"));
+    T("with no player message the split is unchanged",
+        api.splitEvidenceStrength(both, sc, "").strong.length === 0);
+}
+
 console.log("[v0.46.0 the lexicon must speak the player's voice, not just the narrator's]");
 {
     const lex = (() => {
