@@ -1324,6 +1324,27 @@ console.log("[48] v0.48.0 evidence and authority");
         && !/parseSceneCharacters\(sceneText\)/.test(src));
 }
 
+// [49] v0.49.0 — the allocator and the sweep order.
+console.log("[49] v0.49.0 presence before depth, recency before insertion order");
+{
+    const nb = src.slice(src.indexOf("BUDGET: PRESENCE BEFORE DEPTH"), src.indexOf("lastMatchReasons = reasons;"));
+    T("an over-budget block skips, never abandons the rest",
+        /continue;   \/\/ NOT break/.test(nb) && !/\belse break;/.test(nb));
+    T("pass one gives every admitted character an anchor line",
+        /const drafts = new Array\(built\.length\)\.fill\(null\);/.test(nb));
+    T("pass two spends what is left, in tier order",
+        /for \(let li = 1; li < built\[i\]\.lines\.length; li\+\+\)/.test(nb));
+    T("both passes respect the total budget",
+        (nb.match(/total \+ \w+\.length > s\.maxTotalChars/g) || []).length === 2);
+    T("the per-character cap still bounds depth",
+        /drafts\[i\]\.length \+ add\.length > s\.maxCharsPerChar/.test(nb));
+    T("the count cap now bounds the BUILD pass", /if \(built\.length >= s\.maxCharacters\) break;/.test(src));
+    T("the sweep orders by recency, not cache insertion",
+        /sweptHits\.sort\(\(a, b\) => b\.at - a\.at\);/.test(src));
+    T("smart-expansion Context lines are depth, never presence",
+        src.indexOf("Context: ") > src.indexOf("const lines = [];"));
+}
+
 // [40] the stamp must match the manifest. ST decides whether to auto-update by
 // reading manifest.version; a feature commit that bumps only CG_VERSION ships an
 // extension nobody's install will pull. The history has that drift in it.

@@ -90,7 +90,7 @@ let renderPromptDefaults = null; // re-resolves persona-dependent instruction de
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.48.0";
+const CG_VERSION = "0.49.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2521,13 +2521,19 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 else tokenOwner.set(t, e2.name || "");
             }
         }
+        // Swept entities are ordered by RECENCY of mention, not by the order they
+        // happen to sit in the cache. Object key order is insertion order, so
+        // whoever was grounded earliest led the sweep forever — a character from
+        // ten scenes ago outranked the one who just walked in. (The regex-mode
+        // fallback below already sorted by recency; the primary path did not.)
+        const sweptHits = [];
         for (const key of Object.keys(store)) {
             const entry = store[key];
             if (!entry.found || !entry.sections || usedKeysGlobal.has(key)) continue;
             // (name-space duplicates are rejected inside admit() — see usedNamesGlobal)
             const names = [entry.name.toLowerCase(), key, ...(entry.aliases || []).map(a => a.toLowerCase())].filter(Boolean);
-            let hit = "";
-            for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) hit = names.find(n => mentioned(n, lowerMsgs[i])) || "";
+            let hit = "", at = -1;
+            for (let i = lowerMsgs.length - 1; i >= 0 && !hit; i--) { hit = names.find(n => mentioned(n, lowerMsgs[i])) || ""; if (hit) at = i; }
             if (!hit) {
                 // First-name sweep: "you talked to rukia" must pull Rukia Kuchiki in.
                 // This used to demand PROPER-NOUN casing, which is a guess about how
@@ -2544,11 +2550,14 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 for (let i = msgs.length - 1; i >= 0 && !hit; i--) {
                     const m = msgs[i];
                     hit = toks.find(t => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "iu").test(m)) || "";
+                    if (hit) at = i;
                 }
                 if (hit) hit = hit.toLowerCase();
             }
-            if (hit) admit(entry, hit, key, { swept: true });
+            if (hit) sweptHits.push({ entry, hit, key, at });
         }
+        sweptHits.sort((a, b) => b.at - a.at);   // most recently mentioned first
+        for (const h of sweptHits) admit(h.entry, h.hit, h.key, { swept: true });
     } else {
         // Scene-scan fallback (regex mode): grounded names actually in the recent window.
         const lgNames = (!s.llmParser) ? ledgerNames() : null;
@@ -2575,8 +2584,9 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const reasons = [];
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
+    const built = [];
     for (const { entry, matchedName, pinned, swept, setting } of present) {
-        if (blocks.length >= s.maxCharacters) break;
+        if (built.length >= s.maxCharacters) break;
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
         const lines = [];
@@ -2694,22 +2704,42 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             }
         }
         if (!lines.length) continue;
-        // Budget by WHOLE LINES: the name + first line always ride; each further
-        // line rides only if it fits. Mid-sentence amputation ("…; Engineered.")
-        // told the model half a fact — worse than no fact. clip() remains only as
-        // the belt for a single monstrous opening line.
-        let block = clip(`${entry.name}:\n${lines[0] || ""}`, s.maxCharsPerChar);
-        for (let li = 1; li < lines.length; li++) {
-            if (block.length + 1 + lines[li].length > s.maxCharsPerChar) continue;
-            block += "\n" + lines[li];
-        }
-        if (total + block.length > s.maxTotalChars) {
-            if (blocks.length === 0) block = clip(block, s.maxTotalChars); // always fit at least one
-            else break;
-        }
-        blocks.push(block);
         seenEntities.add(nameKey);
-        total += block.length;
+        built.push({ entry, matchedName, pinned, swept, setting, lines });
+    }
+
+    // BUDGET: PRESENCE BEFORE DEPTH. This used to build each character's whole
+    // block and `break` the moment one did not fit — so a single verbose character
+    // could consume the budget and ABANDON everyone after them, including someone
+    // whose entire block was 79 characters and who was the person being spoken to.
+    // The note must degrade by trimming DEPTH, never by deleting people who are in
+    // the scene: pass one gives every admitted character their anchor line, pass
+    // two spends whatever is left deepening them in tier order, so the player's own
+    // cast is both present AND detailed first.
+    const drafts = new Array(built.length).fill(null);
+    for (let i = 0; i < built.length; i++) {
+        const head = clip(`${built[i].entry.name}:\n${built[i].lines[0] || ""}`, s.maxCharsPerChar);
+        if (total + head.length > s.maxTotalChars) {
+            if (total === 0) { drafts[i] = clip(head, s.maxTotalChars); total = drafts[i].length; }
+            continue;   // NOT break — a later, smaller anchor may still fit
+        }
+        drafts[i] = head;
+        total += head.length;
+    }
+    for (let i = 0; i < built.length; i++) {
+        if (drafts[i] === null) continue;
+        for (let li = 1; li < built[i].lines.length; li++) {
+            const add = "\n" + built[i].lines[li];
+            if (drafts[i].length + add.length > s.maxCharsPerChar) continue;
+            if (total + add.length > s.maxTotalChars) continue;
+            drafts[i] += add;
+            total += add.length;
+        }
+    }
+    for (let i = 0; i < built.length; i++) {
+        if (drafts[i] === null) continue;
+        const { entry, matchedName, pinned, swept, setting } = built[i];
+        blocks.push(drafts[i]);
         const ev = castEvidence[(entry.name || "").toLowerCase()] || castEvidence[(matchedName || "").toLowerCase()];
         reasons.push(`${entry.name} ← ${setting ? "current setting (persists without mention)" : pinned ? "pinned" : swept ? `named in scene (as "${matchedName}") — no parser needed` : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${ev ? ` — evidence: "${clip(ev, 60)}"` : ""}${entry.dossier ? " ✦" : ""}`);
     }

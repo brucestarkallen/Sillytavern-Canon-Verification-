@@ -771,6 +771,41 @@ sandbox.__settings.lowercaseNames = true;
 // forms top to bottom. Every verb in the player's own voice therefore looked like
 // a novel name, fed the learner, and jammed the gate. A verb belongs here in BOTH
 // forms or neither, and this is the assertion that says so.
+console.log("[v0.49.0 presence before depth: verbosity must not delete people]");
+{
+    const S = sandbox.__settings;
+    const keep = { c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars, cache: S.cache };
+    S.maxCharacters = 8; S.maxCharsPerChar = 1100; S.maxTotalChars = 6000;
+    S.cache = {};
+    const fat = (n) => ({ name: n, wiki: "w", found: true, ts: Date.now(), aliases: [], rel: {},
+        sections: { identity: (n + " is a captain of the Gotei 13. ").repeat(6),
+            physical: ("hair: black; eyes: grey; short. ").repeat(6),
+            personality: ("Cold and precise in duty. ").repeat(10),
+            biography: ("Served for centuries. ").repeat(10),
+            abilities: ("A two-hit shikai. ").repeat(10),
+            trivia: ("Likes cats. ").repeat(10), voice: '"Do not misunderstand."' } });
+    const fatNames = ["Sui-Feng", "Byakuya Kuchiki", "Kenpachi Zaraki", "Shunsui Kyoraku", "Retsu Unohana", "Mayuri Kurotsuchi"];
+    for (const n of fatNames) S.cache[n.toLowerCase()] = fat(n);
+    // The player's character: a 79-character block, LAST in cast order.
+    S.cache["rukia kuchiki"] = { name: "Rukia Kuchiki", wiki: "w", found: true, ts: Date.now(),
+        aliases: [], rel: {}, sections: { identity: "Rukia Kuchiki is the captain of the 13th Division." } };
+    const cast = [...fatNames, "Rukia Kuchiki"];
+    const note = api.relevantCanonNote(["everyone stands in the hall with rukia"], cast);
+    // Six verbose captains used to consume the budget and `break`, abandoning
+    // everyone after them — including a character whose whole block was 79 chars.
+    T("a tiny block is never deleted by other characters' verbosity", /Rukia Kuchiki:/.test(note));
+    for (const n of fatNames) T(`${n} still present`, note.includes(n + ":"));
+    // Depth is what gets trimmed, and the character-block budget still holds.
+    const body = note.slice(note.indexOf(fatNames[0] + ":"));
+    T("the character-block budget is still respected", body.length <= S.maxTotalChars);
+    // Tier 1 is served first, in both presence AND depth.
+    const t1 = api.relevantCanonNote(["everyone stands in the hall with rukia"], cast,
+        undefined, { userNames: ["Rukia Kuchiki"] });
+    T("the player's named character leads the note",
+        t1.indexOf("Rukia Kuchiki:") < t1.indexOf("Sui-Feng:"));
+    S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p; S.maxTotalChars = keep.t; S.cache = keep.cache;
+}
+
 console.log("[v0.48.0 canonicalised evidence, and the player's own words as authority]");
 {
     const scene = "#time skip Jovan take a move on rukia and now currently talk with rukia";

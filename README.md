@@ -56,6 +56,39 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.49.0 (why it preferred Suì-Fēng: verbosity was deleting people)
+
+Proven by `test/proof.js` (499) + `test/sim.mjs` (281); **4 guards negative-tested**.
+
+The remaining half of "it prefers Suì-Fēng while my input is rukia". Not lookup,
+not the gate, not evidence — **the budget allocator**.
+
+1. **One verbose character could delete everyone after them.** Each character's
+   whole block was built, then measured against the total budget, and on overflow
+   the loop did `break`. Reproduced with the shape of the real cache: six
+   fully-dossiered captains (identity + physical + personality + biography +
+   abilities + trivia + voice) consumed the 6000-character budget, the seventh
+   overflowed, and the loop **abandoned everyone after it** — including a character
+   whose entire block was **79 characters** and who was the person being addressed.
+   Suì-Fēng is fat and cached; Rukia is thin and last. She was not outranked, she was
+   never reached. **Fix — presence before depth:** pass one gives every admitted
+   character their anchor line; pass two spends whatever is left deepening them in
+   tier order. The note degrades by trimming DEPTH, never by deleting people who are
+   in the scene, and the player's own cast gets both presence and detail first.
+   Overflow now skips that one block and keeps going — a later, smaller anchor still
+   fits. Both caps still hold exactly as before.
+
+2. **The sweep ran in cache insertion order.** `Object.keys(store)` is insertion
+   order, so whoever was grounded earliest led the sweep forever — a character from
+   ten scenes ago outranked the one who just walked in. The regex-mode fallback had
+   sorted by recency since v0.2; the primary path never did. Swept entities are now
+   ordered most-recently-mentioned first.
+
+**Also verified, not assumed:** smart-expansion `Context:` lines are emitted inside
+the per-character line list, which the two-pass allocator now treats as *depth* —
+so background entities can no longer displace a person from the scene, which was
+possible under the old single-pass build.
+
 ## Changelog — v0.48.0 (why it was worse with the auditor ON, and why the same scene gave different answers)
 
 Proven by `test/proof.js` (490) + `test/sim.mjs` (273); **4 guards negative-tested**.
