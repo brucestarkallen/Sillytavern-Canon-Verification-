@@ -89,7 +89,7 @@ let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGE
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.41.0";
+const CG_VERSION = "0.42.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -99,8 +99,20 @@ const FALLBACK_TAG = "canon_grounding_fallback";
 // Visible and editable in the "🧾 System instructions" group; an EMPTY override
 // means these defaults apply, so prompt improvements in updates still reach
 // everyone who hasn't customized.
-const DEFAULT_PROMPT_HEADER =
-        "Bruce's note — canon from this series' wiki, to keep our story accurate.\n" +
+// The injection voice: the canon note speaks with the player's own persona
+// name, whoever that is. ST's unset persona defaults ("User"/"Player") are
+// role-words that read as corpo to a defensive storyteller persona, so those
+// fall back to the universal fiction convention: the author's note.
+function noteLabel() {
+    try {
+        const n = String(getContext().name1 || "").trim();
+        if (n && n.toLowerCase() !== "user" && n.toLowerCase() !== "player") return n + "'s note";
+    } catch (_) {}
+    return "Author's note";
+}
+
+const DEFAULT_PROMPT_HEADER_BODY =
+        "canon from this series' wiki, to keep our story accurate.\n" +
         "You know this world; what's below is the sharp version of details that go " +
         "fuzzy. Where something here differs from what you recall — a face, a " +
         "relationship, a past event — go with the note, that's the accurate one. Don't " +
@@ -121,6 +133,9 @@ const DEFAULT_PROMPT_HEADER =
         "you can hear their cadence — write fresh dialogue in it, never recite the " +
         "quotes. Show traits through fresh, situation-specific behavior, " +
         "contradictions included.\n";
+// The effective default header: the player's name resolved at injection time,
+// so the same shipped default reads as "<their name>'s note" for anyone.
+function defaultPromptHeader() { return noteLabel() + " \u2014 " + DEFAULT_PROMPT_HEADER_BODY; }
 const DEFAULT_PROMPT_ASK =
     "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
     '"ground" (fetch canon for an entity so it can appear), ' +
@@ -1879,9 +1894,12 @@ function setChatArc(note) {
  */
 function sceneMessages(ctx, windowSize) {
     const chat = ctx.chat || [];
-    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[CANON NOTES", "[CANON REFERENCE", "[Canonical reference", "[Plot essential", "Bruce's note — canon"];
+    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[CANON NOTES", "[CANON REFERENCE", "[Canonical reference", "[Plot essential"];
+    // The natural-voice header begins "<name>'s note — canon" — any persona
+    // name, or the Author's-note fallback; history outlives persona renames.
+    const noteHeaderRe = /^[^\n]{0,42}'s note — canon/m;
     const visible = chat.filter(m =>
-        !m.is_system && !markers.some(mk => (m.mes || "").includes(mk))
+        !m.is_system && !markers.some(mk => (m.mes || "").includes(mk)) && !noteHeaderRe.test(m.mes || "")
     );
     return visible.slice(-Math.max(1, windowSize)).map(m => stripMetaBlocks(m.mes || ""));
 }
@@ -2555,7 +2573,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
 
     if (!blocks.length && !arcBlock && !pinBlock) return "";
     return (
-        ((settings().promptHeader || "").trim() || DEFAULT_PROMPT_HEADER) +
+        ((settings().promptHeader || "").trim() || defaultPromptHeader()) +
         pinBlock + arcBlock + blocks.join("\n")
     );
 }
@@ -3669,9 +3687,9 @@ function setInjection(text) {
         const types = c.extension_prompt_types || {};
         const roles = c.extension_prompt_roles || {};
         const pos = types.IN_CHAT !== undefined ? types.IN_CHAT : 1;   // in-chat @ depth
-        // USER role: the note reads as Bruce briefing the storyteller, not as a
-        // system injection (system-role reference blocks are exactly what persona
-        // defenses reject as "corpo injection").
+        // USER role: the note reads as the player briefing the storyteller, not
+        // as a system injection (system-role reference blocks are exactly what
+        // persona defenses reject as "corpo injection").
         const role = roles.USER !== undefined ? roles.USER : 1;        // user role
         // Depth is how many messages up from the bottom the note lands. ST clamps
         // it to the chat, so the huge default parks canon at the VERY TOP — right
@@ -4421,7 +4439,7 @@ async function addSettingsUI() {
     // 🧾 System instructions: box shows the EFFECTIVE text; saving text identical to
     // the default stores "" so future default improvements still reach this user.
     const PROMPTS = [
-        ["#cg_prompt_header",  "promptHeader",  DEFAULT_PROMPT_HEADER],
+        ["#cg_prompt_header",  "promptHeader",  defaultPromptHeader()],
         ["#cg_prompt_parser",  "promptParser",  DEFAULT_PROMPT_PARSER],
         ["#cg_prompt_dossier", "promptDossier", DEFAULT_PROMPT_DOSSIER],
         ["#cg_prompt_auditor", "promptAuditor", DEFAULT_PROMPT_AUDITOR],

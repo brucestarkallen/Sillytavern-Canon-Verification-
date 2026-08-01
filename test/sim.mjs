@@ -793,7 +793,7 @@ T("grounding fetched canon from the DISCOVERED universe",
     w31.some(u => u.includes("foundsaga.wiki.gg") && u.includes("page=")));
 T("and never from the stale default", !w31.some(u => u.includes("testwiki") && u.includes("page=")));
 T("the injection landed on THIS turn, in the new header voice",
-    /Zar Blade/.test(lastInjection()) && /Bruce's note — canon/.test(lastInjection()));
+    /Zar Blade/.test(lastInjection()) && /Author's note — canon/.test(lastInjection()));
 
 // [26] v0.36.0 — static witnesses for the discovery wiring.
 console.log("[26] v0.36.0 static witnesses — wiki discovery wiring");

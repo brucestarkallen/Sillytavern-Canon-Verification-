@@ -45,7 +45,7 @@ const pieces = [
     grab("function slugifyTitle", "const PLACE_WORDS"),
     grab("function apiBase", "async function"),
     grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
-    grab("const DEFAULT_PROMPT_HEADER", "const DEFAULT_PROMPT_PARSER"),
+    grab("// The injection voice: the canon note speaks", "const DEFAULT_PROMPT_PARSER"),
     grab("/**\n * ONE Abilities emitter", "// ------"),
 ];
 
@@ -78,7 +78,10 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
-const api = new Function("settings", "debug", "console", body)(sandbox.settings, sandbox.debug, console);
+// getContext is stubbed with a MUTABLE name1 so the note-label tests can pose
+// as different players; only noteLabel() consults it.
+sandbox.__ctx = { name1: "Jovan" };
+const api = new Function("settings", "debug", "console", "getContext", body)(sandbox.settings, sandbox.debug, console, () => sandbox.__ctx);
 
 let pass = 0, fail = 0;
 function T(name, cond) {
@@ -266,6 +269,17 @@ sandbox.__settings = {
 };
 const note = api.relevantCanonNote(["alpha nodded at cid kagenou"], ["Alpha", "Cid Kagenou"]);
 T("framing: behavior-not-a-rule present", /never a script/.test(note));
+// The injection voice belongs to WHOEVER the player is — a named persona
+// speaks as themselves; ST's unset role-word defaults ("User"/"Player") and
+// a missing context all fall back to the author's note. Never "user".
+T("named persona speaks as themselves", note.startsWith("Jovan's note — canon from this series' wiki"));
+for (const unset of ["User", "user", "Player", "player", "", "   "]) {
+    sandbox.__ctx = { name1: unset };
+    T(`role-word/unset persona "${unset}" → Author's note`, api.relevantCanonNote(["alpha"], ["Alpha"]).startsWith("Author's note — canon"));
+}
+sandbox.__ctx = {};
+T("missing name1 → Author's note", api.relevantCanonNote(["alpha"], ["Alpha"]).startsWith("Author's note — canon"));
+sandbox.__ctx = { name1: "Jovan" };
 T("per-pair dynamics line injected", /- With Cid Kagenou: Around Cid her stoic mask slips/.test(note));
 T("dynamics line sits under Personality", note.indexOf("Personality: Stoic") < note.indexOf("With Cid Kagenou:"));
 T("trivia line injected", /- Trivia: Keeps every note/.test(note));
@@ -531,11 +545,11 @@ api.setEvidence({});
 
 // ---------------------------------------------------------------- v0.12: prompt overrides
 console.log("[prompt overrides]");
-T("default header applies when override empty", /Bruce's note — canon/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])) );
+T("default header applies when override empty", /Jovan's note — canon/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])) );
 sandbox.__settings.promptHeader = "[MY CUSTOM FRAME]\n";
-T("header override replaces the default wholesale", (function(){ const n = api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"]); return /\[MY CUSTOM FRAME\]/.test(n) && !/Bruce's note — canon/.test(n); })());
+T("header override replaces the default wholesale", (function(){ const n = api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"]); return /\[MY CUSTOM FRAME\]/.test(n) && !/Jovan's note — canon/.test(n); })());
 sandbox.__settings.promptHeader = "";
-T("empty override falls back to default again", /Bruce's note — canon/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
+T("empty override falls back to default again", /Jovan's note — canon/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
 
 // ---------------------------------------------------------------- v0.13: lowercase gate + smart expansion
 console.log("[lowercase gate / smart expansion]");
