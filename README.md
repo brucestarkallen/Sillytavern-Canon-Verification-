@@ -56,6 +56,100 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.43.0 (deep audit: a guard nobody called, a default that froze, and a gate that proved neither)
+
+Proven by `test/proof.js` (457) + `test/sim.mjs` (237); **9 guards negative-tested**
+(each defect reintroduced in a scratch tree, each turns the gate red with exit 1).
+
+Full-repo audit. Three defects, three canonical fixes, and the gate hole that let
+the first one live: history was verified clean first — `index.js` grows
+monotonically across every commit, so no old file was ever pushed over newer work.
+
+1. **`isDisambiguation` and `isMetaSeriesPage` were never called.** Both existed,
+   both had passing assertions in `proof.js`, and the file header claimed
+   "disambiguation pages skipped". Neither had a single call site. `isMediaTitle`
+   filters *titles*, which cannot help: a wiki's disambiguation page is titled
+   `Rose` and its series page is titled `Bleach`. So `Rose` injected
+   *"Rose may refer to: Rose Oriana, the second princess…"* as her canon identity,
+   and the franchise page injected *"…is a Japanese manga series written by…"*
+   mid-scene. **Fix:** both run immediately after `fetchWikitext`, above the
+   character-signal gate and regardless of `trusted` — the caller vouches for the
+   NAME, we choose the PAGE, so trust cannot carry. They take their own miss
+   reason, `meta-page`, because `not-character` is deliberately re-fetched for
+   trusted callers (a place/org is still lore); a meta page never becomes valid, so
+   it must settle instead of re-hitting the wiki every turn. `groundArc` gets the
+   disambiguation check too — `extractLead` on a router page would otherwise pin
+   *"X may refer to: …"* as the story position, permanently, in chat metadata.
+
+2. **A persona-dependent default was captured as a constant.** v0.42.0 made the
+   note header resolve `name1` at injection time, but the settings box evaluated
+   `defaultPromptHeader()` once, at UI-build time, into `const PROMPTS`. After a
+   persona change the box displayed one name while injection used another — and one
+   keystroke in that box compared against the *stale* default, storing a frozen
+   old-persona header as a literal override, which also opts that user out of every
+   future default improvement: exactly what v0.42.0 was built to prevent.
+   **Fix:** every default in the table is a thunk, resolved at each use (initial
+   value, comparison, reset), and `CHAT_CHANGED` re-resolves any box still showing
+   its default. A user-authored override is never touched.
+
+3. **Eleven doc blocks had come adrift.** Across many edit sessions, functions were
+   moved or rewritten and their doc comments stayed glued above whichever neighbour
+   inherited the position. `cleanWikitext`, `extractLead`, `extractDistinguishing`,
+   `groundArc`, `relevantCanonNote`, `abilityLine`, `buildDossier`,
+   `verifyCastEvidence`, `llmCall` and `auditCastEvidence` were all undocumented
+   while their descriptions sat above their neighbours — which is how an editor ends
+   up confidently changing the wrong function. Ten reattached, one deleted as
+   obsolete (it described a `string[]` parser superseded by `parseCast`), and the
+   parser doc corrected: it still promised a `string[]` return that has not been the
+   shape for versions.
+
+**Dead code:** `parseNameArray` lived in `index.js` with no product call site. Its
+six assertions were proving a wrapper one indirection away from `parseCast`, which
+is what actually runs. The projection moved into the harness; the assertions now
+hit `parseCast` direct.
+
+**New gates — the reason defect 1 could exist at all.** A pure-function proof is
+only half a proof: `proof.js` proved the guards' *behavior* while nothing proved
+they were *called*.
+- **The wiring law:** every guard must have a real call site (comments stripped
+  first, so a mention cannot pass for a call), and the page-validity check must sit
+  *above* the character-signal gate with no `trusted` escape hatch.
+- **A behavioral scenario:** the real interceptor runs against a real-shaped
+  disambiguation page and a real-shaped franchise page, both named by the parser
+  (i.e. trusted — the path that had no gate at all). The note must carry the
+  ordinary character from the same turn and neither wrong page, and the settled
+  miss must not re-fetch. Negative-tested: unwire the guard and both pages ground
+  successfully and reach the note.
+- **No stranded doc blocks:** every `/** … */` must be followed by a declaration.
+- **Disjoint harness slices.** `proof.js` slices *product* code by text markers,
+  several of which are doc comments — so reattaching a comment silently moved a
+  boundary and doubled six functions. That is legal JavaScript and therefore
+  silent, until a `const` lands in a doubled span and the harness dies with a
+  SyntaxError; the history already contains that day. `grab()` now refuses to build
+  a body it cannot prove is disjoint, naming both spans and their line ranges. Two
+  of the four overlaps it caught pre-dated this release.
+
+## Changelog — v0.42.0 (the canon note speaks in the player's own voice)
+
+Shipped without a changelog entry; recorded here from its commits during the
+v0.43.0 audit.
+
+The injected note no longer reads like a bracketed system reference. The
+`[CANON NOTES … KNOWLEDGE SCOPE … BEHAVIOR]` header became a short note in the
+player's own voice with identical semantics (trust-the-note accuracy,
+narrator-knowledge-vs-character-knowledge guard, baseline-not-script behavior,
+per-pair dynamics override, voice anti-parroting) — and shorter. `STORY POSITION —`
+became `Where our story is —`; pinned canon became `My standing notes…`. The
+injection role moved from system to user, since system-role reference blocks are
+what defensive persona cards reject.
+
+`noteLabel()` resolves the player's persona (`context.name1`) at injection time, so
+the note is titled with *their* name. ST's unset defaults (`User`/`Player`) are
+role-words that read as corpo, so they fall back to `Author's note`; the word
+"user" never appears. Scene-window filtering generalizes with it: any
+`<n>'s note — canon` header counts as a machine note alongside the legacy bracket
+markers, so a note committed under a previous persona never counts as visible scene.
+
 ## Changelog — v0.41.0 (a block's terminator must be its own; guards above discovery)
 
 Proven by `test/proof.js` (449) + `test/sim.mjs` (220); **8 guards negative-tested**

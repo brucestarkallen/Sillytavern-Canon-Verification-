@@ -70,6 +70,22 @@ Boisterous.` } } }) };
     }
     if (titles === "Zarblade") return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };  // exists ONLY on bleachstub
     if (titles) return { ok: true, json: async () => ({ query: { pages: { 1: { pageid: 1, title: titles } } } }) };
+    // A plainly-titled disambiguation page — the shape isMediaTitle CANNOT catch,
+    // because the title is just a name. Its lead is a link list.
+    if (page === "Dabchar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`{{Disambiguation}}
+'''Dabchar''' may refer to:
+* [[Dabchar Oriana]], the second princess
+* [[Dabchar (episode)]], the fourth episode` } } }) };
+    // The franchise's OWN page: meta, not world. Injecting it tells the model it
+    // is inside a manga.
+    if (page === "Metaseries") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'''Metaseries''' is a Japanese light novel series written by Some Author.
+{{Infobox
+| hair = n/a
+}}
+== Personality ==
+N/A.` } } }) };
     if (page === "Gallerychar") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
 `'''Gallerychar''' is a legendary healer.
 == Appearance ==
@@ -632,7 +648,7 @@ T("manual pin is a decree: reached list wiped; auto appends",
 T("clearing the position also clears the tracker's memory",
     /setChatArc\(null\); setChatPin\("canon_grounding_arc_reached", \[\]\);/.test(src));
 T("the referee prompt is user-visible like every other (🧾 wired)",
-    /\["#cg_prompt_arcjudge", "promptArcJudge", DEFAULT_PROMPT_ARCJUDGE\]/.test(src) && /cg_prompt_arcjudge_reset/.test(src));
+    /\["#cg_prompt_arcjudge",\s*"promptArcJudge",[^\]]*DEFAULT_PROMPT_ARCJUDGE\]/.test(src) && /cg_prompt_arcjudge_reset/.test(src));
 
 // [25] v0.36.0 — 🔭 wiki discovery: verify first, discover when needed, settle forever.
 console.log("[25] wiki discovery: verify -> discover -> settle, wiki.gg beats a frozen fork");
@@ -834,7 +850,7 @@ T("the Scan button AWAITS discovery, and FORCES it — an explicit scan re-opens
 T("an EMPTY preview names the wiki state instead of leaving the user guessing",
     /wikiStateHint\(\)/.test(src) && /NOT verified for this chat yet/.test(src));
 T("the discovery prompt is user-visible like every other (🧾 wired)",
-    /\["#cg_prompt_discover", "promptDiscover", DEFAULT_PROMPT_DISCOVER\]/.test(src) && /cg_prompt_discover_reset/.test(src));
+    /\["#cg_prompt_discover",\s*"promptDiscover",[^\]]*DEFAULT_PROMPT_DISCOVER\]/.test(src) && /cg_prompt_discover_reset/.test(src));
 
 // [32] v0.40.0 — LO's live report: SillyTavern's NEUTRAL card on a blank chat.
 // There is no protagonist and nothing the story has said, so there is nothing a
@@ -1053,6 +1069,145 @@ T("the four dossier-inert category toggles say so in the UI",
 T("the total cap names what it actually budgets",
     /Max total length of the character blocks/.test(src)
     && /ride on top of it and are never trimmed/.test(src));
+
+// [44] v0.43.0 BEHAVIORAL: the wrong page never reaches the note. The structural
+// witnesses below prove the call sites exist; this proves the OUTCOME, driving the
+// real interceptor against a real-shaped disambiguation page and a real-shaped
+// franchise page. Both are named by the PARSER, i.e. trusted — which is exactly
+// the path that had no gate at all: the caller vouches for the NAME, we chose the
+// PAGE, and a router page is not an entity no matter who asked for it.
+console.log("[44] v0.43.0 a router page and a franchise page never inject");
+{
+    const ctx44 = { ...globalThis.__ctx, chat: [], chatMetadata: { canon_grounding_wiki: "genericwiki" }, characters: undefined, characterId: undefined };
+    globalThis.__ctx = ctx44;
+    S25.wikis = "genericwiki";
+    ctx44.chat = [msg("hello", true), msg("Dabchar and Metaseries and Realchar all arrive.")];
+    // Turn one names all three. Earlier scenarios can still have grounding in
+    // flight, so the assertions ride the SETTLED state on turn two rather than
+    // racing this turn's immersion ceiling — the fix under test is which pages
+    // are allowed to ground, not how fast they do it.
+    // Earlier scenarios can leave parse requests in flight on the shared queue,
+    // so resolve every pending one rather than indexing a position we only think
+    // is ours — an unresolved request would burn this turn's whole budget.
+    let drained44 = 0;
+    const turn44 = async (text) => {
+        if (text) ctx44.chat.push(msg(text));
+        const run = intercept(ctx44.chat, 4096, () => {}, "normal");
+        await sleep(20);
+        for (; drained44 < parseQueue.length; drained44++)
+            parseQueue[drained44].resolve('["Dabchar", "Metaseries", "Realchar"]');
+        await run;
+        await sleep(150);        // let background grounding finish and the cache settle
+    };
+    drained44 = parseQueue.length;
+    await turn44(null);                                              // introduce
+    await turn44("Dabchar and Metaseries and Realchar are still here.");  // settle
+
+    const f44 = fetchLog.length;
+    await turn44("And they remain.");                                // measured turn
+    const note44 = lastInjection();
+    T("the ordinary character on the same turn DID inject (the path works)",
+        /Realchar-colored/.test(note44));
+    T("the disambiguation page never reaches the note",
+        !/may refer to/i.test(note44) && !/Dabchar-colored/.test(note44));
+    T("the franchise's own page never reaches the note",
+        !/light novel series/i.test(note44) && !/Metaseries-colored/.test(note44));
+    // and it SETTLES: a meta page never becomes an entity, so naming it again
+    // must not re-hit the wiki for the same dead page. "not-character" would
+    // have — that reason is deliberately re-fetched for trusted callers.
+    T("the settled meta page is not re-fetched every turn",
+        !fetchLog.slice(f44).some(u => /page=Dabchar/.test(u) || /page=Metaseries/.test(u)));
+}
+
+// [41] v0.43.0 — THE WIRING LAW. proof.js proves a function's behavior; nothing
+// proved it was CALLED. isDisambiguation and isMetaSeriesPage had passing
+// assertions, an accurate header comment claiming "disambiguation pages
+// skipped", and ZERO call sites — so a plainly-titled dab page ("Rose") ground
+// straight through and injected "Rose may refer to: …" as her canon identity,
+// with a green gate the whole time. A pure-function proof is only half a proof.
+console.log("[41] v0.43.0 the wiring law — every guard has a CALL SITE");
+{
+    // Comments mention these by name; only real calls count.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const callsTo = fn =>
+        (code.match(new RegExp("(?<!function\\s)\\b" + fn + "\\s*\\(", "g")) || []).length;
+
+    T("isDisambiguation is actually CALLED, not merely defined", callsTo("isDisambiguation") >= 1);
+    T("isMetaSeriesPage is actually CALLED, not merely defined", callsTo("isMetaSeriesPage") >= 1);
+
+    // WHERE matters as much as whether. The page-validity check must run before
+    // anything reads the text, and above the trusted/untrusted character gate:
+    // the caller vouches for the NAME, we chose the PAGE, so trust cannot carry.
+    const ensure = src.slice(src.indexOf("async function ensureGrounded"));
+    const guard = ensure.indexOf("if (isDisambiguation(wikitext) || isMetaSeriesPage(wikitext))");
+    const charGate = ensure.indexOf("const charSignal = extractInfoboxFields(wikitext,");
+    T("the page-validity guard sits ABOVE the character-signal gate",
+        guard > -1 && charGate > -1 && guard < charGate);
+    T("the guard is unconditional — no `trusted` escape hatch",
+        !/if \(!trusted && \(isDisambiguation|trusted \&\& isDisambiguation/.test(src));
+
+    // A meta page never becomes valid, so it must SETTLE. "not-character" is the
+    // one reason re-fetched for trusted callers (a place/org is still lore) —
+    // reusing it would re-hit the wiki for the same dead page every single turn.
+    T("a meta page gets its OWN miss reason", /missReason = "meta-page";/.test(src));
+    T("only 'not-character' is re-fetched for trusted callers",
+        /existing\.reason === "not-character" && trusted/.test(src)
+        && !/existing\.reason === "meta-page"/.test(src));
+
+    // The story position is the same wrong-info surface: extractLead on a router
+    // page would pin "X may refer to: …" as where the story stands.
+    const arc = src.slice(src.indexOf("async function groundArc"));
+    T("groundArc refuses a disambiguation page too",
+        arc.indexOf('debug(`⚠ arc "${title}" is a disambiguation page') > -1
+        && arc.indexOf('debug(`⚠ arc "${title}" is a disambiguation page') < arc.indexOf("const summary = extractSection"));
+}
+
+// [42] v0.43.0 — a persona-dependent default may never be CAPTURED. The note
+// header resolves name1 at injection time; the settings box froze it at
+// UI-build time, so after a persona change the box displayed one name while
+// injection used another — and one keystroke there compared against the stale
+// default and stored a frozen old-persona header as a literal override, which
+// also opts that user out of every future default improvement.
+console.log("[42] v0.43.0 instruction defaults resolve live, never captured");
+{
+    const table = src.slice(src.indexOf("const PROMPTS = ["), src.indexOf("$(\"#cg_factory_reset\")"));
+    T("every default in the PROMPTS table is a thunk",
+        (table.match(/\(\) => /g) || []).length >= 7
+        && !/"promptHeader",\s*defaultPromptHeader\(\)/.test(table));
+    T("the box, the comparison and the reset all CALL the thunk",
+        /\|\| def\(\)\)\.on\("input"/.test(table)
+        && /v\.trim\(\) === def\(\)\.trim\(\)/.test(table)
+        && /\$\(sel\)\.val\(def\(\)\);/.test(table));
+    T("a chat switch re-resolves any box still showing its default",
+        /renderPromptDefaults = \(\) => \{/.test(src)
+        && /if \(!\(s\[key\] \|\| ""\)\.trim\(\)\) \$\(sel\)\.val\(def\(\)\);/.test(src)
+        && /if \(renderPromptDefaults\) renderPromptDefaults\(\);/.test(src));
+    T("a user-authored override is never overwritten by the refresh",
+        /if \(!\(s\[key\] \|\| ""\)\.trim\(\)\)/.test(src));
+    T("injection still resolves the header live",
+        /\(\(settings\(\)\.promptHeader \|\| ""\)\.trim\(\) \|\| defaultPromptHeader\(\)\)/.test(src));
+}
+
+// [43] v0.43.0 — no doc block may describe a function that is not the next one
+// down. Ten of them had come adrift across many edit sessions: cleanWikitext,
+// extractLead, groundArc, relevantCanonNote, abilityLine, buildDossier, llmCall
+// and others were undocumented while their docs sat above their neighbours —
+// which is how an editor ends up confidently changing the wrong function.
+console.log("[43] v0.43.0 every doc block attaches to a declaration");
+{
+    const lines = src.split("\n");
+    const orphans = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (!/^\s*\/\*\*/.test(lines[i])) continue;
+        let j = i; while (j < lines.length && !/\*\//.test(lines[j])) j++;
+        let k = j + 1; while (k < lines.length && lines[k].trim() === "") k++;
+        const nxt = (lines[k] || "").trim();
+        if (!/^(export\s+)?(async\s+)?function\b|^(const|let|var|class)\b/.test(nxt))
+            orphans.push(`L${i + 1} -> ${nxt.slice(0, 50)}`);
+    }
+    T(`no stranded doc blocks (found ${orphans.length}${orphans.length ? ": " + orphans[0] : ""})`,
+        orphans.length === 0);
+}
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by
 // reading manifest.version; a feature commit that bumps only CG_VERSION ships an

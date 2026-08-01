@@ -86,10 +86,11 @@ let renderArcStatus = null;  // set by the settings UI; called on CHAT_CHANGED
 let refreshWikiUi = null;    // set by the settings UI; syncs the wiki field after \ud83d\udd2d discovery
 let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGED
+let renderPromptDefaults = null; // re-resolves persona-dependent instruction defaults on CHAT_CHANGED
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.42.0";
+const CG_VERSION = "0.43.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -828,7 +829,6 @@ function extractFromProse(text) {
 // Wikitext section extraction (for personality / relationships / biography)
 // ---------------------------------------------------------------------------
 
-/** Strip common wiki markup down to readable prose. */
 /** Drop everything inside {{ … }} at any nesting, stray braces included. */
 function stripTemplates(text) {
     let out = "";
@@ -841,6 +841,7 @@ function stripTemplates(text) {
     return out;
 }
 
+/** Strip common wiki markup down to readable prose. */
 function cleanWikitext(wt) {
     if (!wt) return "";
     let s = wt;
@@ -1148,13 +1149,6 @@ function extractQuotes(sectionRaw, maxQuotes = 3, maxLen = 420) {
     return out.map(q => `"${q}"`).join(" / ");
 }
 
-/** Lead (intro) paragraph of the article, before the first section header. */
-/**
- * Distinguishing physical details live in the Appearance PROSE, not the infobox —
- * "a beauty mark under her left eye", "a scar across his brow", "slender but
- * deceptively strong". Pull up to 2 short sentences containing distinctive
- * markers, so Gamma's mole makes it into Appearance alongside hair and eyes.
- */
 /**
  * The wiki already wrote the physical description better than fragment-mining
  * recombines it: "a tall and lean young man with brown hair, brown eyes, and a
@@ -1201,6 +1195,12 @@ function tightenLook(look, entityName) {
 }
 
 const DISTINGUISH_RE = /\b(mole|beauty mark|beauty spot|scar|scars|tattoo|birthmark|freckle|freckles|heterochrom\w*|eyepatch|fang|fangs|pointed ears|slender|petite|muscular|voluptuous|curvaceous|lithe|stocky|towering|diminutive|androgynous|ample|well[- ]built|delicate features)\b/i;
+/**
+ * Distinguishing physical details live in the Appearance PROSE, not the infobox —
+ * "a beauty mark under her left eye", "a scar across his brow", "slender but
+ * deceptively strong". Pull up to 2 short sentences containing distinctive
+ * markers, so Gamma's mole makes it into Appearance alongside hair and eyes.
+ */
 function extractDistinguishing(prose, maxSentences = 2) {
     if (!prose) return "";
     const out = [];
@@ -1248,6 +1248,7 @@ function isDisambiguation(wikitext) {
     return /\bmay (?:also )?refer to\s*:/i.test(extractLead(wikitext, 200));
 }
 
+/** Lead (intro) paragraph of the article, before the first section header. */
 function extractLead(wikitext, maxLen = 220) {
     if (!wikitext) return "";
     const lead = wikitext.split(/\n=={1,4}[^=]/)[0] || "";
@@ -1444,7 +1445,7 @@ async function ensureGrounded(name, trusted = false) {
 
     const wikis = activeWikis().split(",").map(w => w.trim()).filter(Boolean);
     let hadError = false;          // network / HTTP / parse failure (transient — retry later)
-    let missReason = "no-page";    // upgraded to "not-character" / "no-facts" as we learn more
+    let missReason = "no-page";    // upgraded to "meta-page" / "not-character" / "no-facts" as we learn more
 
     for (const wiki of wikis) {
         try {
@@ -1452,6 +1453,21 @@ async function ensureGrounded(name, trusted = false) {
             if (!title) continue; // no such page on this wiki — a real miss, not an error
 
             const wikitext = await fetchWikitext(wiki, title);
+
+            // PAGE VALIDITY, before anything reads this text. A disambiguation page
+            // ("Rose may refer to: …") and the franchise's own page ("Bleach is a
+            // Japanese manga series…") are not entities in ANY sense — one is a
+            // router, the other is about the media product, not the world. Trust
+            // cannot overrule this: the caller vouched for the NAME, we chose the
+            // PAGE, so a trusted name lands here too. Its own miss reason, because
+            // "not-character" is the reason that gets re-fetched for trusted callers
+            // (a place/org is still valid lore) — a meta page never becomes valid, so
+            // it must settle instead of re-fetching the same dead page every turn.
+            if (isDisambiguation(wikitext) || isMetaSeriesPage(wikitext)) {
+                missReason = "meta-page";
+                debug(`⚠ "${title}" is a disambiguation/series page, not an entity — skipped`);
+                continue;
+            }
 
             // Gate: reject media/series pages (Light Novel, Anime) that aren't real entities.
             // When the LLM chose this entity (trusted), that's all we check — it may be a
@@ -1575,11 +1591,6 @@ async function resolveRelations(entries) {
 }
 
 /**
- * Ground a story ARC / CHAPTER / EPISODE page and pin its summary as the current
- * story position. Character lookups reject these titles on purpose (isMediaTitle);
- * here they are the point, so this path does its own exact-then-search resolution.
- */
-/**
  * Smarter AI 🧠: ground each present character's essential background entities
  * (from their dossier's "related") so the note can carry one-line Context —
  * cached once like everything else; capped per turn so a big cast can't stampede.
@@ -1683,6 +1694,11 @@ async function askCanon(request) {
     return { ok: false, msg: "unknown action" };
 }
 
+/**
+ * Ground a story ARC / CHAPTER / EPISODE page and pin its summary as the current
+ * story position. Character lookups reject these titles on purpose (isMediaTitle);
+ * here they are the point, so this path does its own exact-then-search resolution.
+ */
 async function groundArc(query, opts = {}) {
     const myEpoch = chatEpoch;   // arc pinning is FOR the chat that asked — a switch during the fetches below must drop it, not re-target it
     const mode = opts.mode === "begun" ? "begun" : "reached";
@@ -1716,6 +1732,14 @@ async function groundArc(query, opts = {}) {
             }
             if (!title) continue;
             const wikitext = await fetchWikitext(wiki, title);
+            // A router page pinned as the story position is the same wrong-info as a
+            // router page grounded as a character: extractLead would pin "X may refer
+            // to: …" as where the story stands. (isMetaSeriesPage is deliberately NOT
+            // applied here — an arc page legitimately describes its own series.)
+            if (isDisambiguation(wikitext)) {
+                debug(`⚠ arc "${title}" is a disambiguation page — skipped`);
+                continue;
+            }
             const summary = extractSection(wikitext, ["summary", "plot", "synopsis", "overview", "story", "events"], 900)
                 || extractLead(wikitext, 900);
             if (!summary) continue;
@@ -2114,22 +2138,6 @@ function parserMayRevisit(n) {
 }
 
 /**
- * Build the canon note.
- *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
- *    present THIS turn), inject exactly those, in that order. This is pronoun-proof: a
- *    character the parser says is here gets injected even if only "she" appears in the text.
- *  - Otherwise fall back to scanning the visible scene for grounded names (regex mode).
- * Hard-capped by count / per-entity / total length either way.
- */
-/**
- * ONE Abilities emitter for every branch — SCENE-CONDITIONAL by design. A
- * character's named techniques and their limits are the difference between a real
- * fight and invented nonsense, and dead weight in a conversation. They ride when
- * the scene touches them (token overlap) or when the moment is about conflict at
- * all; otherwise they cost nothing. Curated dossier entries preferred; the regex
- * section is the fallback so a pre-abilities dossier still answers.
- */
-/**
  * How much of `text` is actually IN PLAY right now. Word-boundary matching, not
  * substring — "Wind Read" must not score off "bread", "Star" must not score off
  * "started". Distinct tokens only, so repetition can't inflate a score.
@@ -2140,6 +2148,14 @@ function inPlayScore(text, play) {
     return toks.reduce((a, t) => a + (mentioned(t, play) ? 1 : 0), 0);
 }
 
+/**
+ * ONE Abilities emitter for every branch — SCENE-CONDITIONAL by design. A
+ * character's named techniques and their limits are the difference between a real
+ * fight and invented nonsense, and dead weight in a conversation. They ride when
+ * the scene touches them (token overlap) or when the moment is about conflict at
+ * all; otherwise they cost nothing. Curated dossier entries preferred; the regex
+ * section is the fallback so a pre-abilities dossier still answers.
+ */
 function abilityLine(entry, inPlay) {
     const s = settings();
     if (!s.abilities) return "";
@@ -2243,6 +2259,14 @@ function emptyNoteDiagnosis(rawMsgs, castNames, extras = {}) {
     } catch (e) { return "diagnosis failed: " + e.message; }
 }
 
+/**
+ * Build the canon note.
+ *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
+ *    present THIS turn), inject exactly those, in that order. This is pronoun-proof: a
+ *    character the parser says is here gets injected even if only "she" appears in the text.
+ *  - Otherwise fall back to scanning the visible scene for grounded names (regex mode).
+ * Hard-capped by count / per-entity / total length either way.
+ */
 function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const s = settings();
     const msgs = (sceneMsgs || []).map(stripMetaBlocks);
@@ -2591,13 +2615,6 @@ function getProfiles() {
 }
 
 /**
- * Pull a JSON array of strings out of model output (may include reasoning/fences).
- * Returns the (possibly EMPTY) array when the model actually answered with one —
- * an explicit [] means "I looked; nobody canon is here" and may clear a stale cast.
- * Returns NULL when no array could be recovered (garbled/refused output), so the
- * caller keeps the previous cast instead of treating failure as "nobody present".
- */
-/**
  * Defensive parse of the dossier JSON. Strips code fences, tolerates chatter around
  * the object, clips every field to budget, coerces near-miss shapes. Returns null
  * when nothing usable came back (transport failure, refusal, garbage) — the regex
@@ -2665,15 +2682,6 @@ function normalizeDossier(d) {
 }
 
 /**
- * LLM-curated dossier: instead of injecting regex-extracted section fragments, the
- * model READS the page and writes the injection — identity, load-bearing facts,
- * secrets stated as secrets (paired with the KNOWLEDGE SCOPE guard), voice, and
- * per-person dynamics. Built once per entity, in the background, cached forever.
- * The turn that grounds the entity ships regex sections immediately; the dossier
- * upgrades the entry for every turn after. Failure leaves regex sections in charge
- * and retries after the negative TTL.
- */
-/**
  * Long wiki sections are CHRONOLOGICAL — the character's late-story development
  * lives at the BOTTOM, which a naive top-slice amputates before the curator ever
  * reads it. Sample head + tail with a seam so both ends inform the dossier.
@@ -2710,6 +2718,15 @@ function dossierDigest(name, wikitext, relRaw) {
     ].filter(l => !/^[A-Z]+: ?$/.test(l)).join("\n");
 }
 
+/**
+ * LLM-curated dossier: instead of injecting regex-extracted section fragments, the
+ * model READS the page and writes the injection — identity, load-bearing facts,
+ * secrets stated as secrets (paired with the KNOWLEDGE SCOPE guard), voice, and
+ * per-person dynamics. Built once per entity, in the background, cached forever.
+ * The turn that grounds the entity ships regex sections immediately; the dossier
+ * upgrades the entry for every turn after. Failure leaves regex sections in charge
+ * and retries after the negative TTL.
+ */
 async function buildDossier(name, wikitext, relRaw) {
     const digest = dossierDigest(name, wikitext, relRaw);
     const systemText = (settings().promptDossier || "").trim() || DEFAULT_PROMPT_DOSSIER;
@@ -2859,16 +2876,6 @@ function parseCast(text) {
     return out;
 }
 
-/**
- * The Arbiter move: don't trust the parser — VERIFY it. Every element must carry
- * evidence that is actually findable in the scene text (case- and
- * whitespace-insensitive). A model that "knows" a famous classmate belongs in
- * this school cannot quote the scene for them, so the fabrication drops here,
- * mechanically. Indirect references pass fine — "the school" is a quotable
- * substring. Elements WITHOUT an evidence field (older outputs, truncation
- * salvage) fall back to the strictest check available: the name itself must
- * appear in the text.
- */
 // Story-structure/event pages: when one enters the cast, the STORY has moved —
 // autonomously advance the pinned story position instead of treating it as a place.
 const EVENT_WORDS = /\b(arc|saga|festival|exam|examination|tournament|war|battle|incident|trial|ceremony|raid|expedition|invasion|uprising|rebellion|massacre|banquet|gala|election)\b/i;
@@ -3172,6 +3179,16 @@ function splitEvidenceStrength(cast, sceneText) {
     return { strong, weak };
 }
 
+/**
+ * The Arbiter move: don't trust the parser — VERIFY it. Every element must carry
+ * evidence that is actually findable in the scene text (case- and
+ * whitespace-insensitive). A model that "knows" a famous classmate belongs in
+ * this school cannot quote the scene for them, so the fabrication drops here,
+ * mechanically. Indirect references pass fine — "the school" is a quotable
+ * substring. Elements WITHOUT an evidence field (older outputs, truncation
+ * salvage) fall back to the strictest check available: the name itself must
+ * appear in the text.
+ */
 function verifyCastEvidence(cast, sceneText) {
     if (!Array.isArray(cast)) return cast;
     const hay = String(sceneText).toLowerCase().replace(/\s+/g, " ");
@@ -3187,25 +3204,6 @@ function verifyCastEvidence(cast, sceneText) {
     return kept;
 }
 
-/** Names-only view of parseCast — same null / [] / list semantics. */
-function parseNameArray(text) {
-    const cast = parseCast(text);
-    return cast === null ? null : cast.map(c => c.name);
-}
-
-/**
- * Arbiter-style pre-generation parse: a fast model reads the scene and returns the
- * character names actually present. Time-boxed so it can never block a turn.
- * Returns: string[] when the model answered ([] = it says no canon entities are
- * present, which may legitimately clear a stale cast); NULL on timeout/failure
- * (caller keeps the previous cast — failure must never be read as "nobody here").
- */
-/**
- * One LLM call over whatever backend is configured: the Connection Manager profile
- * when set, else generateRaw. Returns the raw text, or null on timeout/failure/empty —
- * callers keep the parser's null-vs-empty discipline. Raced-out promises are always
- * given a rejection handler (Android webviews surface unhandled rejections).
- */
 let lastLlmError = "";       // why the last llmCall returned null — surfaced by rescan
 let lastParseFailToastAt = 0; // throttle for background-failure toasts (silence was the bug)
 
@@ -3472,6 +3470,12 @@ async function discoverWikiOnce(opts = {}) {
 }
 globalThis.CanonGrounding_verifyWiki = verifyOrDiscoverWiki;
 
+/**
+ * One LLM call over whatever backend is configured: the Connection Manager profile
+ * when set, else generateRaw. Returns the raw text, or null on timeout/failure/empty —
+ * callers keep the parser's null-vs-empty discipline. Raced-out promises are always
+ * given a rejection handler (Android webviews surface unhandled rejections).
+ */
 async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } = {}) {
     const c = getContext();
     const s = settings();
@@ -3533,15 +3537,6 @@ async function llmCall(systemText, userText, { maxTokens = 200, budgetMs = 0 } =
 }
 
 /**
- * THE CAST AUDITOR — a dedicated referee with one narrow, verifiable job: for each
- * entity whose evidence is real scene text but not anchored to them, decide whether
- * that evidence actually REFERS to that entity in this scene. Substring checks
- * cannot judge reference; a model can, and it only ever sees the weak cases, so the
- * call is tiny and rare. Anything it cannot confirm is dropped — strictness is the
- * point. Fails safe: if the auditor itself fails, weak items are dropped, never
- * waved through.
- */
-/**
  * KNOWN-CANON RESOLUTION: a short reference ("Kakeru") is ambiguous, and the
  * parser expanding it to a canonical is a GUESS — it invented "Miyake Kakeru"
  * from bare "Kakeru", welding two classmates together. A human GM reading a
@@ -3572,6 +3567,15 @@ function resolveAgainstKnown(cast) {
     });
 }
 
+/**
+ * THE CAST AUDITOR — a dedicated referee with one narrow, verifiable job: for each
+ * entity whose evidence is real scene text but not anchored to them, decide whether
+ * that evidence actually REFERS to that entity in this scene. Substring checks
+ * cannot judge reference; a model can, and it only ever sees the weak cases, so the
+ * call is tiny and rare. Anything it cannot confirm is dropped — strictness is the
+ * point. Fails safe: if the auditor itself fails, weak items are dropped, never
+ * waved through.
+ */
 async function auditCastEvidence(sceneText, weak) {
     if (!weak.length) return [];
     const items = weak.map(c => `- ${c.name} :: evidence: "${c.evidence}"`).join("\n");
@@ -3655,6 +3659,14 @@ function needsFirstMeetWait(lastUserMsg, priorMsgs) {
     return false;
 }
 
+/**
+ * Arbiter-style pre-generation parse: a fast model reads the scene and returns the
+ * canon entities actually present. Time-boxed so it can never block a turn.
+ * Returns: [{name, now, evidence}] when the model answered ([] = it says no canon
+ * entities are present, which may legitimately clear a stale cast); NULL on
+ * timeout/failure (caller keeps the previous cast — failure must never be read as
+ * "nobody here").
+ */
 async function parseSceneCharacters(sceneText) {
     const systemText = (settings().promptParser || "").trim() || DEFAULT_PROMPT_PARSER;
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
@@ -4438,26 +4450,40 @@ async function addSettingsUI() {
     });
     // 🧾 System instructions: box shows the EFFECTIVE text; saving text identical to
     // the default stores "" so future default improvements still reach this user.
+    // Every default is a THUNK, resolved at each use. The header's default is
+    // persona-dependent (defaultPromptHeader reads name1), and capturing it once at
+    // UI-build time made the box lie the moment the persona changed: it displayed
+    // the old name while injection used the new one, and one keystroke in that box
+    // compared against the STALE default — storing a frozen old-persona header as a
+    // literal override, which also opted that user out of every future default.
     const PROMPTS = [
-        ["#cg_prompt_header",  "promptHeader",  defaultPromptHeader()],
-        ["#cg_prompt_parser",  "promptParser",  DEFAULT_PROMPT_PARSER],
-        ["#cg_prompt_dossier", "promptDossier", DEFAULT_PROMPT_DOSSIER],
-        ["#cg_prompt_auditor", "promptAuditor", DEFAULT_PROMPT_AUDITOR],
-        ["#cg_prompt_ask",     "promptAsk",     DEFAULT_PROMPT_ASK],
-        ["#cg_prompt_arcjudge", "promptArcJudge", DEFAULT_PROMPT_ARCJUDGE],
-        ["#cg_prompt_discover", "promptDiscover", DEFAULT_PROMPT_DISCOVER],
+        ["#cg_prompt_header",  "promptHeader",  () => defaultPromptHeader()],
+        ["#cg_prompt_parser",  "promptParser",  () => DEFAULT_PROMPT_PARSER],
+        ["#cg_prompt_dossier", "promptDossier", () => DEFAULT_PROMPT_DOSSIER],
+        ["#cg_prompt_auditor", "promptAuditor", () => DEFAULT_PROMPT_AUDITOR],
+        ["#cg_prompt_ask",     "promptAsk",     () => DEFAULT_PROMPT_ASK],
+        ["#cg_prompt_arcjudge", "promptArcJudge", () => DEFAULT_PROMPT_ARCJUDGE],
+        ["#cg_prompt_discover", "promptDiscover", () => DEFAULT_PROMPT_DISCOVER],
     ];
     for (const [sel, key, def] of PROMPTS) {
-        $(sel).val((s[key] || "").trim() || def).on("input", function () {
+        $(sel).val((s[key] || "").trim() || def()).on("input", function () {
             const v = String($(this).val());
-            s[key] = (v.trim() === def.trim()) ? "" : v;
+            s[key] = (v.trim() === def().trim()) ? "" : v;
             saveSettingsDebounced();
         });
         $(sel + "_reset").on("click", function () {
-            s[key] = ""; $(sel).val(def); saveSettingsDebounced();
+            s[key] = ""; $(sel).val(def()); saveSettingsDebounced();
             cgToast("info", "Restored default instruction.");
         });
     }
+    // A chat switch can switch the persona with it. Any box still showing its
+    // DEFAULT (stored "") re-resolves, so the header always displays the text that
+    // will actually be injected. A user-authored override is never touched.
+    renderPromptDefaults = () => {
+        for (const [sel, key, def] of PROMPTS) {
+            if (!(s[key] || "").trim()) $(sel).val(def());
+        }
+    };
     $("#cg_factory_reset").on("click", function () {
         if (!confirm("Reset EVERY Canon Grounding setting and instruction to defaults?\nKept: grounded cache, saved wiki library, per-chat pins/arc.")) return;
         // Behavior resets; CONNECTIONS and USER CONTENT survive: the parser profile
@@ -4883,6 +4909,7 @@ jQuery(async () => {
             try { if (renderArcStatus) renderArcStatus(); } catch (e) { /* UI optional */ }
             try { if (renderChatScoped) renderChatScoped(); } catch (e) { /* UI optional */ }
             try { if (renderCacheHook) renderCacheHook(); } catch (e) { /* UI optional */ }
+            try { if (renderPromptDefaults) renderPromptDefaults(); } catch (e) { /* UI optional */ }
             // \ud83d\udd2d fire-and-forget wiki verification/discovery for the newly opened
             // chat — epoch-guarded inside, so a fast chat switch discards it cleanly.
             setTimeout(() => { verifyOrDiscoverWiki().catch(() => {}); }, 0);

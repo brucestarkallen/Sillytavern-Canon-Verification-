@@ -9,11 +9,27 @@ const path = require("path");
 const src = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
 
 // ---- slice the pieces we need (consts + functions), skipping ESM imports/UI ----
+const grabbed = [];   // every span taken, so overlap is provable rather than hoped
 function grab(marker, endMarker) {
     const i = src.indexOf(marker);
     if (i < 0) throw new Error("marker not found: " + marker);
     const j = src.indexOf(endMarker, i);
     if (j < 0) throw new Error("end not found after: " + marker);
+    // A slice that CONTAINS another slice evaluates its functions twice. That is
+    // legal JavaScript and therefore silent — until a `const` lands inside the
+    // doubled span and the whole harness dies with a SyntaxError. Markers are
+    // doc comments and signatures in PRODUCT code, so any edit there can move a
+    // boundary. Refuse to build a body we cannot prove is disjoint.
+    const line = off => src.slice(0, off).split("\n").length;
+    for (const g of grabbed) {
+        if (i < g.j && g.i < j) {
+            throw new Error(
+                `overlapping harness slices — functions would be evaluated twice:\n` +
+                `  [L${line(g.i)}-${line(g.j)}] ${JSON.stringify(g.marker.slice(0, 48))}\n` +
+                `  [L${line(i)}-${line(j)}] ${JSON.stringify(marker.slice(0, 48))}`);
+        }
+    }
+    grabbed.push({ marker, i, j });
     return src.slice(i, j);
 }
 const pieces = [
@@ -27,7 +43,10 @@ const pieces = [
     grab("const PROSE_STOP", "// ------"),
     grab("/** Drop everything inside", "// ------"),
     grab("const NEGATIVE_TTL", "async function ensureGrounded"),
-    grab("function clip(", "/**\n * Build the canon note."),
+    // clip() through the note builder, in ONE span. This used to be two slices
+    // whose boundary was a doc comment; reattaching that comment to the function
+    // it actually describes moved the boundary and doubled 6 functions.
+    grab("function clip(", "// ---------------------------------------------------------------------------\n// The pre-generation interceptor"),
     // These two slices used to be ONE ending at parseSceneCharacters, which
     // swallowed the whole 🔭 discovery block below — every function in it was
     // evaluated TWICE. Function redeclaration is legal so it never surfaced;
@@ -38,15 +57,12 @@ const pieces = [
     //  "function stripMetaBlocks" .. "function slugifyTitle" span)
     grab("const PLACE_WORDS", "async function parseSceneCharacters"),
     grab("/**\n * A multi-token query must be COVERED", "/** Fire-and-forget dossier"),
-    grab("function parseDossier", "/**\n * LLM-curated dossier"),
-    grab("/**\n * Long wiki sections are CHRONOLOGICAL", "async function buildDossier"),
-    grab("/**\n * The identity line", "function extractLead"),
+    grab("function parseDossier", "async function buildDossier"),
     grab("/** Prefer story-structure titles", "// ------"),
     grab("function slugifyTitle", "const PLACE_WORDS"),
-    grab("function apiBase", "async function"),
+    grab("function apiBase", "/** Non-character / media / meta pages"),
     grab("const CANON_INTENTS", "/**\n * 🗣 ASK CANON"),
     grab("// The injection voice: the canon note speaks", "const DEFAULT_PROMPT_PARSER"),
-    grab("/**\n * ONE Abilities emitter", "// ------"),
 ];
 
 // stubs for the module-scope things the sliced code touches
@@ -63,7 +79,7 @@ saveCache = () => {};   // persistence is sim's job — the real saveCache needs
 return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
          extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
-         clip, cacheEntryFor, pruneStaleCast, isUnhandledName, parseNameArray,
+         clip, cacheEntryFor, pruneStaleCast, isUnhandledName,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier, normalizeDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
@@ -169,13 +185,18 @@ T("hyphen boundary: alya-chan matches alya", api.mentioned("alya", "she nudged a
 T("CYRILLIC now matches (was broken)", api.mentioned("Мария", "затем мария вошла в комнату"));
 T("cyrillic non-match stays non-match", !api.mentioned("Мария", "затем алья вошла в комнату"));
 
-// ---------------------------------------------------------------- parseNameArray null vs []
-console.log("[parseNameArray failure vs empty]");
-eq("model answered [] → []", api.parseNameArray("[]"), []);
-eq("fenced array parsed", api.parseNameArray("```json\n[\"Cid Kagenou\", \"Alpha\"]\n```"), ["Cid Kagenou", "Alpha"]);
-T("garbage → null (was [])", api.parseNameArray("I cannot help with that.") === null);
-T("empty → null (was [])", api.parseNameArray("") === null);
-eq("wrapped object's inner array recovered", api.parseNameArray('{"entities": ["Rose Oriana"]}'), ["Rose Oriana"]);
+// ---------------------------------------------------------------- parseCast null vs []
+// Names-only projection of parseCast. This USED to be parseNameArray, a wrapper
+// living in index.js that no product path ever called — so these assertions were
+// proving the wrapper, one indirection away from the parser that actually runs.
+// The projection belongs in the harness; the assertions now hit parseCast direct.
+const castNames = t => { const c = api.parseCast(t); return c === null ? null : c.map(x => x.name); };
+console.log("[parseCast failure vs empty]");
+eq("model answered [] → []", castNames("[]"), []);
+eq("fenced array parsed", castNames("```json\n[\"Cid Kagenou\", \"Alpha\"]\n```"), ["Cid Kagenou", "Alpha"]);
+T("garbage → null (was [])", castNames("I cannot help with that.") === null);
+T("empty → null (was [])", castNames("") === null);
+eq("wrapped object's inner array recovered", castNames('{"entities": ["Rose Oriana"]}'), ["Rose Oriana"]);
 
 // ---------------------------------------------------------------- alias-aware cache + dedupe
 console.log("[cache alias short-circuit]");
@@ -400,7 +421,7 @@ const pc = api.parseCast('```json\n[{"name":"Rose Oriana","now":"her engagement 
 T("parseCast: objects + strings mixed, deduped by name", pc.length === 2 && pc[0].now === "her engagement is being challenged" && pc[1].name === "Cid Kagenou" && pc[1].now === "");
 T("parseCast: [] stays explicit-empty", Array.isArray(api.parseCast("[]")) && api.parseCast("[]").length === 0);
 T("parseCast: garbage → null", api.parseCast("no entities to speak of") === null);
-T("parseNameArray compat view", JSON.stringify(api.parseNameArray('[{"name":"Alpha","now":"x"},"Beta"]')) === '["Alpha","Beta"]');
+T("mixed object/string elements both yield names", JSON.stringify(castNames('[{"name":"Alpha","now":"x"},"Beta"]')) === '["Alpha","Beta"]');
 T("disambig template detected", api.isDisambiguation("{{Disambiguation}}\nRose may refer to several characters."));
 T("'may refer to' lead detected", api.isDisambiguation("'''Rose''' may refer to:\n* [[Rose Oriana]]\n* [[Rose (episode)]]"));
 T("normal page not flagged", !api.isDisambiguation("'''Rose Oriana''' is the second princess of the Oriana Kingdom. She may also be seen at the academy."));
