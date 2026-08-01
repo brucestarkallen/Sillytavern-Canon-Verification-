@@ -90,7 +90,7 @@ let renderPromptDefaults = null; // re-resolves persona-dependent instruction de
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.44.0";
+const CG_VERSION = "0.45.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2158,12 +2158,19 @@ function isUnhandledName(n) {
  *  "not found" ruling is a fact about the wiki list that produced it. When the
  *  list has since grown, THAT word's veto is void; verdicts about non-names
  *  (never cached) rightly survive wiki changes. */
-function parserMayRevisit(n) {
-    const lc = n.toLowerCase();
-    if (!isUnhandledName(n)) return false;
-    if (!parsedWords.has(lc)) return true;
+function parserVetoHolds(lc) {
+    if (!parsedWords.has(lc)) return false;          // never ruled on — no veto
     const neg = cache()[lc];
-    return !!(neg && !neg.found && !missCoversCurrentWikis(neg, activeWikis()));
+    if (!neg || neg.found) return true;              // ruled on, nothing to expire
+    // The ruling was a "not found" — a fact about the wiki list and the moment
+    // that produced it. It holds only while BOTH still stand.
+    return missCoversCurrentWikis(neg, activeWikis())
+        && (Date.now() - neg.ts < negativeTtl(neg));
+}
+
+function parserMayRevisit(n) {
+    if (!isUnhandledName(n)) return false;
+    return !parserVetoHolds(n.toLowerCase());
 }
 
 /**
@@ -3628,16 +3635,26 @@ async function auditCastEvidence(sceneText, weak) {
  * parser, evidence check, and auditor still decide who actually exists. Every
  * parsed message's tokens are learned afterwards, so a novel pair gates once.
  */
-function hasNovelLowercasePair(text) {
+function hasNovelLowercaseName(text) {
     if (!text) return false;
     const toks = String(text).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
+    // ORDINARY VOCABULARY, not adjacency, is what separates a name from prose.
+    // This used to require TWO ADJACENT unknown tokens, which quietly rotted shut:
+    // every word of the player's message was learned into parsedWords, so the
+    // ordinary verbs around a name ("talk", "greet", "turns") became "known" after
+    // a turn or two — and from then on a lone new name was ALWAYS adjacent to a
+    // learned word, so the pair could never form. "you talk to rukia" opened the
+    // gate on a fresh chat and never again. COMMON_LOWERCASE is the 434-word
+    // vocabulary built for exactly this question and never consulted here; with it,
+    // ONE novel token is enough, and once-only learning still bounds the cost.
+    // Also: the last token was never even tested as the first half of a pair, so a
+    // name ending the sentence — the commonest way anyone addresses someone — was
+    // structurally invisible.
     const known = (t) =>
-        NOISE_WORDS.has(t) || STOPWORDS.has(t[0].toUpperCase() + t.slice(1)) ||
-        parsedWords.has(t) || !!cacheEntryFor(t);
-    for (let i = 0; i < toks.length - 1; i++) {
-        if (!known(toks[i]) && !known(toks[i + 1])) return true;
-    }
-    return false;
+        NOISE_WORDS.has(t) || COMMON_LOWERCASE.has(t) ||
+        STOPWORDS.has(t[0].toUpperCase() + t.slice(1)) ||
+        parserVetoHolds(t) || !!cacheEntryFor(t);
+    return toks.some(t => !known(t));
 }
 
 /**
@@ -3842,7 +3859,20 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
             if (!shouldParse && s.lowercaseNames) {
                 // No capitals required: "rose oriana walks in" opens the gate too.
-                shouldParse = hasNovelLowercasePair(lastUserMsg);
+                shouldParse = hasNovelLowercaseName(lastUserMsg);
+            }
+            if (!shouldParse && lgNames && lgNames.length) {
+                // THE LEDGER SPEAKS. Summaryception has already decided who the real
+                // cast of THIS story is; that is certainty, not a guess, and it costs
+                // nothing to consult. Any of their name tokens in the player's own
+                // message opens the gate whatever the case and whatever the parser
+                // once ruled — "you talk to rukia" is the player addressing a known
+                // character, and no capitalisation heuristic gets a vote on that.
+                const lcUser = lastUserMsg.toLowerCase();
+                shouldParse = lgNames.some(n =>
+                    isUnhandledName(n) &&
+                    nameTokens(n).some(t => t.length >= 3 && !NOISE_WORDS.has(t) && mentioned(t, lcUser)));
+                if (shouldParse) debug("📒 ledger cast named in your message — parsing");
             }
             if (shouldParse) {
                 const mySerial = ++parseSerial;
@@ -3853,9 +3883,18 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                     cgToast("warning", `Canon parser failing in background: ${lastLlmError || "unknown"}. Sweep/pins still inject.`);
                 }
                 if (mySerial === parseSerial) {      // a newer parse hasn't superseded this one
-                    for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
-                    for (const t of String(lastUserMsg).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
-                        if (t.length >= 3) parsedWords.add(t);               // novel words gate once
+                    // LEARNING REQUIRES AN ANSWER. parsedWords means "the model has
+                    // ruled on this word" — but a null parse is a TIMEOUT or a
+                    // transport failure: the model never saw a thing and ruled on
+                    // nothing. Learning anyway burned every word in the player's
+                    // message permanently, so one slow turn could make a character
+                    // ungroundable for the rest of the chat. On a mobile backend
+                    // that is not an edge case, it is Tuesday.
+                    if (parsed) {
+                        for (const n of quick) parsedWords.add(n.toLowerCase()); // shown to the model now
+                        for (const t of String(lastUserMsg).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+                            if (t.length >= 3) parsedWords.add(t);               // novel words gate once
+                        }
                     }
                     if (parsed) {                    // null = call failed → keep the previous cast
                         const names = parsed.map(p => p.name);

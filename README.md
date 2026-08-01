@@ -56,6 +56,46 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.45.0 (the gate rotted shut: why the parser stopped being asked)
+
+Proven by `test/proof.js` (468) + `test/sim.mjs` (257); **6 guards negative-tested**.
+
+Live report: `you talk to rukia` — Rukia never injects, an unrelated cached
+character does. This is a real regression and it is not about the wiki. The parser
+was never asked to look. Four failures in the gate, each fixed at its own root.
+
+1. **A failed parse still burned every word in the message.** `parsedWords` means
+   "the model has ruled on this word", but the learning ran *above* the `if
+   (parsed)` check — and `parsed === null` is a timeout or transport failure, where
+   the model saw nothing and ruled on nothing. One slow turn permanently marked
+   every word of that message as settled. On a mobile backend that is not an edge
+   case. Learning now requires an answer.
+
+2. **The pair rule rotted shut.** The lowercase gate required TWO ADJACENT unknown
+   tokens. Every word of the player's message was learned, so the ordinary verbs
+   around a name — `talk`, `greet`, `turns` — became "known" after a turn or two,
+   and from then on a lone new name was *always* adjacent to a learned word and the
+   pair could never form. `you talk to rukia` opened the gate on a fresh chat and
+   never again, which is exactly the "it used to be smart" shape. The loop also ran
+   to `length - 1`, so a name ending the sentence — the commonest way anyone
+   addresses someone — was never even tested. **Fix:** ordinary vocabulary, not
+   adjacency, is what separates a name from prose. `COMMON_LOWERCASE`, the 434-word
+   lexicon built for precisely this question and never consulted here, now gates it;
+   ONE novel token is enough, and once-only learning still bounds the cost.
+
+3. **One word, two laws.** The capitalised path could revisit a ruling
+   (`parserMayRevisit`); the lowercase path read `parsedWords` directly, so its
+   ruling was permanent for the chat. **Fix:** a single `parserVetoHolds()` used by
+   both. A "not found" ruling is a fact about the wiki list and the moment that
+   produced it, and holds only while both still stand.
+
+4. **The ledger never spoke.** `ledgerNames()` — Summaryception's curated cast of
+   *this* story — was computed on the line directly above the gate and used only for
+   injection tiers. It is certainty, not a guess, and costs nothing to consult.
+   **Fix:** any ledger character's name token in the player's own message opens the
+   gate, whatever the case and whatever the parser once ruled. No capitalisation
+   heuristic gets a vote on whether the player just addressed a known character.
+
 ## Changelog — v0.44.0 (the addressed character never injected: a fight page, and a day-long sentence)
 
 Proven by `test/proof.js` (468) + `test/sim.mjs` (244); **5 guards negative-tested**.

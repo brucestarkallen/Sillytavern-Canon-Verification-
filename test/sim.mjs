@@ -570,8 +570,13 @@ T("Ask Canon is contained", /const runAsk = async \(\) => \{[\s\S]{0,220}try \{/
 T("post-generation scan is contained", /async function onMessageReceived\(\) \{\s*try/.test(src));
 T("decay handles chat shrinkage explicitly",
     /const delta = visibleLen - lastCastLen;\s*\n\s*if \(delta >= 0 && delta <= s\.contextWindow\)/.test(src));
+// Scoped to the function it is about. It used to count occurrences across the
+// WHOLE file, so any other consumer of the shared lexicon broke it — which is a
+// test pinning a global number while claiming something local.
 T("first-meeting wait applies the common-word lexicon in both branches",
-    (src.match(/COMMON_LOWERCASE\.has\(t\)/g) || []).length === 2);
+    (src.slice(src.indexOf("function needsFirstMeetWait"))
+        .split("\nfunction ")[0]
+        .match(/COMMON_LOWERCASE\.has\(t\)/g) || []).length === 2);
 
 // [23] v0.35.0 — autonomous story position: the story ENTERING an event advances
 // the pin (begun mode); a mere mention does not; and the position never regresses
@@ -1227,6 +1232,45 @@ console.log("[45] v0.44.0 page choice and miss durability");
     T("the parser gate uses it too", /Date\.now\(\) - neg\.ts < negativeTtl\(neg\)/.test(src));
     T("no raw NEGATIVE_TTL comparison survives in either miss check",
         !/existing\.ts < NEGATIVE_TTL/.test(src) && !/neg\.ts < NEGATIVE_TTL/.test(src));
+}
+
+// [46] v0.45.0 — THE GATE. The live report: "you talk to rukia" and Rukia never
+// injects while an irrelevant cached character does. Nothing here is about the
+// wiki; the parser was never asked to look at all.
+console.log("[46] v0.45.0 the gate: vocabulary, one veto law, and the ledger");
+{
+    // 1. A null parse is a TIMEOUT. The model ruled on nothing, so nothing is learned.
+    const learn = src.slice(src.indexOf("LEARNING REQUIRES AN ANSWER"), src.indexOf("null = call failed"));
+    T("word learning is inside an `if (parsed)`", /if \(parsed\) \{[\s\S]*parsedWords\.add/.test(learn));
+    T("a failed parse burns nothing",
+        !/^\s*for \(const n of quick\) parsedWords\.add/m.test(
+            src.slice(src.indexOf("if (mySerial === parseSerial)"), src.indexOf("LEARNING REQUIRES AN ANSWER"))));
+
+    // 2. ONE veto law. The lowercase path used to read parsedWords directly, making
+    //    a ruling permanent for the chat, while the capitalised path could revisit.
+    T("there is a single veto predicate", /function parserVetoHolds\(lc\)/.test(src));
+    T("the capitalised path uses it", /return !parserVetoHolds\(n\.toLowerCase\(\)\);/.test(src));
+    T("the lowercase path uses it too",
+        /parserVetoHolds\(t\) \|\| !!cacheEntryFor\(t\)/.test(src));
+    T("neither path reads parsedWords raw as a permanent veto",
+        !/parsedWords\.has\(t\) \|\| !!cacheEntryFor\(t\)/.test(src));
+    T("the veto expires with the miss that made it",
+        /missCoversCurrentWikis\(neg, activeWikis\(\)\)\s*\n\s*&& \(Date\.now\(\) - neg\.ts < negativeTtl\(neg\)\)/.test(src));
+
+    // 3. Vocabulary, not adjacency. The pair rule rotted shut as ordinary verbs were
+    //    learned, and never tested the last token as a pair's first half at all.
+    T("the pair rule is gone", !/hasNovelLowercasePair/.test(src));
+    T("one novel token is enough", /return toks\.some\(t => !known\(t\)\);/.test(src));
+    T("the shared common-word lexicon gates it",
+        /COMMON_LOWERCASE\.has\(t\) \|\|/.test(src.slice(src.indexOf("function hasNovelLowercaseName"))));
+
+    // 4. The ledger is certainty and costs nothing. It was computed directly above
+    //    the gate and used only for injection tiers.
+    T("the ledger can open the gate", /lgNames && lgNames\.length/.test(src));
+    T("it matches name TOKENS, so a first name counts",
+        /nameTokens\(n\)\.some\(t => t\.length >= 3 && !NOISE_WORDS\.has\(t\) && mentioned\(t, lcUser\)\)/.test(src));
+    T("it only fires for cast we have not grounded",
+        /lgNames\.some\(n =>\s*\n\s*isUnhandledName\(n\) &&/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by
