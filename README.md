@@ -56,6 +56,44 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.44.0 (the addressed character never injected: a fight page, and a day-long sentence)
+
+Proven by `test/proof.js` (468) + `test/sim.mjs` (244); **5 guards negative-tested**.
+
+Live report: the story addresses Rukia. Rukia never injects. An unrelated cached
+character injects in her place, and the cache shows her as not found. Three layers
+had to fail together, and each is fixed at its own root.
+
+1. **A fight page grounded as the character.** Wikis with heavy battle coverage
+   title those articles after their participants — `Rukia Kuchiki & Yasutora Sado
+   vs. Shrieker`. That ranks high on a search for "Rukia", passes `isMediaTitle`
+   (no subpage slash, no media parenthetical), and passes the coverage guard,
+   because every token of the query genuinely is in the title. It carries no
+   character infobox — and a **trusted** name skips the character-signal gate, so
+   nothing stopped it. **Fix:** a title naming two combatants is an event, not a
+   who; `isMediaTitle` rejects `vs.`/`versus` titles. Word-interior matches
+   ("Vsevolod") are untouched.
+
+2. **The search took the first acceptable hit, not the best one.** Search rank is
+   relevance, not identity: a page mentioning Rukia a hundred times can outrank her
+   own article. **Fix:** among non-media hits, prefer those that *cover* the query,
+   shortest title first — a character's own page is the tightest title that still
+   accounts for the name. Plain relevance order remains the fallback.
+
+3. **One miss was a 24-hour sentence, and nothing could overturn it.** Every miss
+   was cached for a full day, and only `not-character` was re-fetched for trusted
+   callers. So the moment Rukia resolved to a page that yielded nothing, she was
+   `no-facts` — locked out for 24h while the LLM parser named her, correctly, every
+   single turn. The note then filled with whoever was still cached. **Fix:** the
+   horizon depends on whose failure it was. `no-page` means the wiki genuinely has
+   no such article — durable knowledge, and the right answer for an original
+   character or a stray capitalised word, so it keeps the full day. Every other
+   reason means we found a page and *our own* resolution or extraction failed; that
+   is a heuristic failing, not evidence of absence, and now heals in 20 minutes.
+   One `negativeTtl()` definition serves both the grounder and the parser gate —
+   they previously had to be kept in step by hand, and a name healing in one while
+   staying dead in the other is the same bug wearing a different hat.
+
 ## Changelog — v0.43.0 (deep audit: a guard nobody called, a default that froze, and a gate that proved neither)
 
 Proven by `test/proof.js` (457) + `test/sim.mjs` (237); **9 guards negative-tested**

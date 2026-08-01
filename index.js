@@ -90,7 +90,7 @@ let renderPromptDefaults = null; // re-resolves persona-dependent instruction de
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.43.0";
+const CG_VERSION = "0.44.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -693,6 +693,14 @@ function isMediaTitle(t) {
     // character page that way, and rejecting it would drop the character.
     return /\((light novel|novel|anime|manga|manhwa|manhua|film|movie|ova|ona|web series|series|video game|soundtrack|album|song|volume|vol\.?|chapter|episode|arc|season|disambiguation|franchise)\)/i.test(t)
         || /\b(disambiguation|list of|volume \d|episode \d|chapter \d)\b/i.test(t)
+        // FIGHT pages. Wikis with heavy battle coverage (Bleach: "Rukia Kuchiki &
+        // Yasutora Sado vs. Shrieker") title them after their participants, so they
+        // rank high on a character search AND pass the coverage guard — the query's
+        // every token really is in the title. They carry no character infobox, so
+        // the character gate would catch them... except a TRUSTED name skips that
+        // gate. Result: a battle page grounds as the character, yields nothing, and
+        // negative-caches her. A page naming two combatants is an event, not a who.
+        || /\s(?:vs\.?|versus)\s/i.test(t)
         || String(t).includes("/"); // subpages
 }
 
@@ -723,8 +731,17 @@ async function findPageTitle(wiki, name) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`search HTTP ${res.status}`);
     const hits = (await res.json())?.query?.search || [];
-    const good = hits.find(h => !isMediaTitle(h.title));
-    return good ? good.title : null; // if only media pages matched, treat as "not found"
+    const usable = hits.filter(h => !isMediaTitle(h.title));
+    // Search rank is relevance, not identity: a query for "Rukia" can rank a page
+    // that mentions her a hundred times above her own article. A character's OWN
+    // page is the TIGHTEST title that still accounts for the query — "Rukia
+    // Kuchiki" beats "Rukia Kuchiki & Renji Abarai vs. Szayelaporro Granz". Prefer
+    // covering titles shortest-first; fall back to plain relevance when none cover.
+    const covering = usable.filter(h => titleCoversQuery(name, h.title, []));
+    const pick = covering.length
+        ? covering.reduce((a, b) => (b.title.length < a.title.length ? b : a))
+        : usable[0];
+    return pick ? pick.title : null; // if only media pages matched, treat as "not found"
 }
 
 async function fetchWikitext(wiki, title) {
@@ -1281,6 +1298,18 @@ function extractAliases(wikitext, keywords) {
 // ---------------------------------------------------------------------------
 
 const NEGATIVE_TTL = 1000 * 60 * 60 * 24; // don't re-search a "not found" for 24h
+// A SOFT miss heals in minutes, not a day. The distinction is whose failure it was:
+// "no-page" means the wiki genuinely has no such article — durable knowledge, and
+// the right answer for an original character or a stray capitalised word. Every
+// other reason means we FOUND a page and our own resolution or extraction failed
+// (landed on a battle page, an infobox we could not read, a router page). That is a
+// failure of our heuristics, not evidence of absence, and locking it in for 24h is
+// what makes a character the story is actively addressing stay silently ungrounded
+// while the note fills with whoever happens to still be cached.
+const SOFT_NEGATIVE_TTL = 1000 * 60 * 20;
+function negativeTtl(entry) {
+    return (entry && entry.reason && entry.reason !== "no-page") ? SOFT_NEGATIVE_TTL : NEGATIVE_TTL;
+}
 
 // Markup that has no business inside an injected section: image syntax, table
 // syntax, magic words, comment shrapnel, tab plumbing. Presence means the entry
@@ -1431,7 +1460,7 @@ async function ensureGrounded(name, trusted = false) {
     const existing = c[key];
     if (existing && existing.sections) {
         if (existing.found) return existing;                       // already grounded
-        if (Date.now() - existing.ts < NEGATIVE_TTL) {
+        if (Date.now() - existing.ts < negativeTtl(existing)) {
             // A page rejected ONLY because it didn't look like a character can still be
             // valid lore (a place/org). If the caller now trusts it (LLM parser), re-fetch
             // instead of reusing the untrusted miss; otherwise honor the recent miss —
@@ -2120,7 +2149,7 @@ function isUnhandledName(n) {
     const lc = n.toLowerCase();
     if (cacheEntryFor(lc)) return false;                                        // grounded (any name/alias)
     const neg = cache()[lc];
-    if (neg && !neg.found && (Date.now() - neg.ts < NEGATIVE_TTL)
+    if (neg && !neg.found && (Date.now() - neg.ts < negativeTtl(neg))
         && missCoversCurrentWikis(neg, activeWikis())) return false;         // fresh miss, list unchanged
     return true;
 }

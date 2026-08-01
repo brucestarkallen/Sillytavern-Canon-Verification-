@@ -87,7 +87,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks, emptyNoteDiagnosis,
-         abilityLine, appearanceLine, normName, dossierDigest, sampleSection,
+         abilityLine, appearanceLine, normName, dossierDigest, sampleSection, negativeTtl, SOFT_NEGATIVE_TTL, NEGATIVE_TTL,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
          arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom, wikiFingerprint,
          nameTokens, isPlaceholderName, discoveryCorpus, chatEvidenceTerms, groundedNames,
@@ -422,6 +422,26 @@ T("parseCast: objects + strings mixed, deduped by name", pc.length === 2 && pc[0
 T("parseCast: [] stays explicit-empty", Array.isArray(api.parseCast("[]")) && api.parseCast("[]").length === 0);
 T("parseCast: garbage → null", api.parseCast("no entities to speak of") === null);
 T("mixed object/string elements both yield names", JSON.stringify(castNames('[{"name":"Alpha","now":"x"},"Beta"]')) === '["Alpha","Beta"]');
+console.log("[v0.44.0 a fight page is an event, and a soft miss heals in minutes]");
+// Battle pages are titled after their participants, so they rank high on a
+// character search AND pass the coverage guard — every token of "Rukia" really is
+// in "Rukia Kuchiki & Yasutora Sado vs. Shrieker". They carry no character
+// infobox, and a TRUSTED name skips the character gate, so one used to ground as
+// the character, yield nothing, and negative-cache her for a full day.
+T("versus page rejected", api.isMediaTitle("Rukia Kuchiki & Yasutora Sado vs. Shrieker"));
+T("versus page rejected (no period)", api.isMediaTitle("Ichigo Kurosaki vs Kenpachi Zaraki"));
+T("the character's own page still accepted", !api.isMediaTitle("Rukia Kuchiki"));
+T("a name containing 'vs' inside a word is untouched", !api.isMediaTitle("Vsevolod Ivanov"));
+T("the battle page DID cover the query — the title filter is the only guard",
+    api.titleCoversQuery("Rukia", "Rukia Kuchiki & Yasutora Sado vs. Shrieker", []));
+// Absence of a page is durable knowledge; failure to extract from a page we FOUND
+// is our own heuristic failing, and must not lock the character out for 24h.
+T("no-page keeps the full day", api.negativeTtl({ reason: "no-page" }) === api.NEGATIVE_TTL);
+T("no-facts heals soon", api.negativeTtl({ reason: "no-facts" }) === api.SOFT_NEGATIVE_TTL);
+T("not-character heals soon", api.negativeTtl({ reason: "not-character" }) === api.SOFT_NEGATIVE_TTL);
+T("meta-page heals soon", api.negativeTtl({ reason: "meta-page" }) === api.SOFT_NEGATIVE_TTL);
+T("a reasonless legacy entry keeps the full day", api.negativeTtl({}) === api.NEGATIVE_TTL);
+T("soft is genuinely shorter", api.SOFT_NEGATIVE_TTL < api.NEGATIVE_TTL);
 T("disambig template detected", api.isDisambiguation("{{Disambiguation}}\nRose may refer to several characters."));
 T("'may refer to' lead detected", api.isDisambiguation("'''Rose''' may refer to:\n* [[Rose Oriana]]\n* [[Rose (episode)]]"));
 T("normal page not flagged", !api.isDisambiguation("'''Rose Oriana''' is the second princess of the Oriana Kingdom. She may also be seen at the academy."));

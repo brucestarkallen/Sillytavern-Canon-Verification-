@@ -1209,6 +1209,26 @@ console.log("[43] v0.43.0 every doc block attaches to a declaration");
         orphans.length === 0);
 }
 
+// [45] v0.44.0 — the live report: the story addresses Rukia, Rukia never injects,
+// and an irrelevant cached character rides instead. Three layers had to hold.
+console.log("[45] v0.44.0 page choice and miss durability");
+{
+    // Search rank is relevance, not identity — the tightest COVERING title wins.
+    const pick = src.slice(src.indexOf("const usable = hits.filter"), src.indexOf("return pick ? pick.title"));
+    T("the search filters media titles before choosing", /const usable = hits\.filter\(h => !isMediaTitle\(h\.title\)\);/.test(pick));
+    T("covering titles are preferred, shortest first",
+        /titleCoversQuery\(name, h\.title, \[\]\)/.test(pick)
+        && /b\.title\.length < a\.title\.length \? b : a/.test(pick));
+    T("relevance order is still the fallback when nothing covers", /: usable\[0\]/.test(pick));
+    // One TTL definition, both consumers — the gate and the grounder must agree, or
+    // a name heals in one and stays dead in the other.
+    T("the negative horizon is one function", /function negativeTtl\(entry\)/.test(src));
+    T("ensureGrounded uses it", /Date\.now\(\) - existing\.ts < negativeTtl\(existing\)/.test(src));
+    T("the parser gate uses it too", /Date\.now\(\) - neg\.ts < negativeTtl\(neg\)/.test(src));
+    T("no raw NEGATIVE_TTL comparison survives in either miss check",
+        !/existing\.ts < NEGATIVE_TTL/.test(src) && !/neg\.ts < NEGATIVE_TTL/.test(src));
+}
+
 // [40] the stamp must match the manifest. ST decides whether to auto-update by
 // reading manifest.version; a feature commit that bumps only CG_VERSION ships an
 // extension nobody's install will pull. The history has that drift in it.
