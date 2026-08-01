@@ -226,7 +226,15 @@ for (let i = 0; i < 12; i++) globalThis.__ctx.chat.push(msg("DecayA waits patien
 globalThis.__ctx.chat.push(msg("DecayA nods.", true));
 const run4 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 await sleep(20);
-T("gate stays quiet (no new names, no junk candidates)", parseQueue.length === 3);
+// v0.50.0: a NEW player message always earns a look — the heuristics that used to
+// veto it were the bug source. The waste guard that still matters is the RE-parse:
+// the same message, swiped or regenerated, must not spend a second call.
+T("a new player message earns a look", parseQueue.length === 4);
+parseQueue[3].resolve('["DecayA"]');
+const qSwipe = parseQueue.length;
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "swipe");
+await sleep(20);
+T("the SAME message does not re-parse (swipe is free)", parseQueue.length === qSwipe);
 await run4;
 T("mentioned entity survives decay", /DecayA-colored/.test(lastInjection()));
 T("off-screen entity dropped by decay", !/DecayB-colored/.test(lastInjection()));
@@ -235,10 +243,16 @@ console.log("[5] alias dedupe, zero refetch");
 globalThis.__ctx.chatMetadata.canon_grounding_cache = globalThis.__ctx.chatMetadata.canon_grounding_cache || {};
 globalThis.__ctx.chatMetadata.canon_grounding_cache["alya"] = { name: "Alisa Mikhailovna Kujou", sections: { physical: "hair: silver" }, aliases: ["Alya"], wiki: "testwiki", found: true, ts: Date.now() };
 const before = fetchLog.length;
+const qAliasStart = parseQueue.length;
 globalThis.__ctx.chat.push(msg("have you seen Alisa Mikhailovna Kujou?", true));
 const run5 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 await sleep(20);
-T("alias-known name does not re-fire the parser", parseQueue.length === 3);
+T("a new player message parses even when the name is alias-known", parseQueue.length === qAliasStart + 1);
+parseQueue[qAliasStart].resolve('["Alisa Mikhailovna Kujou"]');
+const qAlias = parseQueue.length;
+await intercept(globalThis.__ctx.chat, 4096, () => {}, "regenerate");
+await sleep(20);
+T("...and regenerating the same message spends nothing", parseQueue.length === qAlias);
 await run5;
 // v0.3 pair dynamics legitimately fetch the "X/Relationships" SUBPAGE (once per
 // character, ever). That is a different call class from re-grounding an entity —
@@ -413,7 +427,7 @@ const q15c = parseQueue.length;
 globalThis.__ctx.chat.push(msg("Later that night, you talked with Vandrel by the gate.", true));
 const run15c = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 await run15c;
-T("no parser round trip needed for a cached first name", parseQueue.length === q15c);
+T("the player naming someone earns a parse", parseQueue.length === q15c + 1);
 parseQueue[q15c]?.resolve('["Vandrel Kuchor"]');
 const inj15 = lastInjection();
 T("the character you addressed IS injected", /Vandrel Kuchor/.test(inj15));
@@ -427,9 +441,14 @@ S.contextWindow = 2;   // [15]'s real prose mentions of Vandrel scroll out — t
 globalThis.__ctx.chat.push(msg("The night drags on quietly.", true));   // neutral player turn: nobody user-named
 globalThis.__ctx.chat.push(msg("Dusk settles over the camp as Zarblade stirs.\n[ACW: Vandrel Kuchor | Far ridge | resting] [ACW: Nimbler Vosk | Archives | idle]", false));
 const run16 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+await sleep(20);
+// The neutral player turn is new, so exactly ONE parse fires for it. The scenario's
+// point is that the AI's ACW ticker adds no round trip of its own, and that a name
+// appearing ONLY in a ticker never reaches the note — so the parse must actually
+// complete, or the assertion below would be reading a stale note from turn 15.
+T("ticker names add no parser round trip of their own", parseQueue.length === q16 + 1);
+parseQueue[q16].resolve('["Zarblade"]');
 await run16;
-T("ticker names never reach the parser (no round trip)", parseQueue.length === q16);
-parseQueue[q16]?.resolve('[]');
 T("cached character named ONLY in the ticker is NOT injected", !/Vandrel/.test(lastInjection()));
 T("the real cast is untouched", /Zarblade/.test(lastInjection()));
 S.contextWindow = 10;
@@ -749,7 +768,9 @@ await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 await sleep(80);
 const ok28 = globalThis.__ctx.chatMetadata.canon_grounding_wiki_ok;
 T("a plain turn verified and pinned the chat", ok28 && ok28.name === "Zar Blade" && !ok28.failed);
-T("verification cost zero LLM calls", parseQueue.length === q28);
+// Discovery itself must still be free: the only call this turn is the cast parse
+// the player's new message earns.
+T("verification itself cost zero LLM calls (only the turn's own parse)", parseQueue.length <= q28 + 1);
 globalThis.__ctx.name2 = "Zar Blade";
 S25.wikis = "testwiki";
 delete globalThis.__ctx.chatMetadata.canon_grounding_wiki;
@@ -1343,6 +1364,28 @@ console.log("[49] v0.49.0 presence before depth, recency before insertion order"
         /sweptHits\.sort\(\(a, b\) => b\.at - a\.at\);/.test(src));
     T("smart-expansion Context lines are depth, never presence",
         src.indexOf("Context: ") > src.indexOf("const lines = [];"));
+}
+
+// [50] v0.50.0 — scan the player's input, lead with who they addressed, and make
+// "Last injection" mean what it says.
+console.log("[50] v0.50.0 scan, lead, snapshot");
+{
+    T("a new player message always earns a parse",
+        /let shouldParse = s\.parserEveryTurn\s*\n\s*\|\| \(!!lastUserMsg\.trim\(\) && lastUserMsg !== gateLastUserMsg\);/.test(src));
+    T("the consumed message is recorded so a swipe is free",
+        /gateLastUserMsg = lastUserMsg;/.test(src));
+    T("the heuristics are kept only as the fallback below it",
+        src.indexOf("lastUserMsg !== gateLastUserMsg") < src.indexOf("shouldParse = quick.some(parserMayRevisit)"));
+    T("who the player named leads the note",
+        /present\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);/.test(src)
+        && /named\.has\(\(p\.entry\.name \|\| ""\)\.toLowerCase\(\)\) \? 1 : 2/.test(src));
+    T("pins and the setting still outrank everything",
+        /\(p\.pinned \|\| p\.setting\) \? 0/.test(src));
+    T("the player's message reaches the note builder", /userMsg: lastUserMsg,/.test(src));
+    T("the panel snapshots reasons WITH the note",
+        /lastReasons = lastMatchReasons\.slice\(\);/.test(src)
+        && /for \(const r of lastReasons\)/.test(src)
+        && !/for \(const r of lastMatchReasons\)/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

@@ -87,10 +87,12 @@ let refreshWikiUi = null;    // set by the settings UI; syncs the wiki field aft
 let renderChatScoped = null; // refreshes per-chat pin fields on CHAT_CHANGED
 let renderCacheHook = null;  // refreshes the per-chat cache list on CHAT_CHANGED
 let renderPromptDefaults = null; // re-resolves persona-dependent instruction defaults on CHAT_CHANGED
+let gateLastUserMsg = "";    // player message the last parse consumed — a NEW one always re-parses
+let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, so the panel cannot drift
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.49.0";
+const CG_VERSION = "0.50.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2580,6 +2582,21 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         for (const sc of scored) admit(sc.entry, sc.matchedName, sc.key);
     }
 
+    // WHO LEADS IS DECIDED BY THE PLAYER'S SENTENCE, not by which tier happened to
+    // admit them first. Tier order alone was not enough: a ledger character merely
+    // lingering in the scene window is admitted at tier 2, above the parser's cast
+    // at tier 3, so on the turn a character is first grounded the person being
+    // addressed could still come second. Pins and the setting are decree and stay
+    // on top; everyone the player just named follows; the rest keep their order.
+    if (extras.userMsg) {
+        const named = new Set(castNamedIn(extras.userMsg).map(n => String(n).toLowerCase()));
+        if (named.size) {
+            const rank = (p) => (p.pinned || p.setting) ? 0
+                : (named.has((p.entry.name || "").toLowerCase()) ? 1 : 2);
+            present.sort((a, b) => rank(a) - rank(b));   // stable: ties keep tier order
+        }
+    }
+
     const blocks = [];
     const reasons = [];
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
@@ -4014,7 +4031,16 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             //  - default gate: only when a capitalized word appears that we have NOT already
             //    shown the model. We remember every word parsed (not just grounded ones), so
             //    recurring non-characters (Mitsugoshi) don't re-fire — it settles when stable.
-            let shouldParse = s.parserEveryTurn;
+            // A NEW PLAYER MESSAGE ALWAYS EARNS A LOOK. Everything below this line is
+            // a heuristic guessing whether the sentence contains a name worth an LLM
+            // call — capitalisation, novel tokens, learned words. Every one of those
+            // guesses has been a bug: they are cheap to run and expensive to be wrong
+            // about, and being wrong means the storyteller writes a character blind.
+            // The player typing something new is the signal. One parser call per turn
+            // is what a fast referee costs, and the heuristics stay below to catch
+            // names the AI introduces on turns where the player said nothing new.
+            let shouldParse = s.parserEveryTurn
+                || (!!lastUserMsg.trim() && lastUserMsg !== gateLastUserMsg);
             const quick = extractCandidateNames(sceneText);
             if (!shouldParse) {
                 // A capitalized word we've never shown the model and never grounded.
@@ -4045,6 +4071,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
             if (shouldParse) {
                 const mySerial = ++parseSerial;
+                gateLastUserMsg = lastUserMsg;
                 const parsed = await parseSceneCharacters(sceneText, lastUserMsg);
                 if (myEpoch !== chatEpoch) return;   // chat switched mid-parse: old-chat results must not apply
                 if (parsed === null && Date.now() - lastParseFailToastAt > 300000) {
@@ -4261,14 +4288,22 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             settingKey: chatSettingKey(),
             chatPin: chatPin(),
             globalPin: settings().pinnedGlobal,
+            userMsg: lastUserMsg,
         });
         lastSource = (cast && cast.length)
             ? (s.llmParser ? `LLM parser cast (${cast.length})` : `ledger cast (${cast.length})`)
             : "scene scan";
 
         // Record exactly what we injected this turn so it can be shown in settings.
+        // SNAPSHOT, taken together. "Last injection" means what went out with THIS
+        // generation. lastMatchReasons is module state that every later rebuild
+        // overwrites — the preview button, the post-generation scan, a background
+        // catch-up — so the note and the reasons under it could come from different
+        // calls, and the panel appeared to update on its own after the turn was
+        // already sent. Note, time, source and reasons are captured in one place.
         lastInjection = note || "";
         lastInjectionAt = Date.now();
+        lastReasons = lastMatchReasons.slice();
         renderLastInjection();
 
         if (note) {
@@ -4900,6 +4935,7 @@ async function addSettingsUI() {
             });
             lastInjection = note;
             lastInjectionAt = Date.now();
+            lastReasons = lastMatchReasons.slice();
             lastSource = "preview";
             renderLastInjection();
             cgToast(note ? "success" : "warning", note
@@ -5054,8 +5090,8 @@ function renderLastInjection() {
     const $why = $("#cg_why");
     if ($why.length) {
         $why.empty();
-        if (lastMatchReasons.length) {
-            for (const r of lastMatchReasons) $("<div class='cg-why-row'></div>").text(r).appendTo($why);
+        if (lastReasons.length) {
+            for (const r of lastReasons) $("<div class='cg-why-row'></div>").text(r).appendTo($why);
         } else {
             $why.append('<span class="cg-empty">—</span>');
         }

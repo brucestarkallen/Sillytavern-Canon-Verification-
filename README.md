@@ -56,6 +56,35 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.50.0 (just scan the input: the gate heuristics were the bug source)
+
+Proven by `test/proof.js` (499) + `test/sim.mjs` (290); **4 guards negative-tested**.
+
+1. **A new player message now always earns a parse.** Everything that used to sit
+   in front of the parser was a heuristic *guessing* whether a sentence contained a
+   name worth an LLM call — capitalisation, adjacent novel tokens, learned words,
+   alias coverage. Every one of them has been a bug in this repo, and being wrong
+   means the storyteller writes a character blind. The player typing something new
+   IS the signal; let the model decide who to look up. The heuristics remain only
+   below it, to catch names the AI introduces on turns where the player said nothing
+   new. **The waste guard that actually mattered is kept and now tested directly:**
+   the same message swiped or regenerated does not spend a second call.
+
+2. **Who leads the note is decided by the player's sentence.** Tier order alone was
+   not enough. A ledger character merely lingering in the scene window is admitted
+   at tier 2, above the parser's cast at tier 3 — so on the very turn a character is
+   first grounded, the person being addressed could still come second. `present` is
+   now stably re-sorted: pins and the current setting stay on top (decree), everyone
+   the player just named follows, the rest keep their tier order.
+
+3. **"Last injection" is a snapshot again.** The note was captured at injection, but
+   the reasons under it read `lastMatchReasons` — module state that every later
+   rebuild overwrites: the preview button, the post-generation scan, a background
+   catch-up. So the note and its explanation could come from different calls, and the
+   panel appeared to keep updating itself after the turn had already been sent. Note,
+   time, source and reasons are now captured together, in one place, at the moment
+   the note goes out.
+
 ## Changelog — v0.49.0 (why it preferred Suì-Fēng: verbosity was deleting people)
 
 Proven by `test/proof.js` (499) + `test/sim.mjs` (281); **4 guards negative-tested**.
