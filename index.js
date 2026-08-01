@@ -100,29 +100,27 @@ const FALLBACK_TAG = "canon_grounding_fallback";
 // means these defaults apply, so prompt improvements in updates still reach
 // everyone who hasn't customized.
 const DEFAULT_PROMPT_HEADER =
-            "[CANON NOTES — this series' wiki, refreshing your memory.\n" +
-        "You already know this world; the notes below are the sharp version of memories " +
-        "gone fuzzy. Where a detail here differs from what you recall — a face, a " +
-        "relationship, a past event — trust the note: it IS the accurate memory. Don't " +
-        "argue with it, 'correct' it, or invent an alternative; just know it.\n" +
-        "KNOWLEDGE SCOPE: these facts are for YOUR accuracy as the narrator — they are " +
-        "NOT public knowledge inside the story. A character may only know, reveal, or " +
-        "react to what THEY could know in-story right now. Hidden identities, secret " +
-        "affiliations, and unrevealed connections stay hidden: guard them actively, and " +
-        "never let a character's dialogue, thoughts, or behavior betray information " +
-        "sourced from this reference.\n" +
-        "BEHAVIOR here is memory of how they've TENDED to be — never a script. They " +
-        "are a person first: traits decide HOW they respond, never WHETHER they " +
-        "respond humanly. They react to what just happened; mood, company, privacy, " +
-        "and stakes bend them — stoic on duty can be warm or petty in private. " +
-        "Pressure shows THROUGH a trait, not instead " +
-        "of it — defiance strains, fear leaks, tactics shift; people bargain, beg, " +
-        "break, or hold at visible cost — and an identical " +
-        "reaction repeated while circumstances escalate is a portrayal error. When a " +
-        "'With <name>' line matches someone in the scene, that dynamic overrides the " +
-        "baseline. Voice lines are style samples: match their cadence and attitude " +
-        "in fresh dialogue, never recite the samples. Show traits through fresh, " +
-        "situation-specific behavior, contradictions included.]\n";
+        "Bruce's note — canon from this series' wiki, to keep our story accurate.\n" +
+        "You know this world; what's below is the sharp version of details that go " +
+        "fuzzy. Where something here differs from what you recall — a face, a " +
+        "relationship, a past event — go with the note, that's the accurate one. Don't " +
+        "argue with it, correct it, or invent an alternative; just know it.\n" +
+        "These facts are for you as the storyteller — not public knowledge inside the " +
+        "story. A character can only know, reveal, or react to what they could know " +
+        "in-story right now. Hidden identities, secret affiliations, and unrevealed " +
+        "connections stay hidden: never let a character's dialogue, thoughts, or " +
+        "behavior betray what the note tells you.\n" +
+        "How someone is described here is how they've tended to be — never a script. " +
+        "They're a person first: traits shape how they respond, not whether they " +
+        "respond like a person. Mood, company, privacy, and stakes bend them — stoic " +
+        "on duty can be warm or petty in private. Pressure shows through a trait, not " +
+        "instead of it — defiance strains, fear leaks, people bargain, beg, break, or " +
+        "hold at visible cost — and the same reaction repeated while things escalate " +
+        "reads as a portrayal error. When a 'With <name>' line matches someone in the " +
+        "scene, that dynamic overrides the baseline. Quoted lines are style samples so " +
+        "you can hear their cadence — write fresh dialogue in it, never recite the " +
+        "quotes. Show traits through fresh, situation-specific behavior, " +
+        "contradictions included.\n";
 const DEFAULT_PROMPT_ASK =
     "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
     '"ground" (fetch canon for an entity so it can appear), ' +
@@ -1881,7 +1879,7 @@ function setChatArc(note) {
  */
 function sceneMessages(ctx, windowSize) {
     const chat = ctx.chat || [];
-    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[CANON NOTES", "[CANON REFERENCE", "[Canonical reference", "[Plot essential"];
+    const markers = ["[Story memory", "[AUTHORITATIVE SOURCE CANON", "[CANON NOTES", "[CANON REFERENCE", "[Canonical reference", "[Plot essential", "Bruce's note — canon"];
     const visible = chat.filter(m =>
         !m.is_system && !markers.some(mk => (m.mes || "").includes(mk))
     );
@@ -2490,7 +2488,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                     if (rid) lines.push(`  - Context: ${rHit.entry.name}${why ? ` (${why})` : ""} — ${clip(rid, 150)}`);
                 }
             }
-            if (d.secrets.length) lines.push(`  - Secret (unrevealed in-story — guard per KNOWLEDGE SCOPE): ${d.secrets.join("; ")}`);
+            if (d.secrets.length) lines.push(`  - Secret (unrevealed in-story — keep it hidden): ${d.secrets.join("; ")}`);
         } else {
             // Regex-section fallback. Identity is ALWAYS on — a model that knows the
             // hair color but not WHO SHE IS was the original sin here.
@@ -2540,10 +2538,10 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         // character knowledge, never asserted as past. Manual/legacy notes keep
         // the original "everything above has occurred" semantics byte-for-byte.
         arcBlock = (arcNote.mode === "begun")
-            ? `STORY POSITION — ${arcNote.title} (just beginning): ${arcNote.summary}\n` +
-              `(The story is at the START of this arc: the summary above is the narrator's map of canon events that have NOT yet occurred — let them unfold naturally, never treat them as past, and no character knows them. Events from earlier arcs have occurred. Canon beyond this arc, and every unrevealed identity, is likewise unknown to every character — never foreshadow or use it.)\n`
-            : `STORY POSITION — ${arcNote.title}: ${arcNote.summary}\n` +
-              `(Only events up to this point have occurred. Later canon events, reveals, and ` +
+            ? `Where our story is — ${arcNote.title} (just beginning): ${arcNote.summary}\n` +
+              `(The story is at the START of this arc: the summary above is the storyteller's map of canon events that have NOT yet happened — let them unfold naturally, never treat them as past, and no character knows them. Events from earlier arcs have happened. Canon beyond this arc, and every unrevealed identity, is likewise unknown to every character — never foreshadow or use it.)\n`
+            : `Where our story is — ${arcNote.title}: ${arcNote.summary}\n` +
+              `(Only events up to this point have happened. Later canon events, reveals, and ` +
               `identities are unknown to every character — never foreshadow or use them.)\n`;
         reasons.push(`story position ← ${arcNote.title}${arcNote.mode === "begun" ? " (just begun)" : ""}`);
     }
@@ -2551,7 +2549,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     let pinBlock = "";
     const pinTexts = [extras.globalPin, extras.chatPin].map(t => (t || "").trim()).filter(Boolean);
     if (pinTexts.length) {
-        pinBlock = `PINNED CANON (user-authored — absolute, always in effect):\n${pinTexts.join("\n")}\n`;
+        pinBlock = `My standing notes — I wrote these, they always apply:\n${pinTexts.join("\n")}\n`;
         reasons.push("pinned canon text");
     }
 
@@ -3671,7 +3669,10 @@ function setInjection(text) {
         const types = c.extension_prompt_types || {};
         const roles = c.extension_prompt_roles || {};
         const pos = types.IN_CHAT !== undefined ? types.IN_CHAT : 1;   // in-chat @ depth
-        const role = roles.SYSTEM !== undefined ? roles.SYSTEM : 0;    // system role
+        // USER role: the note reads as Bruce briefing the storyteller, not as a
+        // system injection (system-role reference blocks are exactly what persona
+        // defenses reject as "corpo injection").
+        const role = roles.USER !== undefined ? roles.USER : 1;        // user role
         // Depth is how many messages up from the bottom the note lands. ST clamps
         // it to the chat, so the huge default parks canon at the VERY TOP — right
         // after the system prompt, above other extensions' injections and the

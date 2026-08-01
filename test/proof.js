@@ -269,12 +269,12 @@ T("framing: behavior-not-a-rule present", /never a script/.test(note));
 T("per-pair dynamics line injected", /- With Cid Kagenou: Around Cid her stoic mask slips/.test(note));
 T("dynamics line sits under Personality", note.indexOf("Personality: Stoic") < note.indexOf("With Cid Kagenou:"));
 T("trivia line injected", /- Trivia: Keeps every note/.test(note));
-T("arc block + spoiler guard on top", /STORY POSITION — Lawless City Arc/.test(note) && /never foreshadow/.test(note) && note.indexOf("STORY POSITION") < note.indexOf("Alpha:"));
+T("arc block + spoiler guard on top", /Where our story is — Lawless City Arc/.test(note) && /never foreshadow/.test(note) && note.indexOf("Where our story is") < note.indexOf("Alpha:"));
 sandbox.__settings.arcInject = false;
-T("arc toggle off → no arc block", !/STORY POSITION/.test(api.relevantCanonNote(["alpha"], ["Alpha"])));
+T("arc toggle off → no arc block", !/Where our story is/.test(api.relevantCanonNote(["alpha"], ["Alpha"])));
 sandbox.__settings.arcInject = true;
 sandbox.__settings.cache = {};
-T("arc-only note injects with empty cast", /STORY POSITION/.test(api.relevantCanonNote([], [])));
+T("arc-only note injects with empty cast", /Where our story is/.test(api.relevantCanonNote([], [])));
 sandbox.__settings.arcNote = null;
 T("nothing at all → empty note", api.relevantCanonNote([], []) === "");
 
@@ -305,7 +305,7 @@ sandbox.__settings = {
 const vnote = api.relevantCanonNote(["alpha spoke"], ["Alpha", "Cid Kagenou"]);
 T("voice line injected", /- Voice: "Shadow Garden moves tonight\."/.test(vnote));
 T("voice ordered after dynamics", vnote.indexOf("With Cid Kagenou:") < vnote.indexOf("- Voice:"));
-T("anti-parroting clause in header", /style samples/.test(vnote) && /never recite the samples/.test(vnote));
+T("anti-parroting clause in header", /style samples/.test(vnote) && /never recite the quotes/.test(vnote));
 sandbox.__settings.voice = false;
 T("voice toggle off → no voice line", !/- Voice:/.test(api.relevantCanonNote(["alpha spoke"], ["Alpha"])));
 
@@ -331,7 +331,7 @@ const TRIVFILE = `== Trivia ==\n* Her design changed in volume 3. [[File:old.png
 T("trivia bullet keeps text, drops file link", /design changed in volume 3\./.test(api.extractTrivia(TRIVFILE, ["trivia"])) && !/200px|old design/.test(api.extractTrivia(TRIVFILE, ["trivia"])));
 sandbox.__settings.cache = { "alpha": { name: "Alpha", found: true, wiki: "w", aliases: [], sections: { physical: "hair: blonde" }, rel: {} } };
 const knote = api.relevantCanonNote(["alpha"], ["Alpha"]);
-T("knowledge-scope clause present (hidden-identity guard)", /KNOWLEDGE SCOPE/.test(knote) && /Hidden identities/.test(knote) && /never let a character/.test(knote));
+T("knowledge-scope clause present (hidden-identity guard)", /for you as the storyteller/.test(knote) && /Hidden identities/.test(knote) && /never let a character/.test(knote));
 
 // ---------------------------------------------------------------- v0.6: dossier + pins
 console.log("[parseDossier]");
@@ -364,7 +364,7 @@ const dnote = api.relevantCanonNote(["rose oriana drew her sword at cid kagenou"
 T("dossier identity leads the block", /- Identity: Second princess of Oriana; student council president/.test(dnote));
 T("dossier facts joined", /- Facts: Wields the Oriana sword style\.; Engaged under political pressure/.test(dnote));
 T("dossier dynamics used when no wiki pair slice", /- With Cid Kagenou: Sees him as an unremarkable classmate/.test(dnote));
-T("secret line labeled for the KNOWLEDGE SCOPE guard", /- Secret \(unrevealed in-story — guard per KNOWLEDGE SCOPE\): Becomes Shadow Garden's 666/.test(dnote));
+T("secret line labeled for the KNOWLEDGE SCOPE guard", /- Secret \(unrevealed in-story — keep it hidden\): Becomes Shadow Garden's 666/.test(dnote));
 T("dossier suppresses regex personality/trivia fragments", !/- Personality: Dignified\./.test(dnote) && !/- Trivia: Loves swords\./.test(dnote));
 T("dossier voice preferred", /- Voice: "I will protect my kingdom myself\."/.test(dnote));
 api.relevantCanonNote(["rose oriana"], ["Rose Oriana"]);
@@ -376,7 +376,7 @@ const lnote = api.relevantCanonNote(["rose oriana"], ["Rose Oriana"]);
 T("legacy path: identity ALWAYS injected (biography off)", /- Identity: Rose Oriana is the second princess of the Oriana Kingdom\./.test(lnote));
 T("identity line precedes appearance", lnote.indexOf("- Identity:") < lnote.indexOf("- Appearance:"));
 const pnote = api.relevantCanonNote([], [], null, { globalPin: "Never kill named characters without my OK.", chatPin: "Rose's engagement is already broken in this timeline.", pinNames: ["Rose"] });
-T("pinned canon text block above entity blocks", /PINNED CANON \(user-authored — absolute, always in effect\):\nNever kill named characters without my OK\.\nRose's engagement is already broken in this timeline\./.test(pnote) && pnote.indexOf("PINNED CANON") < pnote.indexOf("Rose Oriana:"));
+T("pinned canon text block above entity blocks", /My standing notes — I wrote these, they always apply:\nNever kill named characters without my OK\.\nRose's engagement is already broken in this timeline\./.test(pnote) && pnote.indexOf("My standing notes") < pnote.indexOf("Rose Oriana:"));
 T("pinned entity forced with empty cast and empty scene", /Rose Oriana:/.test(pnote) && /- Identity: Rose Oriana is the second princess/.test(pnote));
 T("pin + cast dedupe: one block", (api.relevantCanonNote(["rose oriana"], ["Rose Oriana"], null, { pinNames: ["Rose"] }).match(/Rose Oriana:/g) || []).length === 1);
 
@@ -531,11 +531,11 @@ api.setEvidence({});
 
 // ---------------------------------------------------------------- v0.12: prompt overrides
 console.log("[prompt overrides]");
-T("default header applies when override empty", /\[CANON NOTES/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])) );
+T("default header applies when override empty", /Bruce's note — canon/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])) );
 sandbox.__settings.promptHeader = "[MY CUSTOM FRAME]\n";
-T("header override replaces the default wholesale", (function(){ const n = api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"]); return /\[MY CUSTOM FRAME\]/.test(n) && !/\[CANON NOTES/.test(n); })());
+T("header override replaces the default wholesale", (function(){ const n = api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"]); return /\[MY CUSTOM FRAME\]/.test(n) && !/Bruce's note — canon/.test(n); })());
 sandbox.__settings.promptHeader = "";
-T("empty override falls back to default again", /\[CANON NOTES/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
+T("empty override falls back to default again", /Bruce's note — canon/.test(api.relevantCanonNote(["nanase smiled"], ["Tsubasa Nanase"])));
 
 // ---------------------------------------------------------------- v0.13: lowercase gate + smart expansion
 console.log("[lowercase gate / smart expansion]");
@@ -777,13 +777,13 @@ T("comment containing '>' removed entirely", api.cleanWikitext("A. <!-- x > y --
 // ---------------------------------------------------------------- v0.26: anti-rigidity payload
 console.log("[anti-rigidity]");
 const hdrNote = api.relevantCanonNote(["ayanokōji watched"], ["Kiyotaka Ayanokōji"]);
-T("header: behavior is remembered tendency, never a script", /how they've TENDED to be/.test(hdrNote) && /never a script/.test(hdrNote));
-T("header: pressure shows THROUGH a trait, not instead of it", /Pressure shows THROUGH a trait, not instead of it/.test(hdrNote));
-T("header: pressure texture kept (strain, leak, shift)", /defiance strains, fear leaks, tactics shift/.test(hdrNote));
-T("header: identical repetition under escalation = portrayal error", /identical reaction repeated while circumstances escalate is a portrayal error/.test(hdrNote));
-T("header: reacts to what just happened", /react to what just happened/.test(hdrNote));
-T("header: facts are the accurate memory; behavior stays unscripted", /it IS the accurate memory/.test(hdrNote) && /never a script/.test(hdrNote));
-T("header: HOW they respond, never WHETHER they respond humanly", /HOW they respond, never WHETHER they respond humanly/.test(hdrNote));
+T("header: behavior is remembered tendency, never a script", /how they've tended to be/.test(hdrNote) && /never a script/.test(hdrNote));
+T("header: pressure shows THROUGH a trait, not instead of it", /Pressure shows through a trait, not instead of it/.test(hdrNote));
+T("header: pressure texture kept (strain, leak, shift)", /defiance strains, fear leaks/.test(hdrNote));
+T("header: identical repetition under escalation = portrayal error", /same reaction repeated while things escalate reads as a portrayal error/.test(hdrNote));
+T("header: reacts to what just happened", /stakes bend them/.test(hdrNote));
+T("header: facts are the accurate memory; behavior stays unscripted", /that's the accurate one/.test(hdrNote) && /never a script/.test(hdrNote));
+T("header: HOW they respond, never WHETHER they respond humanly", /shape how they respond, not whether they respond like a person/.test(hdrNote));
 T("header: breaking is licensed — bargain, beg, break, or hold", /bargain, beg, break, or hold at visible cost/.test(hdrNote));
 T("header: private warmth example survives compression", /stoic on duty can be warm or petty in private/.test(hdrNote));
 T("dossier brief: temperament as tendency, not law", /write temperament as living tendency, not law/.test(src));
@@ -1134,11 +1134,11 @@ T("manual transition is a decree: reached list wiped, mode reached",
   tr2.reached.length === 0 && tr2.note.mode === "reached");
 const begunNote = api.relevantCanonNote([], [], { title: "Feast Arc", wiki: "w", summary: "Chaos erupts.", mode: "begun" });
 T("begun-mode arc block frames the summary as unhappened",
-  /Feast Arc \(just beginning\)/.test(begunNote) && /NOT yet occurred/.test(begunNote)
-  && !/Only events up to this point have occurred/.test(begunNote) && /never foreshadow/.test(begunNote));
+  /Feast Arc \(just beginning\)/.test(begunNote) && /NOT yet happened/.test(begunNote)
+  && !/Only events up to this point have happened/.test(begunNote) && /never foreshadow/.test(begunNote));
 const reachedNote = api.relevantCanonNote([], [], { title: "Feast Arc", wiki: "w", summary: "Chaos erupts." });
 T("legacy/manual notes keep the original guard byte-for-byte",
-  /Only events up to this point have occurred/.test(reachedNote) && !/just beginning/.test(reachedNote));
+  /Only events up to this point have happened/.test(reachedNote) && !/just beginning/.test(reachedNote));
 
 // ---------------------------------------------------------------- v0.37.0
 console.log("[v0.37.0 unicode names — macrons survive extraction and matching]");

@@ -314,7 +314,7 @@ await run11;
 T("absolutist head still present (top of section preserved)", /stern, unyielding/.test(lastInjection()));
 T("humanizing TAIL survives into the injected baseline", /laughs easily and forgives quickly/.test(lastInjection()));
 T("head+tail seam marks the sample", /\[…\]/.test(lastInjection()));
-T("anti-rigidity header rides every note", /identical reaction repeated while circumstances escalate/.test(lastInjection()));
+T("anti-rigidity header rides every note", /same reaction repeated while things escalate/.test(lastInjection()));
 extension_settings.canon_grounding.personality = false;
 extension_settings.canon_grounding.maxCharsPerChar = 400;
 
@@ -581,7 +581,7 @@ T("auto pin is BEGUN mode (arc summary is future, not past)", md23.canon_groundi
 globalThis.__ctx.chat.push(msg("And then the music keeps on playing softly.", true));
 await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
 T("begun framing injected: summary marked NOT yet occurred",
-    /Harvest Banquet \(just beginning\)/.test(lastInjection()) && /NOT yet occurred/.test(lastInjection()));
+    /Harvest Banquet \(just beginning\)/.test(lastInjection()) && /NOT yet happened/.test(lastInjection()));
 // --- a mere MENTION of a different event must not move the position ---
 const q23b = parseQueue.length;
 globalThis.__ctx.chat.push(msg("She fondly recalled last year's Winter Gala.", false));
@@ -793,7 +793,7 @@ T("grounding fetched canon from the DISCOVERED universe",
     w31.some(u => u.includes("foundsaga.wiki.gg") && u.includes("page=")));
 T("and never from the stale default", !w31.some(u => u.includes("testwiki") && u.includes("page=")));
 T("the injection landed on THIS turn, in the new header voice",
-    /Zar Blade/.test(lastInjection()) && /\[CANON NOTES/.test(lastInjection()));
+    /Zar Blade/.test(lastInjection()) && /Bruce's note — canon/.test(lastInjection()));
 
 // [26] v0.36.0 — static witnesses for the discovery wiring.
 console.log("[26] v0.36.0 static witnesses — wiki discovery wiring");
