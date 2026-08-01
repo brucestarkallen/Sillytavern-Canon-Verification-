@@ -573,10 +573,11 @@ T("decay handles chat shrinkage explicitly",
 // Scoped to the function it is about. It used to count occurrences across the
 // WHOLE file, so any other consumer of the shared lexicon broke it — which is a
 // test pinning a global number while claiming something local.
-T("first-meeting wait applies the common-word lexicon in both branches",
-    (src.slice(src.indexOf("function needsFirstMeetWait"))
-        .split("\nfunction ")[0]
-        .match(/COMMON_LOWERCASE\.has\(t\)/g) || []).length === 2);
+// The wait no longer keeps its own copy of "known" — it delegates to the same
+// predicate the gate uses, which is the whole point of the v0.46.0 fix.
+T("first-meeting wait delegates to the shared predicate, keeping no copy",
+    (() => { const f = src.slice(src.indexOf("function needsFirstMeetWait")).split("\nfunction ")[0];
+        return /novelNameTokens\(/.test(f) && !/parsedWords\.has\(/.test(f) && !/prior\.has\(/.test(f); })());
 
 // [23] v0.35.0 — autonomous story position: the story ENTERING an event advances
 // the pin (begun mode); a mere mention does not; and the position never regresses
@@ -1260,9 +1261,10 @@ console.log("[46] v0.45.0 the gate: vocabulary, one veto law, and the ledger");
     // 3. Vocabulary, not adjacency. The pair rule rotted shut as ordinary verbs were
     //    learned, and never tested the last token as a pair's first half at all.
     T("the pair rule is gone", !/hasNovelLowercasePair/.test(src));
-    T("one novel token is enough", /return toks\.some\(t => !known\(t\)\);/.test(src));
+    T("one novel token is enough", /return toks\.filter\(t => !known\(t\)\);/.test(src)
+        && /function hasNovelLowercaseName\(text\) \{ return novelNameTokens\(text\)\.length > 0; \}/.test(src));
     T("the shared common-word lexicon gates it",
-        /COMMON_LOWERCASE\.has\(t\) \|\|/.test(src.slice(src.indexOf("function hasNovelLowercaseName"))));
+        /COMMON_LOWERCASE\.has\(t\) \|\|/.test(src.slice(src.indexOf("function novelNameTokens"))));
 
     // 4. The ledger is certainty and costs nothing. It was computed directly above
     //    the gate and used only for injection tiers.

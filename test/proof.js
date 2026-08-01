@@ -99,6 +99,16 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
 sandbox.__ctx = { name1: "Jovan" };
 const api = new Function("settings", "debug", "console", "getContext", body)(sandbox.settings, sandbox.debug, console, () => sandbox.__ctx);
 
+api.__src = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+// Reviewed verb stems: de-inflecting blindly yields junk ("comes"→"com"), so the
+// closure check only fires on stems that are genuinely verbs.
+const VERB_STEMS = new Set(["talk","walk","turn","take","look","ask","tell","hold","give",
+"make","come","say","see","sit","stand","nod","smile","pull","push","lean","touch","follow",
+"wait","call","find","keep","move","greet","meet","open","close","start","stop","step",
+"reach","watch","listen","hear","laugh","sigh","shout","scream","cry","think","feel","know",
+"want","need","like","love","hate","try","leave","lose","win","die","kill","fight","sleep",
+"wake","eat","drink","work","play","read","write","run","rise","fall","break","enter","pass"]);
+
 let pass = 0, fail = 0;
 function T(name, cond) {
     if (cond) { pass++; }
@@ -754,6 +764,31 @@ T("coverage: nickname passes via alias (Alya)", api.titleCoversQuery("Alya", "Al
 console.log("[first-meeting wait]");
 sandbox.__settings.cache = { "rose oriana": { name: "Rose Oriana", found: true, wiki: "w", aliases: ["Rose"], kind: "character", sections: { identity: "x" }, rel: {} } };
 sandbox.__settings.lowercaseNames = true;
+// ---------------------------------------------------------------- lexicon closure
+// The lexicon was grown from NARRATIVE prose ("he walks", "she smiles"), so it
+// held third-person forms and not base ones. The PLAYER writes instructions, not
+// narration — "you talk to rukia", "Jovan take a move on her" — which is base
+// forms top to bottom. Every verb in the player's own voice therefore looked like
+// a novel name, fed the learner, and jammed the gate. A verb belongs here in BOTH
+// forms or neither, and this is the assertion that says so.
+console.log("[v0.46.0 the lexicon must speak the player's voice, not just the narrator's]");
+{
+    const lex = (() => {
+        const b = api.__src.slice(api.__src.indexOf("const COMMON_LOWERCASE = new Set(["));
+        return new Set([...b.slice(0, b.indexOf("]);")).matchAll(/"([^"]+)"/g)].map(m => m[1]));
+    })();
+    const bare = [];
+    for (const w of lex) {
+        if (!w.endsWith("s") || w.endsWith("ss") || w.length <= 3) continue;
+        const stem = w.endsWith("ies") ? w.slice(0, -3) + "y" : w.slice(0, -1);
+        if (VERB_STEMS.has(stem) && !lex.has(stem)) bare.push(`${w}→${stem}`);
+    }
+    T(`every listed verb carries its base form too (${bare.length} bare: ${bare.slice(0,4).join(", ")})`,
+        bare.length === 0);
+    for (const w of ["talk", "walk", "turn", "take", "look", "ask", "greet", "meet", "move", "tell"])
+        T(`imperative "${w}" is ordinary vocabulary, not a name`, lex.has(w));
+}
+
 api.setParsedWords([]);
 T("uncached capitalized name in user msg → wait", api.needsFirstMeetWait("You meet Alexia Midgar at the gate") === true);
 T("cached name → no wait", api.needsFirstMeetWait("You greet Rose Oriana warmly") === false);

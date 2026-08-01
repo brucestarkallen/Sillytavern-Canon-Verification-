@@ -56,6 +56,44 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.46.0 (the lexicon only spoke the narrator's voice — and who caused the regression)
+
+Proven by `test/proof.js` (479) + `test/sim.mjs` (257); **3 guards negative-tested**.
+
+**Who caused it.** Not one bad edit — `94e25dd` (v0.13.0, 12 Jul 2026) shipped the
+lowercase gate and the thing that rots it *in the same commit*: "novel-pair
+detection, **once-only learning**". They are antagonistic. Learning marks every word
+of the player's message as known, and the pair rule needs two *adjacent* unknowns —
+so each turn the learner ate more of the sentence until no pair could form.
+`70ab297` (v0.23.0) then gave the first-meeting wait its own copy of the same law
+("converges per name" — it converges to silence). **Both passed every test, because
+every harness run starts with an empty `parsedWords`.** A rule that degrades with
+accumulated state cannot fail in a suite that never accumulates. That is the real
+defect behind "it was smart many versions ago": it was — for the first few turns of
+every chat.
+
+1. **The lexicon spoke the narrator's voice, not the player's.** `COMMON_LOWERCASE`
+   was grown from narrative prose — `walks`, `smiles`, `talks` — so it held the
+   third-person forms and not the base ones. But the player does not write
+   narration, they write instructions: `you talk to rukia`, `Jovan take a move on
+   her`. Second-person imperative is base forms top to bottom, so **every verb in
+   the player's own message looked like a novel name** — which is exactly what fed
+   the learner that jammed the gate. 182 base forms and manner adverbs added. **New
+   gate:** for a reviewed verb list, a verb must appear in *both* forms or neither;
+   a bare third-person entry now fails the suite.
+
+2. **The first-meeting wait kept its own copy of the gate's law.** It read raw
+   `parsedWords` (a permanent veto) *plus* every token of every prior scene message.
+   So once Rukia had been learned — or had simply appeared two messages earlier —
+   naming her was not a "first meeting", the turn fell back to the 2s immersion
+   ceiling instead of the 12s introduction wait, and she grounded **one turn late,
+   every time**. That is the "it only injects after the scene ended" report.
+   **Fix:** one `novelNameTokens()` predicate, used by the gate and the wait. The
+   justification for the wait is *zero cache presence*, not literal first utterance,
+   so prior mention is no longer a disqualifier — and `prior` had no marginal value
+   over `parsedWords` anyway except suppressing exactly the case that must not be
+   suppressed: a word seen in the scene but never ruled on.
+
 ## Changelog — v0.45.0 (the gate rotted shut: why the parser stopped being asked)
 
 Proven by `test/proof.js` (468) + `test/sim.mjs` (257); **6 guards negative-tested**.

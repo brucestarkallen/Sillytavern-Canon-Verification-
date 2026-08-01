@@ -90,7 +90,7 @@ let renderPromptDefaults = null; // re-resolves persona-dependent instruction de
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.45.0";
+const CG_VERSION = "0.46.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -501,6 +501,37 @@ const LOWER_TRIGGERS = new Set([
 // tests use as real names (rose, shadow, alpha…) so "rose oriana walks in"
 // still extends the wait: one uncommon token is enough to keep the signal.
 const COMMON_LOWERCASE = new Set([
+    // Interaction verbs and manner adverbs — the other half of an instruction.
+    "meet", "embrace", "hug", "kiss", "join", "help", "offer", "accept",
+    "refuse", "decline", "agree", "point", "wave", "raise", "lower", "drop",
+    "lift", "place", "put", "set", "press", "release", "grip", "seize",
+    "strike", "block", "dodge", "parry", "swing", "thrust", "sheathe", "aim",
+    "kick", "punch", "shove", "wonder", "realize", "notice", "remember", "forget",
+    "decide", "choose", "rush", "hurry", "finish", "end", "firmly", "calmly",
+    "coldly", "sharply", "slightly", "briefly", "carefully", "silently", "closely",
+    // BASE FORMS. The lexicon was grown from NARRATIVE prose — "he walks", "she
+    // smiles" — so it carried the third-person forms and not the base ones. But
+    // the PLAYER does not write narration, they write instructions: "you talk to
+    // rukia", "Jovan take a move on her". Second-person imperative is base forms
+    // top to bottom, so every verb in the player's own message looked like a novel
+    // name — which is what fed the learner that then jammed the gate shut. A verb
+    // belongs here in BOTH forms or neither.
+    "answer", "approach", "ask", "begin", "blink", "bow", "break", "build",
+    "burn", "call", "carry", "catch", "chuckle", "come", "continue", "cross",
+    "cry", "cut", "die", "draw", "drift", "drink", "eat", "enter",
+    "fall", "feel", "fight", "find", "flicker", "fly", "follow", "frown",
+    "gesture", "give", "glance", "glow", "grab", "greet", "grin", "growl",
+    "hang", "hate", "hear", "hold", "keep", "kill", "kneel", "know",
+    "laugh", "lead", "lean", "leave", "lie", "like", "listen", "look",
+    "lose", "love", "make", "move", "mumble", "mutter", "need", "nod",
+    "open", "pass", "pause", "play", "pull", "push", "reach", "read",
+    "remain", "reply", "respond", "rest", "return", "rise", "run", "say",
+    "scream", "see", "seem", "settle", "shine", "shout", "shrug", "sigh",
+    "sit", "sleep", "smile", "smirk", "snarl", "speak", "stand", "stare",
+    "start", "stay", "step", "stop", "stretch", "take", "talk", "tell",
+    "think", "throw", "touch", "try", "turn", "wait", "wake", "walk",
+    "want", "watch", "wear", "whisper", "win", "work", "write", "yawn",
+    "ash", "ember", "stair", "floorboard", "shadow", "corner", "doorway",
     // motion & action verbs (3rd-person and base forms as they appear in prose)
     "walks", "walked", "walking", "runs", "running", "sits", "sitting", "stands",
     "stood", "standing", "nods", "nodded", "nodding", "smiles", "smiled", "laughs",
@@ -3635,9 +3666,8 @@ async function auditCastEvidence(sceneText, weak) {
  * parser, evidence check, and auditor still decide who actually exists. Every
  * parsed message's tokens are learned afterwards, so a novel pair gates once.
  */
-function hasNovelLowercaseName(text) {
-    if (!text) return false;
-    const toks = String(text).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
+function novelNameTokens(text) {
+    const toks = String(text || "").toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
     // ORDINARY VOCABULARY, not adjacency, is what separates a name from prose.
     // This used to require TWO ADJACENT unknown tokens, which quietly rotted shut:
     // every word of the player's message was learned into parsedWords, so the
@@ -3654,8 +3684,11 @@ function hasNovelLowercaseName(text) {
         NOISE_WORDS.has(t) || COMMON_LOWERCASE.has(t) ||
         STOPWORDS.has(t[0].toUpperCase() + t.slice(1)) ||
         parserVetoHolds(t) || !!cacheEntryFor(t);
-    return toks.some(t => !known(t));
+    return toks.filter(t => !known(t));
 }
+
+/** Does the player's message contain a token that looks like a name? */
+function hasNovelLowercaseName(text) { return novelNameTokens(text).length > 0; }
 
 /**
  * FIRST-MEETING DETECTION: does the user's CURRENT message reference an entity
@@ -3676,32 +3709,30 @@ function tokenCoveredByCache(tok) {
 }
 function needsFirstMeetWait(lastUserMsg, priorMsgs) {
     if (!lastUserMsg) return false;
-    const prior = new Set();
-    for (const m of priorMsgs || []) {
-        for (const t of String(m).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
-            if (t.length >= 3) prior.add(t);
-        }
-    }
+    // SAME LAW AS THE GATE. This used to keep its own copy of "known": raw
+    // parsedWords (a permanent veto) plus every token of every prior scene
+    // message. Both rot. Once "rukia" had been learned, or had simply appeared
+    // two messages ago, naming her again was not a "first meeting" — so the turn
+    // fell back to the 2s immersion ceiling instead of the 12s introduction wait,
+    // and she grounded ONE TURN LATE, every time. The gate opening and the wait
+    // staying shut is the "it only injects after the scene ended" report.
+    //
+    // The justification for the wait is ZERO CACHE PRESENCE, not literal first
+    // utterance, so prior-mention is not a disqualifier. The shared predicate
+    // already covers everything `prior` was defending against: ordinary prose via
+    // COMMON_LOWERCASE, and ruled-on words via parserVetoHolds — which releases
+    // when the ruling that made it goes stale, instead of never.
     for (const n of extractCandidateNames(lastUserMsg)) {
         const lc = n.toLowerCase();
         if (cacheEntryFor(lc)) continue;
         // "Oriana" alone is covered by cached "Rose Oriana" — partial references
         // to known people are NOT first meetings. Neither is ordinary prose: a
         // candidate built ENTIRELY from high-frequency English words ("fire
-        // burns") is a sentence fragment, not a person — waiting 12s for it was
-        // the false-positive stall. One uncommon token keeps the signal alive
-        // ("rose oriana": "oriana" is not in the lexicon → still a first meet).
-        if (lc.split(/\s+/).every(t => parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t) || COMMON_LOWERCASE.has(t))) continue;
+        // burns") is a sentence fragment, not a person.
+        if (lc.split(/\s+/).every(t => tokenCoveredByCache(t) || !novelNameTokens(t).length)) continue;
         return true;
     }
-    if (settings().lowercaseNames) {
-        const toks = String(lastUserMsg).toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
-        const known = (t) => NOISE_WORDS.has(t) || STOPWORDS.has(t[0].toUpperCase() + t.slice(1))
-            || parsedWords.has(t) || prior.has(t) || tokenCoveredByCache(t) || COMMON_LOWERCASE.has(t);
-        for (let i = 0; i < toks.length - 1; i++) {
-            if (!known(toks[i]) && !known(toks[i + 1])) return true;
-        }
-    }
+    if (settings().lowercaseNames && novelNameTokens(lastUserMsg).length) return true;
     return false;
 }
 
