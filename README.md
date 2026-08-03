@@ -69,6 +69,15 @@ A wiki files a place's description under Geography, Layout, Architecture,
 Description, Structure or Overview — the same question, a different word. Those are
 read now, and a character's own Appearance section still wins for people.
 
+## Changelog — v0.57.1 (the guard for v0.57.0 was vacuous)
+
+`test/sim.mjs` 335. v0.57.0's assertion handed `extractSectionRaw` its own section
+list, so it proved the extractor and never touched the product's list — deleting
+the new sections from `index.js` left the suite green. That is the exact failure
+class this repo has a law about: a proof of the function is not a proof of the call.
+A wiring witness now reads the product's own argument list, and removing any of the
+place sections turns the suite red.
+
 ## Changelog — v0.56.0 (a ceiling is not a target; mentioning a place is not moving there; budgets are tokens)
 
 Proven by `test/proof.js` (526) + `test/sim.mjs` (328); **3 guards negative-tested**.

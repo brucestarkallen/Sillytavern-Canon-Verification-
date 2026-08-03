@@ -1479,6 +1479,19 @@ console.log("[55] v0.56.0 the setting needs the same judge the arc has");
     T("a chat switch mid-judgement discards the result", /if \(myEpoch !== chatEpoch\) return;[\s\S]{0,80}if \(moved\)/.test(w));
 }
 
+// [56] v0.57.0 — the WIRING for a place's description. The proof-side assertion
+// hands extractSectionRaw its own list, so it proves the extractor and not the
+// product. This proves the product actually asks for those sections.
+console.log("[56] v0.57.0 place description is wired, not just possible");
+{
+    const call = src.slice(src.indexOf("const appearanceProse = cleanWikitext("),
+                           src.indexOf("let physical = extractInfoboxFields"));
+    for (const sec of ["geography", "layout", "architecture", "description", "structure", "overview"])
+        T(`the product asks for "${sec}"`, new RegExp(`"${sec}"`).test(call));
+    T("a person's own Appearance section is still asked for first",
+        call.indexOf('"appearance"') < call.indexOf('"geography"'));
+}
+
 // [40] the stamp must match the manifest. ST decides whether to auto-update by
 // reading manifest.version; a feature commit that bumps only CG_VERSION ships an
 // extension nobody's install will pull. The history has that drift in it.
