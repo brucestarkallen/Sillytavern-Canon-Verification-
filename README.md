@@ -56,6 +56,49 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.53.0 (Smart Dynamic: the scene decides which canon leads — for free)
+
+Proven by `test/proof.js` (515) + `test/sim.mjs` (313); **4 guards negative-tested**
+(a fifth candidate was found to be a fast path rather than a guard, and is labelled
+as such in the source instead of being claimed as coverage).
+
+The note's line order was fixed: Identity → Appearance → Personality → Facts →
+Abilities → Voice, the same in a duel as in a courtship. **It is now chosen per
+scene, per character, and it costs nothing.**
+
+**Why it is free.** The parser already reads the whole scene every turn. It is now
+asked for one more short field per entity — `need`, one to three words from a closed
+list (`powers, appearance, personality, relationships, history, secrets, voice`) —
+naming what a writer most needs about them *for this moment*. No extra call, no
+extra second. A composer that wrote the note as prose would have been a third LLM
+round trip on top of the parser and the auditor, which is the latency problem, not a
+solution to it.
+
+**Why it cannot hallucinate.** The model only ever picks a CATEGORY. Every word
+still comes from the verified cache; the extension does the writing. Reordering a
+list cannot invent a fact, so "let the model decide" here carries none of the risk
+that letting it compose would.
+
+Same cache, same budget, same two characters — the note reshapes itself:
+
+```
+BATTLE                                    REUNION
+Renji Abarai:                             Renji Abarai:
+  - Identity: …                             - Identity: …
+  - Abilities: Zabimaru, Bankai Hihio…      - With Byakuya Kuchiki: Complicated —
+  - Appearance: hair: crimson…                Renji wants his captain's recognition.
+  - Personality: Brash and loud…            - Personality: Brash and loud…
+                                            - Appearance: hair: crimson…
+```
+
+One deliberate exception to v0.52.0's relationships-first rule: when a scene needs
+**powers** and says nothing about relationships, what a character can do outranks who
+they know. A duel briefed on family ties instead of shikai limits is the wrong note.
+
+Degrades safely in every direction: an unrecognised word, an older parser that
+returns no `need`, or `dynamicNote` off all produce the previous fixed order byte
+for byte. On by default — there is nothing to configure.
+
 ## Changelog — v0.52.0 (a relationship belongs to the pair, not to one character's budget)
 
 Proven by `test/proof.js` (504) + `test/sim.mjs` (304); **4 guards negative-tested**.

@@ -1411,7 +1411,7 @@ console.log("[52] v0.52.0 the relationship pass");
     T("both emitters feed the dynamics band",
         (src.match(/dyn\.push\(\.\.\.dynLines\(\)\);/g) || []).length === 2
         && !/lines\.push\(\.\.\.dynLines\(\)\)/.test(src));
-    T("the band is carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, lines, dyn \}\);/.test(src));
+    T("the band is carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, lines: ordered, dyn \}\);/.test(src));
     T("it gets its own pass, before any solo depth",
         src.indexOf("PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER") > 0
         && src.indexOf("PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER") < src.indexOf("PASS THREE — everything else"));
@@ -1419,6 +1419,26 @@ console.log("[52] v0.52.0 the relationship pass");
         /for \(const \{ entry: other \} of present\)/.test(src));
     T("it informs, never scripts — the preamble still says so",
         /that dynamic overrides the baseline/.test(src) && /never a script/.test(src));
+}
+
+// [53] v0.53.0 — smart dynamic note, on the call we already make.
+console.log("[53] v0.53.0 the scene decides which canon leads");
+{
+    T("the parser is asked what this moment NEEDS", /\\"need\\": \\"1-3 comma-separated/.test(src));
+    T("the vocabulary is closed, not freeform",
+        /powers, appearance, personality, relationships, history, secrets, /.test(src));
+    T("it costs no extra call — it rides the existing parser output",
+        (src.match(/await parseSceneCharacters\(/g) || []).length === 3
+        && !/llmCall\(\s*composerPrompt/.test(src));
+    T("the parser carries need through", /if \(typeof x\.need === "string"\)/.test(src)
+        && /out\.push\(\{ name, now, need, evidence \}\);/.test(src));
+    T("need is a snapshot of THIS parse, reset with focus",
+        (src.match(/castFocus = \{\}; castNeed = \{\};/g) || []).length === 4);
+    T("the model chooses a CATEGORY; the extension writes the words",
+        /const i = wanted\.findIndex\(lb => line\.startsWith/.test(src));
+    T("ordering is stable, so equal ranks are never reshuffled", /\(a\.r - b\.r\) \|\| \(a\.i - b\.i\)/.test(src));
+    T("a powers-only scene skips the relationship pass", /if \(s\.dynamicNote && \/powers\/\.test\(nd\) && !\/relationship\/\.test\(nd\)\) continue;/.test(src));
+    T("the mode is on by default — nothing to configure", /dynamicNote: true,/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

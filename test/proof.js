@@ -36,6 +36,7 @@ const pieces = [
     "function ledgerNames() { return null; }  // stub: scan-mode ledger filter (not under test)",
     "let lastMatchReasons = [];               // stub: module-scope diagnostic the note builder writes",
     "let castFocus = {};                      // stub: scene-focus map written by the parser",
+    "let castNeed = {};                       // stub: per-entity \"what this scene needs\" from the parser",
     "let castEvidence = {};                   // stub: evidence map written by the parser",
     grab("const STOPWORDS", "function extractCandidateNames"),
     grab("function extractCandidateNames", "// ------"),
@@ -83,6 +84,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier, normalizeDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
+         setNeed: (m) => { castNeed = m; }, orderLinesByNeed,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength,
@@ -780,6 +782,58 @@ sandbox.__settings.lowercaseNames = true;
 // forms top to bottom. Every verb in the player's own voice therefore looked like
 // a novel name, fed the learner, and jammed the gate. A verb belongs here in BOTH
 // forms or neither, and this is the assertion that says so.
+console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
+{
+    // The model only ever CHOOSES a category; the extension still writes every word
+    // from verified cache, so reordering can never invent a fact.
+    const L = ["  - Appearance: a", "  - Personality: b", "  - Abilities: c", "  - Voice: d"];
+    const battle = api.orderLinesByNeed(L, "powers");
+    T("a fight puts powers first", battle[0].startsWith("  - Abilities"));
+    T("nothing is lost, only reordered", battle.length === L.length && L.every(x => battle.includes(x)));
+    const social = api.orderLinesByNeed(L, "personality, voice");
+    T("a conversation puts personality then voice first",
+        social[0].startsWith("  - Personality") && social[1].startsWith("  - Voice"));
+    T("unlisted categories keep their emitter order behind the wanted ones",
+        social[2].startsWith("  - Appearance") && social[3].startsWith("  - Abilities"));
+    T("no need → the old fixed order, byte for byte",
+        JSON.stringify(api.orderLinesByNeed(L, "")) === JSON.stringify(L));
+    T("an unknown word is ignored rather than shuffling at random",
+        JSON.stringify(api.orderLinesByNeed(L, "banana")) === JSON.stringify(L));
+
+    const S = sandbox.__settings;
+    const keep = { cache: S.cache, c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars };
+    S.maxCharacters = 4; S.maxCharsPerChar = 300; S.maxTotalChars = 700; S.dynamicNote = true;
+    S.relationDynamics = true; S.personality = true; S.physical = true; S.abilities = true;
+    S.cache = { "renji abarai": { name: "Renji Abarai", wiki: "w", found: true, ts: Date.now(), aliases: [],
+        rel: { "byakuya kuchiki": "Complicated - Renji wants his captain's recognition." },
+        sections: { identity: "Renji Abarai is lieutenant of the 6th Division.",
+            physical: "hair: crimson", personality: "Brash and loud.",
+            abilities: "Zabimaru, a segmented whip-blade; Bankai Hihio Zabimaru." } },
+        "byakuya kuchiki": { name: "Byakuya Kuchiki", wiki: "w", found: true, ts: Date.now(), aliases: [],
+        rel: { "renji abarai": "His lieutenant; measures him constantly." },
+        sections: { identity: "Byakuya Kuchiki is captain of the 6th Division.",
+            physical: "hair: black", personality: "Cold and rule-bound.",
+            abilities: "Senbonzakura, a thousand blades." } } };
+    const cast = ["Renji Abarai", "Byakuya Kuchiki"];
+
+    api.setNeed({ "renji abarai": "powers", "byakuya kuchiki": "powers" });
+    const fight = api.relevantCanonNote(["Renji releases Zabimaru as Byakuya draws."], cast);
+    T("in a fight, abilities lead the block",
+        fight.indexOf("Abilities: Zabimaru") < fight.indexOf("Personality: Brash"));
+    T("in a fight, family ties do not outrank shikai limits",
+        !/With Byakuya Kuchiki:/.test(fight));
+
+    api.setNeed({ "renji abarai": "relationships, personality", "byakuya kuchiki": "relationships, personality" });
+    const quiet = api.relevantCanonNote(["Renji and Byakuya stand in the quiet barracks."], cast);
+    T("in a reunion, the relationship leads", /With Byakuya Kuchiki: Complicated/.test(quiet));
+    T("...and personality outranks appearance there",
+        quiet.indexOf("Personality: Brash") < quiet.indexOf("hair: crimson"));
+    T("the same cache produced both — nothing was re-fetched or invented",
+        /Zabimaru/.test(fight) && /Zabimaru/.test(quiet + fight));
+    api.setNeed({});
+    S.cache = keep.cache; S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p; S.maxTotalChars = keep.t;
+}
+
 console.log("[v0.52.0 who two people are to each other outranks solo trivia]");
 {
     const S = sandbox.__settings;

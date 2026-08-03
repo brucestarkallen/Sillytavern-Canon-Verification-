@@ -79,6 +79,7 @@ let parsedWords = new Set(); // lowercased candidate words already shown to the 
 let cgInFlight = false;      // guard: don't run two interceptor passes at once
 let lastCast = [];          // entities the parser last judged present (reused between gated runs)
 let castFocus = {};          // name-lc → "what about them is in play NOW" (latest parse)
+let castNeed = {};           // name-lc → which KINDS of canon this scene needs (latest parse)
 let castEvidence = {};       // name-lc → the scene words that put them in the cast
 let lastCastLen = 0;        // visible-chat length when lastCast was last confirmed (drives decay)
 let lastSource = "";        // how the last injection's cast was chosen (for the settings display)
@@ -92,7 +93,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.52.0";
+const CG_VERSION = "0.53.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -168,7 +169,12 @@ const DEFAULT_PROMPT_PARSER =
         "author questions to the player, choice menus, or meta commentary. " +
         "Respond with ONLY a JSON array, most central " +
         "first, or [] if none. Each element is {\"name\": \"Canonical Name\", \"now\": \"under 12 " +
-        "words: what about them is in play in THIS scene\", \"evidence\": \"the EXACT words " +
+        "words: what about them is in play in THIS scene\", \"need\": \"1-3 comma-separated " +
+        "words, from EXACTLY this list, naming what a writer most needs to know about them " +
+        "for THIS moment: powers, appearance, personality, relationships, history, secrets, " +
+        "voice. A fight needs powers; a reunion needs relationships and history; a first " +
+        "sighting needs appearance; a negotiation needs personality and relationships\", " +
+        "\"evidence\": \"the EXACT words " +
         "from the scene that refer to this entity, copied verbatim\"}. Evidence is mandatory — " +
         "an entity you cannot quote the scene for must not be listed. No other text.";
 const DEFAULT_PROMPT_DOSSIER =
@@ -259,6 +265,7 @@ const defaultSettings = {
     // "the wiki says stoic, so she's stoic with everyone" — the wiki itself documents
     // the exceptions, per person; we surface exactly the pair that's on screen.
     relationDynamics: true,
+    dynamicNote: true,          // let the scene decide which canon leads (parser's "need")
     // Story position: a grounded arc/chapter page pinned into the note, with a spoiler
     // guard so later canon events stay unknown to every character.
     arcTitle: "",
@@ -2417,6 +2424,51 @@ function castNamedIn(text) {
 }
 
 /**
+ * SMART DYNAMIC ORDERING. The parser already reads the scene every turn, so it is
+ * also asked which KINDS of canon this moment needs about each character — powers
+ * for a fight, relationships and history for a reunion, appearance for a first
+ * sighting. That answer costs no extra call and no extra second.
+ *
+ * Crucially the model only ever CHOOSES; the extension still writes every word from
+ * the verified cache. It cannot invent a fact by reordering a list, so "let the LLM
+ * decide" here carries none of the risk that letting it compose prose would.
+ *
+ * A line's own label is the category, so the ordering needs no changes to any
+ * emitter. Unlisted lines keep their existing relative order behind the wanted
+ * ones, and a scene with no `need` at all degrades to exactly the old fixed order.
+ */
+const NEED_LABELS = {
+    powers: ["Abilities"],
+    appearance: ["Appearance"],
+    personality: ["Personality"],
+    relationships: ["With ", "Context"],
+    history: ["Biography", "Facts"],
+    secrets: ["Secret"],
+    voice: ["Voice"],
+};
+function orderLinesByNeed(lines, need) {
+    if (!need || lines.length < 2) return lines;
+    const wanted = [];
+    for (const word of String(need).split(/[^a-z]+/i)) {
+        const labels = NEED_LABELS[word.toLowerCase()];
+        if (labels) wanted.push(...labels);
+    }
+    // Fast path only, NOT a guard: with no recognised word every line ranks equal
+    // and the stable sort already returns them untouched. Negative-testing this
+    // line cannot turn the suite red, so it is not claimed as a guarded invariant.
+    if (!wanted.length) return lines;
+    const rankOf = (line) => {
+        const i = wanted.findIndex(lb => line.startsWith(`  - ${lb}`));
+        return i < 0 ? wanted.length : i;
+    };
+    // Stable: equal ranks keep the emitters' order, so nothing is reshuffled at random.
+    return lines
+        .map((line, i) => ({ line, i, r: rankOf(line) }))
+        .sort((a, b) => (a.r - b.r) || (a.i - b.i))
+        .map(x => x.line);
+}
+
+/**
  * Build the canon note.
  *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
  *    present THIS turn), inject exactly those, in that order. This is pronoun-proof: a
@@ -2771,7 +2823,12 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         }
         if (!lines.length) continue;
         seenEntities.add(nameKey);
-        built.push({ entry, matchedName, pinned, swept, setting, lines, dyn });
+        // The anchor stays the anchor; only the depth lines are re-ordered by what
+        // the scene actually needs. Dynamics have their own pass and are untouched.
+        const ordered = s.dynamicNote
+            ? [lines[0], ...orderLinesByNeed(lines.slice(1), castNeed[nameKey])]
+            : lines;
+        built.push({ entry, matchedName, pinned, swept, setting, lines: ordered, dyn });
     }
 
     // BUDGET: PRESENCE BEFORE DEPTH. This used to build each character's whole
@@ -2802,6 +2859,11 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // storyteller is told what canon holds and left free to write this story.
     for (let i = 0; i < built.length; i++) {
         if (drafts[i] === null) continue;
+        // One exception to relationships-first: when the scene needs POWERS and says
+        // nothing about relationships, what a character can do outranks who they know.
+        // A duel briefed on family ties instead of shikai limits is the wrong note.
+        const nd = String(castNeed[(built[i].entry.name || "").toLowerCase()] || "");
+        if (s.dynamicNote && /powers/.test(nd) && !/relationship/.test(nd)) continue;
         for (const line of built[i].dyn) {
             const add = "\n" + line;
             if (drafts[i].length + add.length > s.maxCharsPerChar) continue;
@@ -3119,19 +3181,20 @@ function parseCast(text) {
     const out = [];
     const seen = new Set();
     for (const x of arr) {
-        let name = "", now = "";
+        let name = "", now = "", need = "";
         let evidence = "";
         if (typeof x === "string") name = x.trim();
         else if (x && typeof x === "object" && typeof x.name === "string") {
             name = x.name.trim();
             if (typeof x.now === "string") now = clip(x.now.trim(), 110);
+            if (typeof x.need === "string") need = clip(x.need.trim().toLowerCase(), 60);
             if (typeof x.evidence === "string") evidence = x.evidence.trim();
         }
         if (name.length < 2 || name.length > 50 || !/[A-Za-z]/.test(name)) continue;
         const k = name.toLowerCase();
         if (seen.has(k)) continue;
         seen.add(k);
-        out.push({ name, now, evidence });
+        out.push({ name, now, need, evidence });
     }
     return out;
 }
@@ -4165,10 +4228,11 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                         debug(names.length ? `LLM parser → ${names.join(", ")}` : "LLM parser → (no canon entities present)");
                         lastCast = names;            // [] here is REAL info: clears a stale cast
                         lastCastLen = visibleLen;
-                        castFocus = {};              // focus is a snapshot of THIS parse
+                        castFocus = {}; castNeed = {};              // focus is a snapshot of THIS parse
                         castEvidence = {};
                         for (const p of parsed) {
                             if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                            if (p.need) castNeed[p.name.toLowerCase()] = p.need;
                             if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
                         }
                         if (names.length) {
@@ -4434,10 +4498,11 @@ async function onMessageReceived() {
             const names = parsed.map(p => p.name);
             lastCast = names;
             lastCastLen = visibleLen;
-            castFocus = {};
+            castFocus = {}; castNeed = {};
             castEvidence = {};
             for (const p of parsed) {
                 if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                            if (p.need) castNeed[p.name.toLowerCase()] = p.need;
                 if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
             }
             if (names.length) {
@@ -5101,10 +5166,11 @@ async function addSettingsUI() {
                     const names = parsed.map(p => p.name);
                     lastCast = names;
                     lastCastLen = (ctx.chat || []).filter(m => !m.is_system).length;
-                    castFocus = {};
+                    castFocus = {}; castNeed = {};
                     castEvidence = {};
                     for (const p of parsed) {
                         if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+                            if (p.need) castNeed[p.name.toLowerCase()] = p.need;
                         if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
                     }
                     if (names.length) {
@@ -5244,7 +5310,7 @@ jQuery(async () => {
             chatEpoch++;
             parsedWords = new Set();
             lastCast = [];
-            castFocus = {};
+            castFocus = {}; castNeed = {};
             castEvidence = {};
             lastCastLen = 0;
             lastInjection = "";
