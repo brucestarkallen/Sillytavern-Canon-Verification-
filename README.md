@@ -56,6 +56,34 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.55.0 (the budget follows importance, because the note already knew it)
+
+Proven by `test/proof.js` (523) + `test/sim.mjs` (322); **2 guards negative-tested**.
+
+Since v0.51.0 the note has known exactly who a scene is about — `built` is sorted by
+player-named first, then scene recency. It then handed every character the identical
+per-character allowance. **The note knew the ranking and spent as if it didn't**: the
+person being spoken to got the same room as someone mentioned in passing six messages
+ago, and their depth was cut at the same line.
+
+The lead now keeps the full allowance and each following character gets a smaller
+share, floored so nobody drops below identity and appearance. The taper reallocates
+**depth**, never presence — a trailing bystander is trimmed, not deleted. Pins and
+the current setting are decree and are never tapered.
+
+```
+maxCharsPerChar 420, same scene, same cache
+
+Smart dynamic ON            Classic (OFF)
+  Rukia Kuchiki    310        Rukia Kuchiki    310
+  Renji Abarai     308        Renji Abarai     308
+  Byakuya Kuchiki  239        Byakuya Kuchiki  314
+  Kiyone Kotetsu   199        Kiyone Kotetsu   312
+```
+
+Classic mode keeps the flat cap it always had, so the two modes now differ in *what
+leads* and in *how the room is divided* — and in nothing else.
+
 ## Changelog — v0.54.0 (appearance is never re-ranked, and Smart Dynamic is a real switch)
 
 Proven by `test/proof.js` (518) + `test/sim.mjs` (319); **5 guards negative-tested**.

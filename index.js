@@ -93,7 +93,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.54.0";
+const CG_VERSION = "0.55.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2863,9 +2863,23 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // the scene: pass one gives every admitted character their anchor line, pass
     // two spends whatever is left deepening them in tier order, so the player's own
     // cast is both present AND detailed first.
+    // BUDGET FOLLOWS IMPORTANCE. `built` is already sorted by who this scene is
+    // about — player-named first, then scene recency — but every character was then
+    // handed the identical per-character allowance, so the person being spoken to
+    // got exactly the same room as someone mentioned in passing six messages ago.
+    // The note knew the ranking and spent as if it didn't. The lead keeps the full
+    // allowance and each following character gets a smaller share, floored so that
+    // nobody drops below their identity and appearance — the taper reallocates
+    // depth, it never removes anyone. Pins and the current setting are decree and
+    // are never tapered. Classic mode keeps the flat cap, as it always did.
+    const charCap = (i) => {
+        if (!s.dynamicNote || built[i].pinned || built[i].setting) return s.maxCharsPerChar;
+        const share = Math.max(0.5, 1 - i * 0.15);
+        return Math.max(180, Math.round(s.maxCharsPerChar * share));
+    };
     const drafts = new Array(built.length).fill(null);
     for (let i = 0; i < built.length; i++) {
-        const head = clip(`${built[i].entry.name}:\n${built[i].lines[0] || ""}`, s.maxCharsPerChar);
+        const head = clip(`${built[i].entry.name}:\n${built[i].lines[0] || ""}`, charCap(i));
         if (total + head.length > s.maxTotalChars) {
             if (total === 0) { drafts[i] = clip(head, s.maxTotalChars); total = drafts[i].length; }
             continue;   // NOT break — a later, smaller anchor may still fit
@@ -2880,7 +2894,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         if (drafts[i] === null) continue;
         for (const line of built[i].look) {
             const add = "\n" + line;
-            if (drafts[i].length + add.length > s.maxCharsPerChar) continue;
+            if (drafts[i].length + add.length > charCap(i)) continue;
             if (total + add.length > s.maxTotalChars) continue;
             drafts[i] += add;
             total += add.length;
@@ -2903,7 +2917,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         if (s.dynamicNote && /powers/.test(nd) && !/relationship/.test(nd)) continue;
         for (const line of built[i].dyn) {
             const add = "\n" + line;
-            if (drafts[i].length + add.length > s.maxCharsPerChar) continue;
+            if (drafts[i].length + add.length > charCap(i)) continue;
             if (total + add.length > s.maxTotalChars) continue;
             drafts[i] += add;
             total += add.length;
@@ -2914,7 +2928,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         if (drafts[i] === null) continue;
         for (let li = 1; li < built[i].lines.length; li++) {
             const add = "\n" + built[i].lines[li];
-            if (drafts[i].length + add.length > s.maxCharsPerChar) continue;
+            if (drafts[i].length + add.length > charCap(i)) continue;
             if (total + add.length > s.maxTotalChars) continue;
             drafts[i] += add;
             total += add.length;

@@ -782,6 +782,44 @@ sandbox.__settings.lowercaseNames = true;
 // forms top to bottom. Every verb in the player's own voice therefore looked like
 // a novel name, fed the learner, and jammed the gate. A verb belongs here in BOTH
 // forms or neither, and this is the assertion that says so.
+console.log("[v0.55.0 budget follows importance, not a flat cap]");
+{
+    const S = sandbox.__settings;
+    const keep = { cache: S.cache, c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars, d: S.dynamicNote };
+    S.maxCharacters = 6; S.maxCharsPerChar = 420; S.maxTotalChars = 2200;
+    S.relationDynamics = true; S.personality = true; S.physical = true; S.abilities = true; S.trivia = true;
+    const mk = (n) => ({ name: n, wiki: "w", found: true, ts: Date.now(), aliases: [], rel: {},
+        sections: { identity: n + " is an officer of the Gotei 13.", physical: "hair: black; eyes: grey",
+            personality: "Disciplined and reserved, holding the line in all matters of duty.",
+            abilities: "A named release; a bankai; a signature technique.",
+            trivia: "Collects teacups; dislikes cats; won a calligraphy prize once." } });
+    S.cache = {};
+    const cast = ["Rukia Kuchiki", "Renji Abarai", "Byakuya Kuchiki", "Kiyone Kotetsu"];
+    for (const n of cast) S.cache[n.toLowerCase()] = mk(n);
+    const scene = ["Kiyone bows. Byakuya says nothing. Renji shifts. Rukia turns to Jovan."];
+    const blockLen = (note, name) => {
+        const i = note.indexOf(name + ":"); if (i < 0) return 0;
+        const next = cast.map(x => note.indexOf("\n" + x + ":", i + 1)).filter(x => x > 0).sort((a, b) => a - b)[0];
+        return (next > 0 ? next : note.length) - i;
+    };
+    S.dynamicNote = true;
+    const w = api.relevantCanonNote(scene, cast, undefined, { userMsg: "you talk to rukia" });
+    T("the character the player addressed leads and is fullest",
+        blockLen(w, "Rukia Kuchiki") > blockLen(w, "Kiyone Kotetsu"));
+    T("a trailing bystander is trimmed, not deleted",
+        blockLen(w, "Kiyone Kotetsu") > 0 && /Kiyone Kotetsu:/.test(w));
+    T("every character keeps identity and appearance through the taper",
+        cast.every(n => { const i = w.indexOf(n + ":"); return i >= 0 && /hair: black/.test(w.slice(i, i + 200)); }));
+    S.dynamicNote = false;
+    const flat = api.relevantCanonNote(scene, cast, undefined, { userMsg: "you talk to rukia" });
+    T("classic mode keeps the flat cap it always had",
+        Math.abs(blockLen(flat, "Kiyone Kotetsu") - blockLen(flat, "Rukia Kuchiki")) < 40);
+    T("the taper is what changed, not who is present",
+        cast.every(n => flat.includes(n + ":")) && cast.every(n => w.includes(n + ":")));
+    S.cache = keep.cache; S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p;
+    S.maxTotalChars = keep.t; S.dynamicNote = keep.d;
+}
+
 console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
 {
     // The model only ever CHOOSES a category; the extension still writes every word

@@ -1357,8 +1357,14 @@ console.log("[49] v0.49.0 presence before depth, recency before insertion order"
         /for \(let li = 1; li < built\[i\]\.lines\.length; li\+\+\)/.test(nb));
     T("all four passes respect the total budget",
         (nb.match(/total \+ \w+\.length > s\.maxTotalChars/g) || []).length === 4);
-    T("the per-character cap still bounds depth",
-        /drafts\[i\]\.length \+ add\.length > s\.maxCharsPerChar/.test(nb));
+    T("the per-character cap still bounds depth, now weighted by importance",
+        /drafts\[i\]\.length \+ add\.length > charCap\(i\)/.test(nb)
+        && /const charCap = \(i\) =>/.test(src));
+    T("the lead keeps the full allowance", /Math\.max\(0\.5, 1 - i \* 0\.15\)/.test(src));
+    T("the taper has a floor, so nobody loses identity or appearance",
+        /Math\.max\(180, Math\.round\(s\.maxCharsPerChar \* share\)\)/.test(src));
+    T("pins and the setting are never tapered",
+        /if \(!s\.dynamicNote \|\| built\[i\]\.pinned \|\| built\[i\]\.setting\) return s\.maxCharsPerChar;/.test(src));
     T("the count cap now bounds the BUILD pass", /if \(built\.length >= s\.maxCharacters\) break;/.test(src));
     T("the sweep orders by recency, not cache insertion",
         /sweptHits\.sort\(\(a, b\) => b\.at - a\.at\);/.test(src));
