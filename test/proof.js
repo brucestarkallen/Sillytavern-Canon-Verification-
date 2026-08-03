@@ -296,7 +296,7 @@ sandbox.__settings = {
                    sections: { physical: "hair: black" }, rel: {} },
     },
     physical: true, personality: true, relationship: true, biography: false, abilities: false, trivia: true,
-    relationDynamics: true, maxCharacters: 8, maxCharsPerChar: 700, maxTotalChars: 4500,
+    relationDynamics: true, maxCharacters: 8, maxTokensPerChar: 175, maxTotalTokens: 1125,
     arcInject: true, arcNote: { title: "Lawless City Arc", wiki: "w", summary: "Shadow Garden infiltrates the lawless city." },
     llmParser: true, contextWindow: 10,
 };
@@ -352,7 +352,7 @@ sandbox.__settings = {
         "cid kagenou": { name: "Cid Kagenou", found: true, wiki: "w", aliases: ["Cid"], sections: { physical: "hair: black" }, rel: {} },
     },
     physical: true, personality: true, relationship: true, biography: false, abilities: false, trivia: true, voice: true,
-    relationDynamics: true, maxCharacters: 8, maxCharsPerChar: 700, maxTotalChars: 4500,
+    relationDynamics: true, maxCharacters: 8, maxTokensPerChar: 175, maxTotalTokens: 1125,
     arcInject: false, arcNote: null, llmParser: true, contextWindow: 10,
 };
 const vnote = api.relevantCanonNote(["alpha spoke"], ["Alpha", "Cid Kagenou"]);
@@ -410,7 +410,7 @@ sandbox.__settings = {
         "cid kagenou": { name: "Cid Kagenou", found: true, wiki: "w", aliases: ["Cid"], sections: { identity: "Cid Kagenou is a student at Midgar Academy.", physical: "hair: black" }, rel: {} },
     },
     physical: true, personality: true, relationship: true, biography: false, abilities: false, trivia: true, voice: true,
-    relationDynamics: true, maxCharacters: 8, maxCharsPerChar: 900, maxTotalChars: 4500,
+    relationDynamics: true, maxCharacters: 8, maxTokensPerChar: 225, maxTotalTokens: 1125,
     arcInject: false, arcNote: null, llmParser: true, contextWindow: 10, llmDossier: true, pinnedGlobal: "",
 };
 const dnote = api.relevantCanonNote(["rose oriana drew her sword at cid kagenou"], ["Rose Oriana", "Cid Kagenou"]);
@@ -729,12 +729,12 @@ sandbox.__settings.cache = {
                          secrets: [], voice: [], related: [], dynamics: {} } },
 };
 api.setEvidence({}); api.setFocus({});
-sandbox.__settings.maxCharsPerChar = 620;
+sandbox.__settings.maxTokensPerChar = 155;
 const wb = api.relevantCanonNote(["hondō spoke"], ["Ryōtarō Hondō"]);
 T("over-budget drops WHOLE trailing lines, never amputates mid-fact", !/…/.test(wb.split("Ryōtarō Hondō:")[1] || "") || !/- Facts: [^\n]*…/.test(wb));
 T("appearance line survives the budget squeeze", /- Appearance: haircolor: Blue; eyecolor: Magenta/.test(wb));
 T("name + brief always ride", /Ryōtarō Hondō:\n  BBBB/.test(wb));
-sandbox.__settings.maxCharsPerChar = 1100;
+sandbox.__settings.maxTokensPerChar = 275;
 
 // ---------------------------------------------------------------- v0.21: full-body appearance
 console.log("[full-body appearance]");
@@ -785,8 +785,8 @@ sandbox.__settings.lowercaseNames = true;
 console.log("[v0.55.0 budget follows importance, not a flat cap]");
 {
     const S = sandbox.__settings;
-    const keep = { cache: S.cache, c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars, d: S.dynamicNote };
-    S.maxCharacters = 6; S.maxCharsPerChar = 420; S.maxTotalChars = 2200;
+    const keep = { cache: S.cache, c: S.maxCharacters, p: S.maxTokensPerChar, t: S.maxTotalTokens, d: S.dynamicNote };
+    S.maxCharacters = 6; S.maxTokensPerChar = 105; S.maxTotalTokens = 550;
     S.relationDynamics = true; S.personality = true; S.physical = true; S.abilities = true; S.trivia = true;
     const mk = (n) => ({ name: n, wiki: "w", found: true, ts: Date.now(), aliases: [], rel: {},
         sections: { identity: n + " is an officer of the Gotei 13.", physical: "hair: black; eyes: grey",
@@ -816,8 +816,8 @@ console.log("[v0.55.0 budget follows importance, not a flat cap]");
         Math.abs(blockLen(flat, "Kiyone Kotetsu") - blockLen(flat, "Rukia Kuchiki")) < 40);
     T("the taper is what changed, not who is present",
         cast.every(n => flat.includes(n + ":")) && cast.every(n => w.includes(n + ":")));
-    S.cache = keep.cache; S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p;
-    S.maxTotalChars = keep.t; S.dynamicNote = keep.d;
+    S.cache = keep.cache; S.maxCharacters = keep.c; S.maxTokensPerChar = keep.p;
+    S.maxTotalTokens = keep.t; S.dynamicNote = keep.d;
 }
 
 console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
@@ -831,21 +831,27 @@ console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
     const battle = api.orderLinesByNeed(L, "powers");
     T("appearance always leads, whatever the scene needs", battle[0].startsWith("  - Appearance"));
     T("a fight puts powers first below it", battle[1].startsWith("  - Abilities"));
-    T("nothing is lost, only reordered", battle.length === L.length && L.every(x => battle.includes(x)));
+    // v0.56.0: it FILTERS as well as ranks. Ranking alone still spent the whole
+    // budget — an unwanted category sank to the bottom and rode anyway if there was
+    // room. A budget is a ceiling, not a target.
+    T("a fight drops what a fight does not need", !battle.some(l => l.startsWith("  - Voice")));
+    T("appearance is never dropped", battle.some(l => l.startsWith("  - Appearance")));
     const social = api.orderLinesByNeed(L, "personality, voice");
     T("a conversation puts personality then voice below appearance",
         social[0].startsWith("  - Appearance") && social[1].startsWith("  - Personality")
         && social[2].startsWith("  - Voice"));
-    T("unlisted categories keep their emitter order behind the wanted ones",
-        social[3].startsWith("  - Abilities"));
+    T("a conversation drops the arsenal it does not need",
+        !social.some(l => l.startsWith("  - Abilities")));
+    T("only what the scene needs, plus what every scene needs, survives",
+        social.length === 3);
     T("appearance leads even with no need at all",
         api.orderLinesByNeed(L, "")[0].startsWith("  - Appearance"));
     T("an unknown word shuffles nothing below appearance",
         JSON.stringify(api.orderLinesByNeed(L, "banana")) === JSON.stringify(api.orderLinesByNeed(L, "")));
 
     const S = sandbox.__settings;
-    const keep = { cache: S.cache, c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars };
-    S.maxCharacters = 4; S.maxCharsPerChar = 300; S.maxTotalChars = 700; S.dynamicNote = true;
+    const keep = { cache: S.cache, c: S.maxCharacters, p: S.maxTokensPerChar, t: S.maxTotalTokens };
+    S.maxCharacters = 4; S.maxTokensPerChar = 75; S.maxTotalTokens = 175; S.dynamicNote = true;
     S.relationDynamics = true; S.personality = true; S.physical = true; S.abilities = true;
     S.cache = { "renji abarai": { name: "Renji Abarai", wiki: "w", found: true, ts: Date.now(), aliases: [],
         rel: { "byakuya kuchiki": "Complicated - Renji wants his captain's recognition." },
@@ -863,8 +869,9 @@ console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
     // Deliberately NEUTRAL prose: no combat keyword, no technique named. The local
     // heuristic sees nothing here; the parser, which read the scene, said "powers".
     const fight = api.relevantCanonNote(["Renji and Byakuya face each other."], cast);
-    T("in a fight, abilities lead the block",
-        fight.indexOf("Abilities: Zabimaru") < fight.indexOf("Personality: Brash"));
+    T("in a fight, abilities lead the block", /Abilities: Zabimaru/.test(fight));
+    T("...and a fight does not ship personality it did not ask for",
+        !/Personality: Brash/.test(fight));
     T("in a fight, family ties do not outrank shikai limits",
         !/With Byakuya Kuchiki:/.test(fight));
 
@@ -886,13 +893,13 @@ console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
     T("the same cache produced both — nothing was re-fetched or invented",
         /Zabimaru/.test(fight) && /Zabimaru/.test(quiet + fight));
     api.setNeed({});
-    S.cache = keep.cache; S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p; S.maxTotalChars = keep.t;
+    S.cache = keep.cache; S.maxCharacters = keep.c; S.maxTokensPerChar = keep.p; S.maxTotalTokens = keep.t;
 }
 
 console.log("[v0.52.0 who two people are to each other outranks solo trivia]");
 {
     const S = sandbox.__settings;
-    const keep = { c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars, cache: S.cache, rd: S.relationDynamics };
+    const keep = { c: S.maxCharacters, p: S.maxTokensPerChar, t: S.maxTotalTokens, cache: S.cache, rd: S.relationDynamics };
     S.maxCharacters = 8; S.relationDynamics = true; S.personality = true; S.trivia = true;
     S.cache = {};
     const mk = (n, rel) => ({ name: n, wiki: "w", found: true, ts: Date.now(), aliases: [], rel,
@@ -905,7 +912,7 @@ console.log("[v0.52.0 who two people are to each other outranks solo trivia]");
     const scene = ["Byakuya steps into the courtyard where Renji and Rukia are standing."];
     const cast = ["Rukia Kuchiki", "Renji Abarai", "Byakuya Kuchiki"];
 
-    S.maxCharsPerChar = 420; S.maxTotalChars = 1500;
+    S.maxTokensPerChar = 105; S.maxTotalTokens = 375;
     const roomy = api.relevantCanonNote(scene, cast);
     T("a co-present pair dynamic surfaces on its own", /With Renji Abarai: Childhood friend/.test(roomy));
     T("a third character arriving surfaces THEIR dynamic too",
@@ -917,21 +924,21 @@ console.log("[v0.52.0 who two people are to each other outranks solo trivia]");
     // and the trivia does not. This is the case that used to go the other way.
     // Room for identity + exactly one more line each, and a total that cannot hold
     // dynamics AND trivia for everyone. Whichever the allocator serves first wins.
-    S.maxCharsPerChar = 200; S.maxTotalChars = 360;
+    S.maxTokensPerChar = 50; S.maxTotalTokens = 150;
     const tight = api.relevantCanonNote(scene, cast);
     T("under pressure the pair dynamic survives", /With Renji Abarai: Childhood friend/.test(tight));
     T("...and solo trivia is what gets trimmed", !/Trivia: Enjoys long walks/.test(tight));
     T("every co-present character still has their anchor",
         /Rukia Kuchiki:/.test(tight) && /Renji Abarai:/.test(tight) && /Byakuya Kuchiki:/.test(tight));
-    S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p; S.maxTotalChars = keep.t;
+    S.maxCharacters = keep.c; S.maxTokensPerChar = keep.p; S.maxTotalTokens = keep.t;
     S.cache = keep.cache; S.relationDynamics = keep.rd;
 }
 
 console.log("[v0.49.0 presence before depth: verbosity must not delete people]");
 {
     const S = sandbox.__settings;
-    const keep = { c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars, cache: S.cache };
-    S.maxCharacters = 8; S.maxCharsPerChar = 1100; S.maxTotalChars = 6000;
+    const keep = { c: S.maxCharacters, p: S.maxTokensPerChar, t: S.maxTotalTokens, cache: S.cache };
+    S.maxCharacters = 8; S.maxTokensPerChar = 275; S.maxTotalTokens = 1500;
     S.cache = {};
     const fat = (n) => ({ name: n, wiki: "w", found: true, ts: Date.now(), aliases: [], rel: {},
         sections: { identity: (n + " is a captain of the Gotei 13. ").repeat(6),
@@ -953,13 +960,13 @@ console.log("[v0.49.0 presence before depth: verbosity must not delete people]")
     for (const n of fatNames) T(`${n} still present`, note.includes(n + ":"));
     // Depth is what gets trimmed, and the character-block budget still holds.
     const body = note.slice(note.indexOf(fatNames[0] + ":"));
-    T("the character-block budget is still respected", body.length <= S.maxTotalChars);
+    T("the character-block budget is still respected", body.length <= S.maxTotalTokens * 4);
     // Tier 1 is served first, in both presence AND depth.
     const t1 = api.relevantCanonNote(["everyone stands in the hall with rukia"], cast,
         undefined, { userNames: ["Rukia Kuchiki"] });
     T("the player's named character leads the note",
         t1.indexOf("Rukia Kuchiki:") < t1.indexOf("Sui-Feng:"));
-    S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p; S.maxTotalChars = keep.t; S.cache = keep.cache;
+    S.maxCharacters = keep.c; S.maxTokensPerChar = keep.p; S.maxTotalTokens = keep.t; S.cache = keep.cache;
 }
 
 console.log("[v0.48.0 canonicalised evidence, and the player's own words as authority]");
@@ -1336,7 +1343,7 @@ sandbox.__settings.cache = {
         sections: { identity: "Second of Shadow Garden." } },
 };
 Object.assign(sandbox.__settings, { relationDynamics: true, proseBriefs: true, llmDossier: true,
-    maxCharacters: 8, maxCharsPerChar: 1100, maxTotalChars: 6000, physical: true, voice: true,
+    maxCharacters: 8, maxTokensPerChar: 275, maxTotalTokens: 1500, physical: true, voice: true,
     smartExpansion: false, contextWindow: 10 });
 const BLK = api.relevantCanonNote(["Rose Oriana walks in. Beta follows."], ["Rose Oriana", "Beta"], undefined,
                                   { blockNames: ["Beta"] });
@@ -1430,7 +1437,7 @@ sandbox.__settings = {
     },
     physical: true, personality: false, relationship: false, biography: false, abilities: false,
     trivia: false, voice: false, relationDynamics: true, smartExpansion: false, proseBriefs: false,
-    maxCharacters: 8, maxCharsPerChar: 1100, maxTotalChars: 6000,
+    maxCharacters: 8, maxTokensPerChar: 275, maxTotalTokens: 1500,
     arcInject: false, arcNote: null, llmParser: true, contextWindow: 10,
 };
 const phantom = api.relevantCanonNote(["kenpachi zaraki laughed"], ["Kenpachi Zaraki"]);
@@ -1455,7 +1462,7 @@ T("legacy dossier renders a note instead of killing the injection", /Oldchar:/.t
 T("legacy dossier still shows its identity", /A veteran of the old shape/.test(oldNote));
 
 console.log("[v0.35.0 story position — high-water mark + begun framing]");
-Object.assign(sandbox.__settings, { arcInject: true, promptHeader: "", maxCharacters: 8, maxCharsPerChar: 1100, maxTotalChars: 6000 });
+Object.assign(sandbox.__settings, { arcInject: true, promptHeader: "", maxCharacters: 8, maxTokensPerChar: 275, maxTotalTokens: 1500 });
 T("current position matches by title, query, AND triggering name",
   ["Feast Arc", "harvest feast", "Harvest Banquet"].every(c =>
       api.arcAlreadyReached(c, { title: "Feast Arc", query: "harvest feast", name: "Harvest Banquet" }, [])));
@@ -1609,7 +1616,7 @@ T("a closed block spanning lines still strips in full",
 sandbox.__settings.cache = {
   "class 1-c": { name: "Class 1-C (1st Year)", aliases: ["Class 1-C (1st Year)", "class 1-c (1st year)"], sections: { identity: "A first-year homeroom." }, rel: {}, found: true, kind: "place", ts: Date.now() },
 };
-sandbox.__settings.maxCharacters = 8; sandbox.__settings.maxCharsPerChar = 400; sandbox.__settings.maxTotalChars = 3000;
+sandbox.__settings.maxCharacters = 8; sandbox.__settings.maxTokensPerChar = 100; sandbox.__settings.maxTotalTokens = 750;
 sandbox.__settings.arcInject = false; sandbox.__settings.relationDynamics = false; sandbox.__settings.proseBriefs = false;
 sandbox.__settings.physical = true; sandbox.__settings.personality = true; sandbox.__settings.trivia = false; sandbox.__settings.voice = false; sandbox.__settings.abilities = false; sandbox.__settings.biography = false; sandbox.__settings.relationships = false;
 sandbox.__settings.llmParser = true; sandbox.__settings.useLedger = false;

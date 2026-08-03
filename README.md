@@ -56,6 +56,34 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.56.0 (a ceiling is not a target; mentioning a place is not moving there; budgets are tokens)
+
+Proven by `test/proof.js` (526) + `test/sim.mjs` (328); **3 guards negative-tested**.
+
+1. **The budget was being spent because it was there.** `need` only *re-ordered*
+   categories — an unwanted one sank to the bottom and rode anyway if there was room.
+   So a quiet conversation shipped somebody's teacup collection, because the
+   allowance had not run out yet. It now **filters as well as ranks**: what the scene
+   does not need is dropped. Identity, Appearance, pair dynamics and Secrets are never
+   dropped, because every scene needs a face and who is standing with whom. A budget
+   is a ceiling, not a target — an unused one is simply not spent.
+
+2. **Mentioning a place is not travelling to it.** Any place the parser returned was
+   pinned as the current setting, so a character saying "word from Karakura Town"
+   moved the whole story out of Seireitei. The **arc** has had a judge for exactly
+   this question since v0.35 — has the story *entered* this, or merely referred to it
+   — and the setting never got one. It does now, and only when the place actually
+   differs from where we already are, so the common case (setting unchanged) still
+   costs nothing and the first place of a chat still pins for free.
+
+3. **Budgets are in TOKENS.** They were in string characters, which is not the unit
+   anyone reasons about while watching a context window fill. `maxTokensPerChar`
+   (275) and `maxTotalTokens` (1500) replace the character caps at ~4 chars/token,
+   with a migration that carries an existing tuned value across instead of resetting
+   it. The people-count setting is now labelled **"Max people injected at once"** —
+   it always counted people, never letters, and sharing the word "characters" with
+   the length caps was its own small trap.
+
 ## Changelog — v0.55.0 (the budget follows importance, because the note already knew it)
 
 Proven by `test/proof.js` (523) + `test/sim.mjs` (322); **2 guards negative-tested**.

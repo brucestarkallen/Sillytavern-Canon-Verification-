@@ -167,7 +167,7 @@ extension_settings.canon_grounding = {
     fields: "hair", relationshipKeywords: "relative", biographyKeywords: "history",
     personalityKeywords: "personality", abilitiesKeywords: "power", aliasKeywords: "alias",
     physical: true, personality: false, relationship: false, biography: false, abilities: false,
-    contextWindow: 10, maxCharacters: 8, maxCharsPerChar: 400, maxTotalChars: 3000,
+    contextWindow: 10, maxCharacters: 8, maxTokensPerChar: 100, maxTotalTokens: 750,
     // 8000, not 30000: two scenarios deliberately WAIT OUT the block to prove the
     // starvation path, and at 30000 each burned a real 30s of wall clock — 62s of
     // gate for two assertions. 8000 clears the slowest real scenario (the cache
@@ -336,7 +336,7 @@ T("no gallery filename anywhere in the injection", !/\.png/i.test(lastInjection(
 
 console.log("[11] personality baseline carries the humanizing tail (head+tail sample)");
 extension_settings.canon_grounding.personality = true;
-extension_settings.canon_grounding.maxCharsPerChar = 1200;
+extension_settings.canon_grounding.maxTokensPerChar = 300;
 const q11 = parseQueue.length;
 globalThis.__ctx.chat.push(msg("Then Tailchar arrives in full armor.", false));
 const run11 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
@@ -349,7 +349,7 @@ T("humanizing TAIL survives into the injected baseline", /laughs easily and forg
 T("head+tail seam marks the sample", /\[…\]/.test(lastInjection()));
 T("anti-rigidity header rides every note", /same reaction repeated while things escalate/.test(lastInjection()));
 extension_settings.canon_grounding.personality = false;
-extension_settings.canon_grounding.maxCharsPerChar = 400;
+extension_settings.canon_grounding.maxTokensPerChar = 100;
 
 console.log("[12] poisoned cache self-heals from a fresh fetch");
 const healCache = globalThis.__ctx.chatMetadata.canon_grounding_cache;
@@ -577,7 +577,7 @@ S.firstMeetWaitMs = 8000;
 // [22] v0.34.1 — static witnesses for the structural fixes.
 console.log("[22] static witnesses");
 T("default caps ARE the current defaults (stale 400/3000 literals gone)",
-    /maxCharsPerChar: 1100/.test(src) && /maxTotalChars: 6000/.test(src));
+    /maxTokensPerChar: 275/.test(src) && /maxTotalTokens: 1500/.test(src));
 T("factory reset does not re-stamp migrations (stale-cap lock gone)",
     /Object\.assign\(s, structuredClone\(defaultSettings\), keep\)/.test(src));
 T("related-expansion decoupled from the pair gate", /pairPool\.length > 0/.test(src));
@@ -1096,9 +1096,12 @@ T("a meta block's terminator must be its OWN (no borrowing across an opener)",
     /\[\^\\\]\\\[\]\*\\\]/.test(src.match(/function stripMetaBlocks[\s\S]{0,2600}?\n\}/)[0]));
 T("the four dossier-inert category toggles say so in the UI",
     (src.match(/Regex fallback only<\/b>/g) || []).length === 4);
-T("the total cap names what it actually budgets",
-    /Max total length of the character blocks/.test(src)
-    && /ride on top of it and are never trimmed/.test(src));
+T("the total cap names what it actually budgets, in tokens",
+    /Max tokens for all people together/.test(src)
+    && /ride on top of it and are never trimmed/.test(src)
+    && /<b>not a target<\/b>/.test(src));
+T("the people count is not called 'characters' any more",
+    /Max people injected at once/.test(src) && !/Max characters injected at once/.test(src));
 
 // [44] v0.43.0 BEHAVIORAL: the wrong page never reaches the note. The structural
 // witnesses below prove the call sites exist; this proves the OUTCOME, driving the
@@ -1356,15 +1359,15 @@ console.log("[49] v0.49.0 presence before depth, recency before insertion order"
     T("pass two spends what is left, in tier order",
         /for \(let li = 1; li < built\[i\]\.lines\.length; li\+\+\)/.test(nb));
     T("all four passes respect the total budget",
-        (nb.match(/total \+ \w+\.length > s\.maxTotalChars/g) || []).length === 4);
+        (nb.match(/total \+ \w+\.length > totalCap/g) || []).length === 4);
     T("the per-character cap still bounds depth, now weighted by importance",
         /drafts\[i\]\.length \+ add\.length > charCap\(i\)/.test(nb)
         && /const charCap = \(i\) =>/.test(src));
     T("the lead keeps the full allowance", /Math\.max\(0\.5, 1 - i \* 0\.15\)/.test(src));
     T("the taper has a floor, so nobody loses identity or appearance",
-        /Math\.max\(180, Math\.round\(s\.maxCharsPerChar \* share\)\)/.test(src));
+        /Math\.max\(180, Math\.round\(perCap \* share\)\)/.test(src));
     T("pins and the setting are never tapered",
-        /if \(!s\.dynamicNote \|\| built\[i\]\.pinned \|\| built\[i\]\.setting\) return s\.maxCharsPerChar;/.test(src));
+        /if \(!s\.dynamicNote \|\| built\[i\]\.pinned \|\| built\[i\]\.setting\) return perCap;/.test(src));
     T("the count cap now bounds the BUILD pass", /if \(built\.length >= s\.maxCharacters\) break;/.test(src));
     T("the sweep orders by recency, not cache insertion",
         /sweptHits\.sort\(\(a, b\) => b\.at - a\.at\);/.test(src));
@@ -1461,6 +1464,19 @@ console.log("[54] v0.54.0 appearance pinned, mode switchable");
         /\$\("#cg_dynamic_note"\)\.prop\("checked", s\.dynamicNote\)\.on\("input"/.test(src)
         && /s\.dynamicNote = \$\(this\)\.prop\("checked"\); saveSettingsDebounced\(\);/.test(src));
     T("the hint explains what OFF means, not just ON", /<b>Off<\/b> = the fixed order/.test(src));
+}
+
+// [55] v0.56.0 — mentioning a place is not travelling to it.
+console.log("[55] v0.56.0 the setting needs the same judge the arc has");
+{
+    const w = src.slice(src.indexOf("async function applyCastWorldState"), src.indexOf("function splitEvidenceStrength"));
+    T("the place path asks the judge before moving the story",
+        /const moved = await judgeArcAdvance\(sceneText, hit\.entry\.name/.test(w));
+    T("an unchanged setting costs nothing", /if \(chatSettingKey\(\) === hit\.key\) continue;/.test(w));
+    T("the first place still pins for free", /if \(!chatSettingKey\(\)\) \{ setChatPin/.test(w));
+    T("the pin only happens if the judge agreed",
+        /if \(moved\) \{\s*\n\s*setChatPin\("canon_grounding_setting", hit\.key\);/.test(w));
+    T("a chat switch mid-judgement discards the result", /if \(myEpoch !== chatEpoch\) return;[\s\S]{0,80}if \(moved\)/.test(w));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

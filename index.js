@@ -93,7 +93,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.55.0";
+const CG_VERSION = "0.56.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -328,13 +328,17 @@ const defaultSettings = {
     // Hard limits so a big cast (e.g. High School DxD) can't balloon the prompt. Set a
     // bit generously because the LLM parser only returns real, relevant entities (no
     // regex junk), so there's room for present + referenced characters.
-    maxCharacters: 8,       // inject at most this many entities (most central first)
+    maxCharacters: 8,       // how many PEOPLE (not letters) may ride; most central first
     // THESE LITERALS ARE THE CURRENT DEFAULTS — the migrations below only exist to
     // move OLD installs forward, and the factory reset re-clones this object. When a
     // migration raises a cap, raise it HERE too, or the reset button silently
     // restores the stale pre-migration value (the 400/3000 vs 1100/6000 bug).
-    maxCharsPerChar: 1100,  // cap per entity across all its categories
-    maxTotalChars: 6000,    // budget for the CHARACTER BLOCKS; stop once reached. The
+    // Budgets are in TOKENS. They used to be in string characters, which is not a
+    // unit anyone reasons about when they are watching a context window fill up.
+    // ~4 characters per token is the working conversion; the note is measured in
+    // characters internally because that is what a string is.
+    maxTokensPerChar: 275,  // cap per entity across all its categories (~1100 chars)
+    maxTotalTokens: 1500,   // budget for the CHARACTER BLOCKS in TOKENS (~6000 chars). The
                             // header, pinned canon, and story position ride on top and
                             // are deliberately never trimmed (see relevantCanonNote).
     // When on, shows a toast for each grounding attempt (found facts / miss / error).
@@ -402,6 +406,17 @@ function settings() {
         // untouched caps only, user-set values are respected.
         if (st.maxCharsPerChar === 700) st.maxCharsPerChar = 1100;
         if (st.maxTotalChars === 4500) st.maxTotalChars = 6000;
+    }
+    // v0.56.0 — budgets move from string characters to TOKENS, the unit anyone
+    // actually reasons about. Carry an existing setting across at ~4 chars/token
+    // rather than silently resetting someone's tuned numbers to the defaults.
+    if (st.maxTokensPerChar === undefined) {
+        st.maxTokensPerChar = st.maxCharsPerChar ? Math.round(st.maxCharsPerChar / 4) : 275;
+    }
+    if (st.maxTotalTokens === undefined) {
+        st.maxTotalTokens = st.maxTotalChars ? Math.round(st.maxTotalChars / 4) : 1500;
+    }
+    {
         st.migrated_v5 = true;
         saveSettingsDebounced();
     }
@@ -2478,11 +2493,19 @@ function orderLinesByNeed(lines, need) {
         const i = wanted.findIndex(lb => line.startsWith(`  - ${lb}`));
         return i < 0 ? wanted.length : i;
     };
-    // Stable: equal ranks keep the emitters' order, so nothing is reshuffled at random.
-    return lines
+    // AND IT FILTERS, it does not merely rank. Ranking alone still spent the whole
+    // budget: an unwanted category just sank to the bottom and rode anyway if there
+    // was room, so a quiet conversation shipped somebody's teacup collection because
+    // the allowance had not run out yet. A budget is a ceiling, not a target. What
+    // the scene does not need is dropped; identity, appearance and pair dynamics are
+    // never dropped, because every scene needs a face and who is standing with whom.
+    const KEEP_ALWAYS = ["  - Identity", "  - Appearance", "  - With ", "  - Secret"];
+    const ranked = lines
         .map((line, i) => ({ line, i, r: rankOf(line) }))
         .sort((a, b) => (a.r - b.r) || (a.i - b.i))
         .map(x => x.line);
+    return ranked.filter(line =>
+        KEEP_ALWAYS.some(k => line.startsWith(k)) || rankOf(line) < wanted.length);
 }
 
 /**
@@ -2872,16 +2895,19 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // nobody drops below their identity and appearance — the taper reallocates
     // depth, it never removes anyone. Pins and the current setting are decree and
     // are never tapered. Classic mode keeps the flat cap, as it always did.
+    const TOK = 4;                       // working characters-per-token
+    const perCap = Math.round((s.maxTokensPerChar || 275) * TOK);
+    const totalCap = Math.round((s.maxTotalTokens || 1500) * TOK);
     const charCap = (i) => {
-        if (!s.dynamicNote || built[i].pinned || built[i].setting) return s.maxCharsPerChar;
+        if (!s.dynamicNote || built[i].pinned || built[i].setting) return perCap;
         const share = Math.max(0.5, 1 - i * 0.15);
-        return Math.max(180, Math.round(s.maxCharsPerChar * share));
+        return Math.max(180, Math.round(perCap * share));
     };
     const drafts = new Array(built.length).fill(null);
     for (let i = 0; i < built.length; i++) {
         const head = clip(`${built[i].entry.name}:\n${built[i].lines[0] || ""}`, charCap(i));
-        if (total + head.length > s.maxTotalChars) {
-            if (total === 0) { drafts[i] = clip(head, s.maxTotalChars); total = drafts[i].length; }
+        if (total + head.length > totalCap) {
+            if (total === 0) { drafts[i] = clip(head, totalCap); total = drafts[i].length; }
             continue;   // NOT break — a later, smaller anchor may still fit
         }
         drafts[i] = head;
@@ -2895,7 +2921,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         for (const line of built[i].look) {
             const add = "\n" + line;
             if (drafts[i].length + add.length > charCap(i)) continue;
-            if (total + add.length > s.maxTotalChars) continue;
+            if (total + add.length > totalCap) continue;
             drafts[i] += add;
             total += add.length;
         }
@@ -2918,7 +2944,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         for (const line of built[i].dyn) {
             const add = "\n" + line;
             if (drafts[i].length + add.length > charCap(i)) continue;
-            if (total + add.length > s.maxTotalChars) continue;
+            if (total + add.length > totalCap) continue;
             drafts[i] += add;
             total += add.length;
         }
@@ -2929,7 +2955,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         for (let li = 1; li < built[i].lines.length; li++) {
             const add = "\n" + built[i].lines[li];
             if (drafts[i].length + add.length > charCap(i)) continue;
-            if (total + add.length > s.maxTotalChars) continue;
+            if (total + add.length > totalCap) continue;
             drafts[i] += add;
             total += add.length;
         }
@@ -3520,7 +3546,22 @@ async function applyCastWorldState(names, sceneText, myEpoch) {
                 }
             }).catch(() => {});
         } else if (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name)) {
-            setChatPin("canon_grounding_setting", hit.key);
+            // MENTIONING A PLACE IS NOT TRAVELLING TO IT. This used to pin any place
+            // the parser returned, so a character saying "word from Karakura Town"
+            // moved the whole story out of Seireitei. The arc has had a judge for
+            // exactly this question since v0.35 — has the story ENTERED this, or
+            // merely referred to it — and the setting never got one. It does now,
+            // and only when the place actually differs from where we already are,
+            // so the common case (the setting is unchanged) still costs nothing.
+            if (chatSettingKey() === hit.key) continue;
+            if (!chatSettingKey()) { setChatPin("canon_grounding_setting", hit.key); continue; }
+            const cur = cacheEntryFor(chatSettingKey());
+            const moved = await judgeArcAdvance(sceneText, hit.entry.name, cur && cur.entry && cur.entry.name);
+            if (myEpoch !== chatEpoch) return;
+            if (moved) {
+                setChatPin("canon_grounding_setting", hit.key);
+                cgToast("info", `📍 setting → ${hit.entry.name}`);
+            }
         }
     }
 }
@@ -4815,15 +4856,15 @@ async function addSettingsUI() {
                 <small class="cg-hint">How many recent visible messages count as the current scene. A character stops injecting once their name scrolls past this many messages. Lower = drops off-screen characters faster.</small>
                 <hr>
                 <small><b>Size limits</b> — hard caps so a big cast can't balloon the prompt:</small>
-                <label>Max characters injected at once</label>
+                <label>Max people injected at once</label>
                 <input id="cg_maxchars" class="text_pole" type="number" min="1" max="30">
-                <small class="cg-hint">Never inject more than this many at once (most recently mentioned win).</small>
-                <label>Max characters (text length) per character</label>
-                <input id="cg_maxper" class="text_pole" type="number" min="80" max="2000" step="50">
-                <small class="cg-hint">Length cap on each character's block. Lower = leaner, trims the wordy categories first.</small>
-                <label>Max total length of the character blocks</label>
-                <input id="cg_maxtotal" class="text_pole" type="number" min="600" max="20000" step="100">
-                <small class="cg-hint">Budget for the CHARACTER BLOCKS. The fixed header (~1.6k), any pinned canon you wrote, and the story-position note ride on top of it and are never trimmed — the header carries the rules that make the rest safe to use, and your pins are decrees. Roughly 4 characters ≈ 1 token.</small>
+                <small class="cg-hint">Never inject more than this many at once (most recently mentioned win). This counts <b>people</b>, not letters.</small>
+                <label>Max tokens per person</label>
+                <input id="cg_maxper" class="text_pole" type="number" min="20" max="500" step="10">
+                <small class="cg-hint">Ceiling on one person's block. With <b>Smart dynamic order</b> on this is the LEAD's allowance — whoever the scene is about keeps all of it, and each character behind them gets a smaller share, floored so nobody loses their identity or appearance. Off, everyone gets the same.</small>
+                <label>Max tokens for all people together</label>
+                <input id="cg_maxtotal" class="text_pole" type="number" min="150" max="5000" step="25">
+                <small class="cg-hint">Ceiling for the character blocks, <b>not a target</b> — an unused budget is simply not spent. The fixed header (~400 tokens), any pinned canon you wrote, and the story-position note ride on top of it and are never trimmed.</small>
                 <div style="margin-top:4px;">
                     <input id="cg_reset_kw" class="menu_button" type="button" value="Reset fields &amp; keywords to defaults">
                 </div>
@@ -5147,8 +5188,8 @@ async function addSettingsUI() {
         });
     };
     numHandler("#cg_maxchars", "maxCharacters", 1, 8);
-    numHandler("#cg_maxper", "maxCharsPerChar", 80, 1100);
-    numHandler("#cg_maxtotal", "maxTotalChars", 600, 6000);
+    numHandler("#cg_maxper", "maxTokensPerChar", 20, 275);
+    numHandler("#cg_maxtotal", "maxTotalTokens", 150, 1500);
 
     $("#cg_reset_kw").on("click", function () {
         for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords", "quoteKeywords"]) {
