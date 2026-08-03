@@ -787,18 +787,23 @@ console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
     // The model only ever CHOOSES a category; the extension still writes every word
     // from verified cache, so reordering can never invent a fact.
     const L = ["  - Appearance: a", "  - Personality: b", "  - Abilities: c", "  - Voice: d"];
+    // v0.54.0: Appearance is pinned directly under Identity and is never re-ranked.
+    // Getting a face wrong is the failure this extension exists to prevent, and a
+    // duel does not stop needing crimson hair because it needs shikai limits.
     const battle = api.orderLinesByNeed(L, "powers");
-    T("a fight puts powers first", battle[0].startsWith("  - Abilities"));
+    T("appearance always leads, whatever the scene needs", battle[0].startsWith("  - Appearance"));
+    T("a fight puts powers first below it", battle[1].startsWith("  - Abilities"));
     T("nothing is lost, only reordered", battle.length === L.length && L.every(x => battle.includes(x)));
     const social = api.orderLinesByNeed(L, "personality, voice");
-    T("a conversation puts personality then voice first",
-        social[0].startsWith("  - Personality") && social[1].startsWith("  - Voice"));
+    T("a conversation puts personality then voice below appearance",
+        social[0].startsWith("  - Appearance") && social[1].startsWith("  - Personality")
+        && social[2].startsWith("  - Voice"));
     T("unlisted categories keep their emitter order behind the wanted ones",
-        social[2].startsWith("  - Appearance") && social[3].startsWith("  - Abilities"));
-    T("no need → the old fixed order, byte for byte",
-        JSON.stringify(api.orderLinesByNeed(L, "")) === JSON.stringify(L));
-    T("an unknown word is ignored rather than shuffling at random",
-        JSON.stringify(api.orderLinesByNeed(L, "banana")) === JSON.stringify(L));
+        social[3].startsWith("  - Abilities"));
+    T("appearance leads even with no need at all",
+        api.orderLinesByNeed(L, "")[0].startsWith("  - Appearance"));
+    T("an unknown word shuffles nothing below appearance",
+        JSON.stringify(api.orderLinesByNeed(L, "banana")) === JSON.stringify(api.orderLinesByNeed(L, "")));
 
     const S = sandbox.__settings;
     const keep = { cache: S.cache, c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars };
@@ -817,17 +822,29 @@ console.log("[v0.53.0 smart dynamic: the scene decides which canon leads]");
     const cast = ["Renji Abarai", "Byakuya Kuchiki"];
 
     api.setNeed({ "renji abarai": "powers", "byakuya kuchiki": "powers" });
-    const fight = api.relevantCanonNote(["Renji releases Zabimaru as Byakuya draws."], cast);
+    // Deliberately NEUTRAL prose: no combat keyword, no technique named. The local
+    // heuristic sees nothing here; the parser, which read the scene, said "powers".
+    const fight = api.relevantCanonNote(["Renji and Byakuya face each other."], cast);
     T("in a fight, abilities lead the block",
         fight.indexOf("Abilities: Zabimaru") < fight.indexOf("Personality: Brash"));
     T("in a fight, family ties do not outrank shikai limits",
         !/With Byakuya Kuchiki:/.test(fight));
 
+    // The parser's read outranks the local keyword list: this scene contains no
+    // combat word at all, and the arsenal must still ride because the model — which
+    // read the whole scene — said this moment needs powers.
+    T("a duel with no combat KEYWORD still gets the arsenal", /Abilities: Zabimaru/.test(fight));
+
     api.setNeed({ "renji abarai": "relationships, personality", "byakuya kuchiki": "relationships, personality" });
     const quiet = api.relevantCanonNote(["Renji and Byakuya stand in the quiet barracks."], cast);
     T("in a reunion, the relationship leads", /With Byakuya Kuchiki: Complicated/.test(quiet));
-    T("...and personality outranks appearance there",
-        quiet.indexOf("Personality: Brash") < quiet.indexOf("hair: crimson"));
+    T("...and appearance still leads the depth lines",
+        quiet.indexOf("hair: crimson") < quiet.indexOf("Personality: Brash"));
+    // Appearance has its OWN allocation band, ahead of even the relationship pass —
+    // a storyteller needs the face before it needs the history with the person beside
+    // them. Without the band, the "With …" line would land between the two.
+    T("appearance sits directly under identity, ahead of a pair dynamic",
+        quiet.indexOf("hair: crimson") < quiet.indexOf("With Byakuya Kuchiki:"));
     T("the same cache produced both — nothing was re-fetched or invented",
         /Zabimaru/.test(fight) && /Zabimaru/.test(quiet + fight));
     api.setNeed({});

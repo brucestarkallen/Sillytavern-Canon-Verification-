@@ -1355,8 +1355,8 @@ console.log("[49] v0.49.0 presence before depth, recency before insertion order"
         /const drafts = new Array\(built\.length\)\.fill\(null\);/.test(nb));
     T("pass two spends what is left, in tier order",
         /for \(let li = 1; li < built\[i\]\.lines\.length; li\+\+\)/.test(nb));
-    T("all three passes respect the total budget",
-        (nb.match(/total \+ \w+\.length > s\.maxTotalChars/g) || []).length === 3);
+    T("all four passes respect the total budget",
+        (nb.match(/total \+ \w+\.length > s\.maxTotalChars/g) || []).length === 4);
     T("the per-character cap still bounds depth",
         /drafts\[i\]\.length \+ add\.length > s\.maxCharsPerChar/.test(nb));
     T("the count cap now bounds the BUILD pass", /if \(built\.length >= s\.maxCharacters\) break;/.test(src));
@@ -1411,7 +1411,9 @@ console.log("[52] v0.52.0 the relationship pass");
     T("both emitters feed the dynamics band",
         (src.match(/dyn\.push\(\.\.\.dynLines\(\)\);/g) || []).length === 2
         && !/lines\.push\(\.\.\.dynLines\(\)\)/.test(src));
-    T("the band is carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, lines: ordered, dyn \}\);/.test(src));
+    T("the bands are carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, lines: rest, look, dyn \}\);/.test(src));
+    T("appearance is allocated before the relationship pass",
+        src.indexOf("PASS ONE-AND-A-HALF") < src.indexOf("PASS TWO — WHO THESE PEOPLE ARE"));
     T("it gets its own pass, before any solo depth",
         src.indexOf("PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER") > 0
         && src.indexOf("PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER") < src.indexOf("PASS THREE — everything else"));
@@ -1439,6 +1441,20 @@ console.log("[53] v0.53.0 the scene decides which canon leads");
     T("ordering is stable, so equal ranks are never reshuffled", /\(a\.r - b\.r\) \|\| \(a\.i - b\.i\)/.test(src));
     T("a powers-only scene skips the relationship pass", /if \(s\.dynamicNote && \/powers\/\.test\(nd\) && !\/relationship\/\.test\(nd\)\) continue;/.test(src));
     T("the mode is on by default — nothing to configure", /dynamicNote: true,/.test(src));
+}
+
+// [54] v0.54.0 — appearance is pinned, and the mode is switchable.
+console.log("[54] v0.54.0 appearance pinned, mode switchable");
+{
+    const f = src.slice(src.indexOf("function orderLinesByNeed"), src.indexOf("function relevantCanonNote"));
+    T("appearance is lifted out before anything is re-ranked",
+        /const look = lines\.findIndex\(l => l\.startsWith\("  - Appearance"\)\);/.test(f));
+    T("the no-need branch pins it too", /if \(!need\) \{[\s\S]{0,220}Appearance/.test(f));
+    T("Smart dynamic order has a real UI toggle", /id="cg_dynamic_note" type="checkbox"/.test(src));
+    T("the toggle is bound to the setting and saved",
+        /\$\("#cg_dynamic_note"\)\.prop\("checked", s\.dynamicNote\)\.on\("input"/.test(src)
+        && /s\.dynamicNote = \$\(this\)\.prop\("checked"\); saveSettingsDebounced\(\);/.test(src));
+    T("the hint explains what OFF means, not just ON", /<b>Off<\/b> = the fixed order/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

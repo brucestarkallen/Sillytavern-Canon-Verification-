@@ -56,6 +56,36 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.54.0 (appearance is never re-ranked, and Smart Dynamic is a real switch)
+
+Proven by `test/proof.js` (518) + `test/sim.mjs` (319); **5 guards negative-tested**.
+
+1. **Appearance sits directly under Identity, in every mode.** It now has its own
+   allocation band, ahead of even the relationship pass: a storyteller needs the face
+   before it needs the history with the person beside them, and getting a face wrong
+   is the failure this extension exists to prevent. A duel does not stop needing
+   crimson hair because it needs shikai limits. The scene reorders everything *below*
+   those two lines and nothing above them.
+
+2. **Smart dynamic order is a real, switchable mode.** v0.53.0 shipped the setting
+   with no UI, which made it a hardcoded default rather than a choice — an honest
+   miss. There is now a checkbox, and its hint documents what **off** means, not just
+   on.
+
+3. **The parser's read outranks the keyword list.** `abilityLine` only emitted when
+   `COMBAT_WORDS` matched the scene text or a technique name appeared in it. So
+   *"Renji and Byakuya face each other"* — a duel about to start — produced no
+   arsenal, even with the parser reporting `need: powers`. A keyword list cannot see
+   an imminent fight; a reader can. When the model says the moment needs powers, the
+   arsenal rides. Same failure shape as capitalisation-as-a-name-test and
+   watchlist-as-attendance: a local heuristic quietly vetoing the model's read.
+
+**Two guards were caught being untestable and fixed rather than counted.** The
+appearance band and the powers override both survived their first negative test —
+not because they worked, but because no assertion discriminated: the fixture scene
+contained combat words, and no test placed appearance against a pair dynamic. Both
+now have behavioural assertions and both turn the suite red when broken.
+
 ## Changelog — v0.53.0 (Smart Dynamic: the scene decides which canon leads — for free)
 
 Proven by `test/proof.js` (515) + `test/sim.mjs` (313); **4 guards negative-tested**

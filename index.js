@@ -93,7 +93,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.53.0";
+const CG_VERSION = "0.54.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2243,7 +2243,7 @@ function inPlayScore(text, play) {
  * all; otherwise they cost nothing. Curated dossier entries preferred; the regex
  * section is the fallback so a pre-abilities dossier still answers.
  */
-function abilityLine(entry, inPlay) {
+function abilityLine(entry, inPlay, needsPowers = false) {
     const s = settings();
     if (!s.abilities) return "";
     const d = entry.dossier;
@@ -2259,7 +2259,11 @@ function abilityLine(entry, inPlay) {
     // that technique and nothing else. Scoring must never NARROW the answer
     // below what a bare combat scene would have shown.
     const ordered = [...hot, ...list.filter(a => !hot.includes(a))];
-    const take = COMBAT_WORDS.test(play) ? ordered.slice(0, 3) : hot.slice(0, 2);
+    // The PARSER'S READ OUTRANKS THE KEYWORD LIST. When the model — which just read
+    // the whole scene — says this moment needs powers, the arsenal rides even if no
+    // word in COMBAT_WORDS happens to appear. "Renji and Byakuya face each other"
+    // is a duel about to start; a keyword list cannot see that and a reader can.
+    const take = (needsPowers || COMBAT_WORDS.test(play)) ? ordered.slice(0, 3) : hot.slice(0, 2);
     return take.length ? `  - Abilities: ${take.join("; ")}` : "";
 }
 
@@ -2447,7 +2451,11 @@ const NEED_LABELS = {
     voice: ["Voice"],
 };
 function orderLinesByNeed(lines, need) {
-    if (!need || lines.length < 2) return lines;
+    if (lines.length < 2) return lines;
+    if (!need) {
+        const i = lines.findIndex(l => l.startsWith("  - Appearance"));
+        return i <= 0 ? lines : [lines[i], ...lines.filter((_, k) => k !== i)];
+    }
     const wanted = [];
     for (const word of String(need).split(/[^a-z]+/i)) {
         const labels = NEED_LABELS[word.toLowerCase()];
@@ -2457,6 +2465,15 @@ function orderLinesByNeed(lines, need) {
     // and the stable sort already returns them untouched. Negative-testing this
     // line cannot turn the suite red, so it is not claimed as a guarded invariant.
     if (!wanted.length) return lines;
+    // APPEARANCE IS NEVER RE-RANKED. What someone looks like sits directly under
+    // Identity in every scene, because getting a face wrong is the failure this
+    // extension exists to prevent — a duel does not stop needing crimson hair just
+    // because it needs shikai limits. Everything BELOW it is what the scene reorders.
+    const look = lines.findIndex(l => l.startsWith("  - Appearance"));
+    if (look >= 0) {
+        const rest = lines.filter((_, i) => i !== look);
+        return [lines[look], ...orderLinesByNeed(rest, need)];
+    }
     const rankOf = (line) => {
         const i = wanted.findIndex(lb => line.startsWith(`  - ${lb}`));
         return i < 0 ? wanted.length : i;
@@ -2773,7 +2790,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             const facts = hot.length ? [...hot, ...pool.filter(f => !hot.includes(f))].slice(0, 5) : pool.slice(0, 3);
             if (facts.length) lines.push(`  - Facts: ${facts.join("; ")}`);
             dyn.push(...dynLines());
-            const al2 = abilityLine(entry, inPlayF); if (al2) lines.push(al2);
+            const al2 = abilityLine(entry, inPlayF, /powers/.test(castNeed[nameKey] || "")); if (al2) lines.push(al2);
             const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
             if (voice) lines.push(`  - Voice: ${voice}`);
             if (s.smartExpansion && d.related && d.related.length) {
@@ -2814,7 +2831,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 if (cat === "physical") {
                     if (s.physical) { const al = appearanceLine(entry); if (al) lines.push(al); }
                 } else if (cat === "abilities") {
-                    const al2 = abilityLine(entry, inPlayR); if (al2) lines.push(al2);
+                    const al2 = abilityLine(entry, inPlayR, /powers/.test(castNeed[nameKey] || "")); if (al2) lines.push(al2);
                 } else if (s[cat] && entry.sections[cat]) {
                     lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
                 }
@@ -2828,7 +2845,14 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         const ordered = s.dynamicNote
             ? [lines[0], ...orderLinesByNeed(lines.slice(1), castNeed[nameKey])]
             : lines;
-        built.push({ entry, matchedName, pinned, swept, setting, lines: ordered, dyn });
+        // APPEARANCE GETS ITS OWN BAND, directly under Identity — ahead of even the
+        // relationship pass. A storyteller describing someone needs their face before
+        // it needs their history with the person beside them, and both modes agree on
+        // this: what they look like is the one thing every scene needs.
+        const lookIdx = ordered.findIndex((l, i) => i > 0 && l.startsWith("  - Appearance"));
+        const look = lookIdx > 0 ? [ordered[lookIdx]] : [];
+        const rest = lookIdx > 0 ? ordered.filter((_, i) => i !== lookIdx) : ordered;
+        built.push({ entry, matchedName, pinned, swept, setting, lines: rest, look, dyn });
     }
 
     // BUDGET: PRESENCE BEFORE DEPTH. This used to build each character's whole
@@ -2848,6 +2872,19 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         }
         drafts[i] = head;
         total += head.length;
+    }
+    // PASS ONE-AND-A-HALF — WHAT THEY LOOK LIKE. Directly under the anchor for
+    // everyone, before any relationship or detail: a wrong face is the failure this
+    // extension exists to prevent, and it is the one line no scene can do without.
+    for (let i = 0; i < built.length; i++) {
+        if (drafts[i] === null) continue;
+        for (const line of built[i].look) {
+            const add = "\n" + line;
+            if (drafts[i].length + add.length > s.maxCharsPerChar) continue;
+            if (total + add.length > s.maxTotalChars) continue;
+            drafts[i] += add;
+            total += add.length;
+        }
     }
     // PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER. Runs across every character
     // before ANY of them gets a second solo line, so a co-present pair dynamic can
@@ -4629,6 +4666,11 @@ async function addSettingsUI() {
                 </label>
                 <small class="cg-hint">Parents, siblings, key ties. Good for stopping invented family. <b>Regex fallback only</b> — a curated dossier ✦ writes its own block, so this toggle does nothing while one exists.</small>
                 <label class="checkbox_label">
+                    <input id="cg_dynamic_note" type="checkbox">
+                    <span>Smart dynamic order 🌊</span>
+                </label>
+                <small class="cg-hint">The scene decides which canon leads. The parser already reads every turn, so it also says what each character is needed FOR right now — a duel surfaces their techniques and limits, a reunion surfaces who they are to each other, a first sighting surfaces their face. Costs no extra call and no extra second. The model only ever picks a <b>category</b>; every word still comes from the verified wiki cache, so it cannot invent a fact by reordering. <b>Off</b> = the fixed order: Identity, Appearance, Personality, Facts, Abilities, Voice — the same in a duel as in a conversation. Identity and Appearance lead either way.</small>
+                <label class="checkbox_label">
                     <input id="cg_dynamics" type="checkbox">
                     <span>Per-pair dynamics ("With Cid: …")</span>
                 </label>
@@ -4840,6 +4882,9 @@ async function addSettingsUI() {
             s[cat] = $(this).prop("checked"); saveSettingsDebounced();
         });
     }
+    $("#cg_dynamic_note").prop("checked", s.dynamicNote).on("input", function () {
+        s.dynamicNote = $(this).prop("checked"); saveSettingsDebounced();
+    });
     $("#cg_dynamics").prop("checked", s.relationDynamics).on("input", function () {
         s.relationDynamics = $(this).prop("checked"); saveSettingsDebounced();
     });
