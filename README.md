@@ -56,6 +56,40 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.51.0 (a watchlist is the opposite of attendance)
+
+Proven by `test/proof.js` (498) + `test/sim.mjs` (298); **4 guards negative-tested**.
+
+The injection panel confessed it: *"Isane Kotetsu ← evidence: 'Isane closing
+Zaraki's surgery' (from plot momentum)"*. A director-style storyteller ends every
+message with machine apparatus — a `<details>` **Plot Momentum** fold, a `{PULSE}`
+roster, a `{WATCHLIST}` of who is **off-screen**. `stripMetaBlocks` scrubbed the
+`[IST:]` / `[ACW:]` bracket rows but left the `<details>` fold, which is plain
+prose naming every off-screen thread. Read as scene text, those people were
+"present": grounded, given cast slots, and ranked ahead of the character actually
+being spoken to. **That is why Suì-Fēng kept beating Rukia — Suì-Fēng was never in
+the scene.** She was in the footer. Verified by running a real turn through the
+scrubber: five off-screen names leaked; now none do. `<details>` folds (including
+unclosed ones from a stream cut) and paired `{TAG}…{/TAG}` containers are removed.
+
+**`Now:` is no longer printed.** Canon Grounding states what is TRUE of a character
+in the source material; what they are doing this minute is the scene's own job and
+the storyteller can already see it. The two also openly fought — canon says
+*"Rukia Kuchiki is the current Captain of the 13th Division"* while this story has
+her as lieutenant under someone else, and a note that contradicts itself in
+consecutive lines teaches the model to trust neither. The parser still returns
+`now`; it is kept as **salience**, which is the judgement worth spending a call on.
+
+**Ordering follows the scene.** Player-named first, then by how recently the
+character appears in the visible prose — whoever just spoke leads, someone mentioned
+six messages ago trails. Tier order survives only as the tiebreak. On a turn where
+the player names nobody ("of course, let's get to the office") recency is the whole
+signal, and its absence is why the note opened with a dead man and reached the woman
+standing in front of the player third. Two real bugs fell out of writing this:
+player-named was read from `extras.userMsg` only, ignoring the `userNames` tier the
+interceptor had already computed; and it compared against the canonical name only,
+so a player typing "Isane" never matched cached "Isane Kotetsu".
+
 ## Changelog — v0.50.0 (just scan the input: the gate heuristics were the bug source)
 
 Proven by `test/proof.js` (499) + `test/sim.mjs` (290); **4 guards negative-tested**.

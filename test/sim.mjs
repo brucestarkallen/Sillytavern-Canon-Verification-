@@ -1005,7 +1005,7 @@ T("the diagnosis is measured: counts, pin resolution, and the meta-only hunt",
 T("an empty injection CLEARS the why-panel — no reasons under a Nothing banner",
     /const \$ghost = \$\("#cg_why"\);\s*\n\s*if \(\$ghost\.length\) \$ghost\.empty\(\);/.test(src));
 T("unclosed meta blocks are line-bounded — a stray bracket cannot blind the scene",
-    /\[\^\\\]\\n\]\*/.test(src.match(/function stripMetaBlocks[\s\S]{0,900}?\n\}/)[0]));
+    /\[\^\\\]\\n\]\*/.test(src.match(/function stripMetaBlocks[\s\S]{0,2600}?\n\}/)[0]));
 T("the setting pin resolves through cacheEntryFor, not exact-key-or-nothing",
     /const direct = store\[sk\] && store\[sk\]\.found \? \{ key: sk, entry: store\[sk\] \} : cacheEntryFor\(sk\);/.test(src));
 T("the preview stamps its source",
@@ -1093,7 +1093,7 @@ T("priority tiers are computed AFTER the race, not inside the racing task",
 T("the racing task no longer assigns the tiers itself",
     !/tierUser = userNames\.filter/.test(src) && !/tierLedger = lgNames\.filter\(n => mentioned\(n\.toLowerCase\(\), sceneText\.toLowerCase\(\)\)\);\s*\n\s*if \(tierLedger\.length\)/.test(src));
 T("a meta block's terminator must be its OWN (no borrowing across an opener)",
-    /\[\^\\\]\\\[\]\*\\\]/.test(src.match(/function stripMetaBlocks[\s\S]{0,1400}?\n\}/)[0]));
+    /\[\^\\\]\\\[\]\*\\\]/.test(src.match(/function stripMetaBlocks[\s\S]{0,2600}?\n\}/)[0]));
 T("the four dossier-inert category toggles say so in the UI",
     (src.match(/Regex fallback only<\/b>/g) || []).length === 4);
 T("the total cap names what it actually budgets",
@@ -1376,9 +1376,13 @@ console.log("[50] v0.50.0 scan, lead, snapshot");
         /gateLastUserMsg = lastUserMsg;/.test(src));
     T("the heuristics are kept only as the fallback below it",
         src.indexOf("lastUserMsg !== gateLastUserMsg") < src.indexOf("shouldParse = quick.some(parserMayRevisit)"));
-    T("who the player named leads the note",
-        /present\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);/.test(src)
-        && /named\.has\(\(p\.entry\.name \|\| ""\)\.toLowerCase\(\)\) \? 1 : 2/.test(src));
+    T("who the player named leads the note, then scene recency",
+        /present\.sort\(\(a, b\) => \(rank\(a\) - rank\(b\)\) \|\| \(salience\.get\(b\) - salience\.get\(a\)\)\);/.test(src)
+        && /const rank = \(p\) => \(p\.pinned \|\| p\.setting\) \? 0 : \(isNamed\(p\) \? 1 : 2\);/.test(src));
+    T("player-named matches every identity the entry answers to",
+        /\[p\.entry\.name, p\.matchedName, \.\.\.\(p\.entry\.aliases \|\| \[\]\)\]/.test(src));
+    T("both routes to player-named are unioned",
+        /\.\.\.\(extras\.userNames \|\| \[\]\)\.map/.test(src) && /castNamedIn\(extras\.userMsg\)/.test(src));
     T("pins and the setting still outrank everything",
         /\(p\.pinned \|\| p\.setting\) \? 0/.test(src));
     T("the player's message reaches the note builder", /userMsg: lastUserMsg,/.test(src));
@@ -1386,6 +1390,18 @@ console.log("[50] v0.50.0 scan, lead, snapshot");
         /lastReasons = lastMatchReasons\.slice\(\);/.test(src)
         && /for \(const r of lastReasons\)/.test(src)
         && !/for \(const r of lastMatchReasons\)/.test(src));
+}
+
+// [51] v0.51.0 — a watchlist is the opposite of attendance.
+console.log("[51] v0.51.0 director apparatus is not the scene");
+{
+    const sm = src.match(/function stripMetaBlocks[\s\S]{0,2600}?\n\}/)[0];
+    T("the <details> director fold is removed", /<details\\b\[\\s\\S\]\*\?/.test(sm));
+    T("an unclosed fold (stream cut) still strips to the end", /\(\?:<\\\/details>\|\$\)/.test(sm));
+    T("paired {PULSE}…{/PULSE} containers are removed", /\\\{\(\[A-Za-z\]/.test(sm));
+    T("the bracket-tag rule is still there", /\[A-Z\]\[A-Z0-9 _&-\]/.test(sm));
+    T("Now: is no longer emitted as canon", /const focusLine = \(\) => "";/.test(src));
+    T("scene recency is measured from the visible prose", /const lastSeen = \(p\) =>/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

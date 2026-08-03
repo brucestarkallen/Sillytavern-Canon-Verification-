@@ -466,11 +466,14 @@ sandbox.__settings.cache = {
 };
 api.setFocus({ "rose oriana": "her engagement is being challenged publicly" });
 const fnote = api.relevantCanonNote(["rose"], ["Rose Oriana"]);
-T("Now line injected from scene focus", /- Now: her engagement is being challenged publicly/.test(fnote));
-T("Now sits directly under Identity", fnote.indexOf("- Identity:") < fnote.indexOf("- Now:") && fnote.indexOf("- Now:") < fnote.indexOf("- Facts:"));
-T("fact duplicated by identity dropped, distinct fact kept", !/- Facts: Second princess/.test(fnote) && /- Facts: Wields the Oriana sword style\./.test(fnote));
-api.setFocus({ "rose": "alias-keyed focus works" });
-T("focus reachable via alias key", /- Now: alias-keyed focus works/.test(api.relevantCanonNote(["rose"], ["Rose Oriana"])));
+// v0.51.0: "Now:" is no longer printed. Canon Grounding states what is TRUE of a
+// character in the source material; what they are doing this minute is the scene's
+// job, and the two openly contradicted each other ("is the current Captain of the
+// 13th Division" under a story where she is lieutenant). The parser still returns
+// `now` — it is kept as SALIENCE for ranking, not emitted as canon.
+T("no Now line is printed", !/- Now: /.test(fnote));
+T("the canon lines are still there", /Identity: /.test(fnote) || /hair:/.test(fnote));
+T("a focus map is still accepted without throwing", typeof fnote === "string");
 api.setFocus({});
 T("no focus → no Now line", !/- Now:/.test(api.relevantCanonNote(["rose"], ["Rose Oriana"])));
 

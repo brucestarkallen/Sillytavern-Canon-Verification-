@@ -92,7 +92,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.50.0";
+const CG_VERSION = "0.51.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2297,7 +2297,22 @@ function stripMetaBlocks(text) {
     // cast that was sitting in the prose all along.
     // No terminator of its own => unclosed => strip to the end of its LINE (a
     // stream cut IS the end of the message, so that case still strips whole).
-    return String(text || "").replace(/\[[A-Z][A-Z0-9 _&-]{1,14}:(?:[^\]\[]*\]|[^\]\n]*)/g, " ");
+    //
+    // CONTAINERS, not just bracket tags. A director-style storyteller ends every
+    // message with machine-readable apparatus: a <details> "Plot Momentum" fold, a
+    // {PULSE} roster, a {WATCHLIST} of who is OFF-SCREEN. The bracket rule above
+    // scrubs [IST:]/[ACW:] rows, but the <details> fold is plain prose — and it
+    // names every off-screen thread: "Isane closing Zaraki's surgery; Suì-Fēng
+    // building the file". Read as scene text those people are "present": they get
+    // grounded, they take cast slots and budget ahead of the character actually
+    // being spoken to, and the injection reason honestly reported the source as
+    // "(from plot momentum)". A watchlist is the opposite of attendance.
+    return String(text || "")
+        .replace(/<details\b[\s\S]*?(?:<\/details>|$)/gi, " ")   // director fold (unclosed = stream cut)
+        .replace(/<\/?(?:details|summary)\b[^>]*>/gi, " ")
+        .replace(/\{([A-Za-z][A-Za-z0-9_ -]{0,20})\}[\s\S]*?\{\/\1\}/g, " ") // {PULSE}…{/PULSE}
+        .replace(/\{\/?[A-Za-z][A-Za-z0-9_ -]{0,20}\}/g, " ")     // an unpaired opener/closer
+        .replace(/\[[A-Z][A-Z0-9 _&-]{1,14}:(?:[^\]\[]*\]|[^\]\n]*)/g, " ");
 }
 
 /**
@@ -2588,13 +2603,34 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // at tier 3, so on the turn a character is first grounded the person being
     // addressed could still come second. Pins and the setting are decree and stay
     // on top; everyone the player just named follows; the rest keep their order.
-    if (extras.userMsg) {
-        const named = new Set(castNamedIn(extras.userMsg).map(n => String(n).toLowerCase()));
-        if (named.size) {
-            const rank = (p) => (p.pinned || p.setting) ? 0
-                : (named.has((p.entry.name || "").toLowerCase()) ? 1 : 2);
-            present.sort((a, b) => rank(a) - rank(b));   // stable: ties keep tier order
-        }
+    {
+        // Ordering follows the SCENE, not the order names happened to be admitted.
+        // Player-named first (they are being addressed), then by how recently the
+        // character actually appears in the prose: whoever just spoke leads, someone
+        // mentioned six messages ago trails. On a turn where the player names nobody
+        // — "of course, let's get to the office" — recency is the whole signal, and
+        // its absence is why the note opened with a dead man and reached the woman
+        // standing in front of the player third.
+        // Both routes to "the player named them": the tier-1 list the interceptor
+        // computed, and a direct read of the message (which also catches someone
+        // grounded too late this turn to be in that list).
+        const named = new Set([
+            ...(extras.userNames || []).map(n => String(n).toLowerCase()),
+            ...(extras.userMsg ? castNamedIn(extras.userMsg).map(n => String(n).toLowerCase()) : []),
+        ]);
+        const lastSeen = (p) => {
+            const keys = [p.entry.name, ...(p.entry.aliases || [])].filter(Boolean).map(x => String(x).toLowerCase());
+            for (let i = lowerMsgs.length - 1; i >= 0; i--)
+                if (keys.some(k => mentioned(k, lowerMsgs[i]))) return i;
+            return -1;
+        };
+        const salience = new Map(present.map(p => [p, lastSeen(p)]));
+        // The player types a first name; the cache holds the canonical one. Match on
+        // every identity the entry answers to, or "Isane" never finds "Isane Kotetsu".
+        const isNamed = (p) => [p.entry.name, p.matchedName, ...(p.entry.aliases || [])]
+            .filter(Boolean).some(x => named.has(String(x).toLowerCase()));
+        const rank = (p) => (p.pinned || p.setting) ? 0 : (isNamed(p) ? 1 : 2);
+        present.sort((a, b) => (rank(a) - rank(b)) || (salience.get(b) - salience.get(a)));
     }
 
     const blocks = [];
@@ -2636,11 +2672,16 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             }
             return out;
         };
-        const focusLine = () => {
-            const keys = [nameKey, (matchedName || "").toLowerCase(), ...(entry.aliases || []).map(a => a.toLowerCase())];
-            for (const k of keys) if (k && castFocus[k]) return `  - Now: ${castFocus[k]}`;
-            return "";
-        };
+        // "Now:" is no longer printed. Canon Grounding's job is what is TRUE of this
+        // character in the source material; what they are doing this minute is the
+        // scene's own job and the storyteller can already see it. Worse, the two
+        // openly fought — canon says "Rukia Kuchiki is the current Captain of the
+        // 13th Division" while this story has her as lieutenant under someone else,
+        // and a note that contradicts itself in consecutive lines teaches the model
+        // to trust neither line. The parser still returns `now`; it is kept as
+        // SALIENCE for ranking who matters this turn, which is the judgement that
+        // was worth the call in the first place.
+        const focusLine = () => "";
         if (entry.dossier) {
             // LLM-curated path: the model read the page and chose what matters.
             // normalizeDossier: a legacy-shaped cached dossier must degrade to
