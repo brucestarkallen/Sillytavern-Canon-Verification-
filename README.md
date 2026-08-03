@@ -69,6 +69,30 @@ A wiki files a place's description under Geography, Layout, Architecture,
 Description, Structure or Overview — the same question, a different word. Those are
 read now, and a character's own Appearance section still wins for people.
 
+## Changelog — v0.58.0 (AGENTS.md — and a gate that stops it rotting)
+
+Proven by `test/proof.js` (529) + `test/sim.mjs` (341); **3 guards negative-tested**.
+
+This repo had no `AGENTS.md`, so every new session re-derived how to test it and
+re-learned the same traps the hard way. That is a large part of why one bug class
+survived across many sessions with a green gate the whole time.
+
+`AGENTS.md` now carries the gate commands, the nine-stage pipeline (so a symptom can
+be located before anything is edited), the invariants, and the laws this repo paid
+for in real bugs — chiefly: *a proof of the function is not a proof of the call*, *a
+guard that has never failed is unproven*, *a local heuristic must never override a
+signal the system already has*, and *the test suite can encode the bug*.
+
+**It is gated.** A briefing file that drifts is worse than none, because the next
+session trusts it. `sim.mjs` now checks that AGENTS.md gives the ESM-copy syntax
+command (not `node --check index.js`, which parses as CommonJS and silently accepts
+what ESM rejects), names settings that still exist, and lists only pipeline functions
+that are really in `index.js`. Negative-tested: corrupt any of those three and the
+suite goes red.
+
+It deliberately carries **no test counts** — those live in this changelog and nowhere
+else. A number duplicated in two files is a number that will disagree with itself.
+
 ## Changelog — v0.57.1 (the guard for v0.57.0 was vacuous)
 
 `test/sim.mjs` 335. v0.57.0's assertion handed `extractSectionRaw` its own section

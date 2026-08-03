@@ -1492,6 +1492,28 @@ console.log("[56] v0.57.0 place description is wired, not just possible");
         call.indexOf('"appearance"') < call.indexOf('"geography"'));
 }
 
+// [57] v0.58.0 — AGENTS.md must stay true. A briefing file that drifts is worse
+// than none: the next session trusts it, runs the wrong command, or believes a
+// count that has since moved. Anything it ASSERTS about this repo is checked here.
+console.log("[57] v0.58.0 the briefing file is not allowed to rot");
+{
+    const ag = fs.readFileSync(new URL("../AGENTS.md", import.meta.url), "utf8");
+    T("it does not duplicate a count that would drift out of sync",
+        !/\d{3} passed/.test(ag) && /README's newest changelog entry/.test(ag));
+    T("the README does carry a measured count for the current release",
+        /test\/sim\.mjs`? \(?\d{3}/.test(fs.readFileSync(new URL("../README.md", import.meta.url), "utf8")));
+    T("it gives the ESM-copy syntax check, not node --check index.js",
+        /cp index\.js \/tmp\/cg\.mjs && node --check \/tmp\/cg\.mjs/.test(ag));
+    T("it names the settings the code actually has",
+        /maxTokensPerChar/.test(ag) && /maxTotalTokens/.test(ag)
+        && /maxTokensPerChar/.test(src) && /maxTotalTokens/.test(src));
+    T("it does not promise an ESLint gate this repo has no config for",
+        /no ESLint config/.test(ag));
+    T("every pipeline stage it lists exists in the code",
+        ["stripMetaBlocks", "verifyCastEvidence", "findPageTitle", "negativeTtl", "castNamedIn"]
+            .every(fn => ag.includes(fn) && src.includes("function " + fn)));
+}
+
 // [40] the stamp must match the manifest. ST decides whether to auto-update by
 // reading manifest.version; a feature commit that bumps only CG_VERSION ships an
 // extension nobody's install will pull. The history has that drift in it.
