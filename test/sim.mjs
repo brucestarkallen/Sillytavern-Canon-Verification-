@@ -1355,8 +1355,8 @@ console.log("[49] v0.49.0 presence before depth, recency before insertion order"
         /const drafts = new Array\(built\.length\)\.fill\(null\);/.test(nb));
     T("pass two spends what is left, in tier order",
         /for \(let li = 1; li < built\[i\]\.lines\.length; li\+\+\)/.test(nb));
-    T("both passes respect the total budget",
-        (nb.match(/total \+ \w+\.length > s\.maxTotalChars/g) || []).length === 2);
+    T("all three passes respect the total budget",
+        (nb.match(/total \+ \w+\.length > s\.maxTotalChars/g) || []).length === 3);
     T("the per-character cap still bounds depth",
         /drafts\[i\]\.length \+ add\.length > s\.maxCharsPerChar/.test(nb));
     T("the count cap now bounds the BUILD pass", /if \(built\.length >= s\.maxCharacters\) break;/.test(src));
@@ -1402,6 +1402,23 @@ console.log("[51] v0.51.0 director apparatus is not the scene");
     T("the bracket-tag rule is still there", /\[A-Z\]\[A-Z0-9 _&-\]/.test(sm));
     T("Now: is no longer emitted as canon", /const focusLine = \(\) => "";/.test(src));
     T("scene recency is measured from the visible prose", /const lastSeen = \(p\) =>/.test(src));
+}
+
+// [52] v0.52.0 — a relationship belongs to the PAIR, not to one character's budget.
+console.log("[52] v0.52.0 the relationship pass");
+{
+    T("pair dynamics are collected apart from ordinary depth", /const dyn = \[\];/.test(src));
+    T("both emitters feed the dynamics band",
+        (src.match(/dyn\.push\(\.\.\.dynLines\(\)\);/g) || []).length === 2
+        && !/lines\.push\(\.\.\.dynLines\(\)\)/.test(src));
+    T("the band is carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, lines, dyn \}\);/.test(src));
+    T("it gets its own pass, before any solo depth",
+        src.indexOf("PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER") > 0
+        && src.indexOf("PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER") < src.indexOf("PASS THREE — everything else"));
+    T("dynamics only ever name a CO-PRESENT character",
+        /for \(const \{ entry: other \} of present\)/.test(src));
+    T("it informs, never scripts — the preamble still says so",
+        /that dynamic overrides the baseline/.test(src) && /never a script/.test(src));
 }
 
 // [40] the stamp must match the manifest. ST decides whether to auto-update by

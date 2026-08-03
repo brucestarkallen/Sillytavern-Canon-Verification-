@@ -92,7 +92,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.51.0";
+const CG_VERSION = "0.52.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2643,6 +2643,14 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
         const lines = [];
+        // Pair dynamics are collected APART from ordinary depth. Who these two are
+        // to each other is the most useful thing canon can tell a storyteller when
+        // both are standing in the room — and it was competing with trivia for the
+        // same per-character budget, so "Renji — With Rukia Kuchiki" (married, both
+        // present, the live tension of the scene) lost to a solo fact while a dead
+        // man's dynamic survived. A relationship belongs to the PAIR, not to one
+        // character's line allowance, so the allocator gives it its own pass.
+        const dyn = [];
         const dynLines = () => {
             // Per-pair dynamics: "the baseline says stoic, but with THIS person on
             // screen, canon says she is like THIS." Wiki-sliced pairs first (exact),
@@ -2712,7 +2720,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             const hot = scoredF.filter(x => x.score > 0).sort((a, b) => b.score - a.score).map(x => x.f);
             const facts = hot.length ? [...hot, ...pool.filter(f => !hot.includes(f))].slice(0, 5) : pool.slice(0, 3);
             if (facts.length) lines.push(`  - Facts: ${facts.join("; ")}`);
-            lines.push(...dynLines());
+            dyn.push(...dynLines());
             const al2 = abilityLine(entry, inPlayF); if (al2) lines.push(al2);
             const voice = (s.voice && (d.voice.length ? d.voice.map(q => `"${q}"`).join(" / ") : entry.sections.voice)) || "";
             if (voice) lines.push(`  - Voice: ${voice}`);
@@ -2758,12 +2766,12 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 } else if (s[cat] && entry.sections[cat]) {
                     lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
                 }
-                if (cat === "personality") lines.push(...dynLines());
+                if (cat === "personality") dyn.push(...dynLines());
             }
         }
         if (!lines.length) continue;
         seenEntities.add(nameKey);
-        built.push({ entry, matchedName, pinned, swept, setting, lines });
+        built.push({ entry, matchedName, pinned, swept, setting, lines, dyn });
     }
 
     // BUDGET: PRESENCE BEFORE DEPTH. This used to build each character's whole
@@ -2784,6 +2792,25 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         drafts[i] = head;
         total += head.length;
     }
+    // PASS TWO — WHO THESE PEOPLE ARE TO EACH OTHER. Runs across every character
+    // before ANY of them gets a second solo line, so a co-present pair dynamic can
+    // never be crowded out by another character's trivia. This is the line that
+    // tells the storyteller Renji and Rukia are married while Renji is standing in
+    // front of the player, or that Renji wants Byakuya's recognition the moment
+    // Byakuya walks in — information, never instruction: the note's own preamble
+    // already says a dynamic overrides the baseline and is not a script, so the
+    // storyteller is told what canon holds and left free to write this story.
+    for (let i = 0; i < built.length; i++) {
+        if (drafts[i] === null) continue;
+        for (const line of built[i].dyn) {
+            const add = "\n" + line;
+            if (drafts[i].length + add.length > s.maxCharsPerChar) continue;
+            if (total + add.length > s.maxTotalChars) continue;
+            drafts[i] += add;
+            total += add.length;
+        }
+    }
+    // PASS THREE — everything else, in tier order.
     for (let i = 0; i < built.length; i++) {
         if (drafts[i] === null) continue;
         for (let li = 1; li < built[i].lines.length; li++) {

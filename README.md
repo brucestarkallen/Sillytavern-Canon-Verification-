@@ -56,6 +56,49 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.52.0 (a relationship belongs to the pair, not to one character's budget)
+
+Proven by `test/proof.js` (504) + `test/sim.mjs` (304); **4 guards negative-tested**.
+
+Who two co-present people are to each other is the single most useful thing canon
+can tell a storyteller about a scene — and it was being charged to one character's
+line allowance, competing with their trivia. So `Renji — With Rukia Kuchiki`
+(married in canon, both standing in the room, the live tension of the moment) lost
+to a solo fact, while `Ukitake — With Rukia Kuchiki` — a dead man's — survived.
+Exactly backwards.
+
+**A relationship pass now runs between presence and depth.** Pass one gives every
+co-present character their anchor; **pass two spends on pair dynamics across all of
+them, before any of them gets a second solo line**; pass three fills the rest. A
+dynamic can no longer be crowded out by somebody else's teacup collection.
+
+The effect is what an autonomous system should do without being told. Byakuya walks
+into a courtyard where Renji and Rukia are standing, and the note assembles itself:
+
+```
+Rukia Kuchiki:
+  - Identity: …
+  - With Renji Abarai: Childhood friend from Inuzuri; in canon they marry.
+  - With Byakuya Kuchiki: Adoptive brother; distance she has never fully crossed.
+Renji Abarai:
+  - Identity: …
+  - With Rukia Kuchiki: Childhood friend from Inuzuri; in canon they marry.
+  - With Byakuya Kuchiki: Complicated - Renji wants his captain's recognition above all.
+```
+
+Nobody configured that. The dynamics appear because those three are in the room
+together, and they disappear when they are not — `dynLines()` only ever names a
+character who is also present, which is now gated so it cannot drift.
+
+**It informs; it does not script.** The note's own preamble already carries the law
+— *"How someone is described here is how they've tended to be — never a script"* and
+*"when a 'With <name>' line matches someone in the scene, that dynamic overrides the
+baseline"*. The storyteller is told Renji and Rukia are married in canon. It is not
+told what Rukia does about the man in front of her. That remains the story's.
+
+Under a budget too tight for everything, the relationship survives and the trivia is
+what gets trimmed — asserted directly, with the old behaviour negative-tested.
+
 ## Changelog — v0.51.0 (a watchlist is the opposite of attendance)
 
 Proven by `test/proof.js` (498) + `test/sim.mjs` (298); **4 guards negative-tested**.

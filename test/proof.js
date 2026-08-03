@@ -312,7 +312,13 @@ sandbox.__ctx = {};
 T("missing name1 → Author's note", api.relevantCanonNote(["alpha"], ["Alpha"]).startsWith("Author's note — canon"));
 sandbox.__ctx = { name1: "Jovan" };
 T("per-pair dynamics line injected", /- With Cid Kagenou: Around Cid her stoic mask slips/.test(note));
-T("dynamics line sits under Personality", note.indexOf("Personality: Stoic") < note.indexOf("With Cid Kagenou:"));
+// v0.52.0: a pair dynamic now rides in its OWN allocation pass, directly under the
+// identity line and ahead of every solo detail. Who two co-present people are to
+// each other is the most useful thing canon can say about a scene, and it used to
+// compete with trivia for the same per-character budget — so "Renji — With Rukia
+// Kuchiki" (married, both in the room) lost while a dead man's dynamic survived.
+T("a pair dynamic sits directly under identity, ahead of solo detail",
+    note.indexOf("With Cid Kagenou:") < note.indexOf("Personality: Stoic"));
 T("trivia line injected", /- Trivia: Keeps every note/.test(note));
 T("arc block + spoiler guard on top", /Where our story is — Lawless City Arc/.test(note) && /never foreshadow/.test(note) && note.indexOf("Where our story is") < note.indexOf("Alpha:"));
 sandbox.__settings.arcInject = false;
@@ -774,6 +780,44 @@ sandbox.__settings.lowercaseNames = true;
 // forms top to bottom. Every verb in the player's own voice therefore looked like
 // a novel name, fed the learner, and jammed the gate. A verb belongs here in BOTH
 // forms or neither, and this is the assertion that says so.
+console.log("[v0.52.0 who two people are to each other outranks solo trivia]");
+{
+    const S = sandbox.__settings;
+    const keep = { c: S.maxCharacters, p: S.maxCharsPerChar, t: S.maxTotalChars, cache: S.cache, rd: S.relationDynamics };
+    S.maxCharacters = 8; S.relationDynamics = true; S.personality = true; S.trivia = true;
+    S.cache = {};
+    const mk = (n, rel) => ({ name: n, wiki: "w", found: true, ts: Date.now(), aliases: [], rel,
+        sections: { identity: n + " is a Gotei 13 officer.",
+            personality: "Disciplined and reserved in every matter of duty, holding the line.",
+            trivia: "Enjoys long walks; collects teacups; once won a calligraphy prize; dislikes cats." } });
+    S.cache["rukia kuchiki"] = mk("Rukia Kuchiki", { "renji abarai": "Childhood friend from Inuzuri; in canon they marry." });
+    S.cache["renji abarai"] = mk("Renji Abarai", { "byakuya kuchiki": "Complicated - Renji wants his captain's recognition." });
+    S.cache["byakuya kuchiki"] = mk("Byakuya Kuchiki", {});
+    const scene = ["Byakuya steps into the courtyard where Renji and Rukia are standing."];
+    const cast = ["Rukia Kuchiki", "Renji Abarai", "Byakuya Kuchiki"];
+
+    S.maxCharsPerChar = 420; S.maxTotalChars = 1500;
+    const roomy = api.relevantCanonNote(scene, cast);
+    T("a co-present pair dynamic surfaces on its own", /With Renji Abarai: Childhood friend/.test(roomy));
+    T("a third character arriving surfaces THEIR dynamic too",
+        /With Byakuya Kuchiki: Complicated - Renji wants/.test(roomy));
+    T("the dynamic sits directly under identity, ahead of solo detail",
+        roomy.indexOf("With Renji Abarai:") < roomy.indexOf("Personality: Disciplined"));
+
+    // THE POINT: under a budget too tight for everything, the relationship survives
+    // and the trivia does not. This is the case that used to go the other way.
+    // Room for identity + exactly one more line each, and a total that cannot hold
+    // dynamics AND trivia for everyone. Whichever the allocator serves first wins.
+    S.maxCharsPerChar = 200; S.maxTotalChars = 360;
+    const tight = api.relevantCanonNote(scene, cast);
+    T("under pressure the pair dynamic survives", /With Renji Abarai: Childhood friend/.test(tight));
+    T("...and solo trivia is what gets trimmed", !/Trivia: Enjoys long walks/.test(tight));
+    T("every co-present character still has their anchor",
+        /Rukia Kuchiki:/.test(tight) && /Renji Abarai:/.test(tight) && /Byakuya Kuchiki:/.test(tight));
+    S.maxCharacters = keep.c; S.maxCharsPerChar = keep.p; S.maxTotalChars = keep.t;
+    S.cache = keep.cache; S.relationDynamics = keep.rd;
+}
+
 console.log("[v0.49.0 presence before depth: verbosity must not delete people]");
 {
     const S = sandbox.__settings;
