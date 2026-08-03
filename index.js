@@ -93,7 +93,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.56.0";
+const CG_VERSION = "0.57.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -1432,7 +1432,14 @@ async function buildEntrySections(wiki, title, wikitext, s, isCharacter) {
     // Prose is read from the wikitext we already have; the extract fetch remains
     // only as a last resort.
     const appearanceProse = cleanWikitext(
-        extractSectionRaw(wikitext, ["appearance", "physical appearance", "physical description", "looks"], 4000)
+        // A PLACE HAS A LOOK TOO. This list was written for people — Appearance,
+        // Physical Description — so Seireitei, the Gotei 13 and the Kuchiki Manor
+        // came back with an Identity line and nothing a storyteller could describe.
+        // Canon Grounding grounds locations, organisations and events as first-class
+        // entities; a wiki files their description under Geography, Layout,
+        // Architecture, Description or Overview, and those are the same question.
+        extractSectionRaw(wikitext, ["appearance", "physical appearance", "physical description", "looks",
+            "geography", "layout", "architecture", "description", "structure", "overview", "environment"], 4000)
     );
     let physical = extractInfoboxFields(wikitext, s.fields.split(","));
     if (!physical) {

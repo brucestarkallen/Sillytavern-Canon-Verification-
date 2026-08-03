@@ -56,6 +56,19 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.57.0 (a place has a look too)
+
+Proven by `test/proof.js` (529) + `test/sim.mjs` (328); 1 guard negative-tested.
+
+Canon Grounding has always grounded locations, organisations, events and lore as
+first-class entities — the parser is explicitly told to list them. But the section
+list feeding the **Appearance** line was written for people: *Appearance, Physical
+Appearance, Physical Description, Looks*. So Seireitei, the Gotei 13 and the Kuchiki
+Manor came back with an Identity line and **nothing a storyteller could describe**.
+A wiki files a place's description under Geography, Layout, Architecture,
+Description, Structure or Overview — the same question, a different word. Those are
+read now, and a character's own Appearance section still wins for people.
+
 ## Changelog — v0.56.0 (a ceiling is not a target; mentioning a place is not moving there; budgets are tokens)
 
 Proven by `test/proof.js` (526) + `test/sim.mjs` (328); **3 guards negative-tested**.

@@ -782,6 +782,25 @@ sandbox.__settings.lowercaseNames = true;
 // forms top to bottom. Every verb in the player's own voice therefore looked like
 // a novel name, fed the learner, and jammed the gate. A verb belongs here in BOTH
 // forms or neither, and this is the assertion that says so.
+console.log("[v0.57.0 a place has a look too]");
+{
+    const PLACE = `'''Seireitei''' is the walled city at the center of Soul Society.
+== Geography ==
+A vast white-walled citadel ringed by the Sekkiseki stone barrier. Broad avenues divide the thirteen division compounds; the noble districts lie to the north behind lacquered gates.
+== History ==
+Founded long ago.`;
+    const look = api.extractLookProse(api.cleanWikitext(
+        api.extractSectionRaw(PLACE, ["appearance", "geography", "layout", "description"], 4000)));
+    T("a location's description is found under Geography", /white-walled citadel/.test(look));
+    T("...and it is prose a storyteller can actually use", look.length > 40);
+    const CHAR = `'''Rukia''' is a Shinigami.
+== Appearance ==
+Short and petite, Rukia has light skin and big purple eyes.`;
+    T("a character's Appearance section still wins for people",
+        /Short and petite/.test(api.extractLookProse(api.cleanWikitext(
+            api.extractSectionRaw(CHAR, ["appearance", "geography", "layout", "description"], 4000)))));
+}
+
 console.log("[v0.55.0 budget follows importance, not a flat cap]");
 {
     const S = sandbox.__settings;
