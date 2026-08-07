@@ -88,7 +88,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setNeed: (m) => { castNeed = m; }, orderLinesByNeed,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
-         splitEvidenceStrength, unverifiedNamed, composedNoteValid, noteFingerprint, __noteParts,
+         splitEvidenceStrength, unverifiedNamed, composedNoteValid, noteFingerprint, __noteParts, mcCanonName,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks, emptyNoteDiagnosis,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection, negativeTtl, SOFT_NEGATIVE_TTL, NEGATIVE_TTL,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
@@ -1817,6 +1817,20 @@ console.log("[v0.60.0 ✒ Advanced — the AI writes the note; the code verifies
     const pE = api.__noteParts();
     T("an empty build resets the parts — no stale cast body can leak into a composition", !!pE && pE.castBody === "");
     sandbox.__settings.wikis = keepW; sandbox.__settings.cache = keepC;
+}
+
+// ------------------------------------------------- v0.61.0 ✒ canon-MC law is derived
+console.log("[v0.61.0 ✒ the protagonist's canon status is a decision, not an assumption]");
+{
+    const st = {
+        "rukia kuchiki": { name: "Rukia Kuchiki", found: true, aliases: ["Rukia"], sections: {} },
+        "ghost": { name: "Ghost", found: false, reason: "no-page", aliases: ["The Ghost"], sections: {} },
+    };
+    T("a canon-character MC resolves by name, case-blind", api.mcCanonName("rukia kuchiki", st) === "Rukia Kuchiki");
+    T("…and by alias", api.mcCanonName("Rukia", st) === "Rukia Kuchiki");
+    T("an original-character MC resolves to null", api.mcCanonName("Jovan", st) === null);
+    T("a MISS entry is not canon — found is required", api.mcCanonName("The Ghost", st) === null);
+    T("no name, no store → null, never a throw", api.mcCanonName("", st) === null && api.mcCanonName("Rukia", null) === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

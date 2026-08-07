@@ -1682,6 +1682,66 @@ console.log("[59] v0.60.0 ✒ Advanced (composer) — fluid prose, verified spin
     extension_settings.canon_grounding.autoArc = true;
 }
 
+// [60] v0.61.0 ✒ — whether the protagonist is a canon character is DERIVED from
+// the chat's own verified cache, never assumed. Playing Rukia must brief canon
+// relationships toward Rukia; playing an OC must brief strangers.
+console.log("[60] v0.61.0 ✒ the canon-MC law is a decision, not an assumption");
+{
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    T("the composer DERIVES the protagonist's canon status", /const canonMc = mcCanonName\(mcName, cache\(\)\);/.test(code));
+    T("…and carries BOTH laws, keyed on that decision",
+        /IS the canon character/.test(code) && /is NOT a canon character/.test(code));
+
+    async function turn60(text, composed) {
+        globalThis.__ctx.chat.push(msg(text, true));
+        const q = parseQueue.length;
+        const run = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+        await sleep(20);
+        if (parseQueue.length > q) parseQueue[q].resolve('["Velran Ashe"]');
+        await sleep(30);
+        for (let i = q + 1; i < parseQueue.length; i++) parseQueue[i].resolve(composed);
+        await run;
+    }
+    // Distinct facts per chat: identical facts would share a fingerprint, and
+    // the fail-cache cool-down (correctly) refuses to recompose the same facts.
+    const freshChat = (physical) => {
+        globalThis.__ctx.chat = [];
+        globalThis.__ctx.chatMetadata = {
+            canon_grounding_wiki: "testwiki",
+            canon_grounding_wiki_ok: { wikis: "testwiki", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+            canon_grounding_cache: {
+                "velran ashe": { name: "Velran Ashe", found: true, wiki: "testwiki", aliases: ["Velran"], ts: Date.now(),
+                    sections: { identity: "A knight of the border.", physical }, rel: {} },
+            },
+        };
+    };
+    extension_settings.canon_grounding.composerMode = true;
+    extension_settings.canon_grounding.autoArc = false;
+
+    // The player IS the canon knight (persona set by ALIAS — resolution is alias-aware).
+    globalThis.__ctx.name1 = "Velran";
+    freshChat("hair: crimson; eyes: gold");
+    await turn60("Velran Ashe surveys the wall.", "");
+    await turn60("Velran Ashe walks on.", "");
+    const canonPrompt = sentPrompts[sentPrompts.length - 1];
+    T("canon-MC: the composer is told the protagonist IS the canon character",
+        /IS the canon character Velran Ashe/.test(canonPrompt));
+    T("…canon relationships APPLY — the stranger law is absent", !/is NOT a canon character/.test(canonPrompt));
+
+    // The player is an OC: same scene, stranger law.
+    globalThis.__ctx.name1 = "Jovan";
+    freshChat("hair: silver; eyes: gold");
+    await turn60("Velran Ashe surveys the wall.", "");
+    await turn60("Velran Ashe walks on.", "");
+    const ocPrompt = sentPrompts[sentPrompts.length - 1];
+    T("OC-MC: the composer keeps the stranger law", /is NOT a canon character/.test(ocPrompt));
+    T("…and never claims the protagonist is canon", !/IS the canon character/.test(ocPrompt));
+
+    delete globalThis.__ctx.name1;
+    extension_settings.canon_grounding.composerMode = false;
+    extension_settings.canon_grounding.autoArc = true;
+}
+
 {
     const mf = JSON.parse(fs.readFileSync(path.join(here, "..", "manifest.json"), "utf8"));
     const stamp = (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1];
