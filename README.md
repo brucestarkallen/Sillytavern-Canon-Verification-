@@ -56,6 +56,23 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.61.0 (✒ playing a canon character is a fact, not an exception)
+
+Proven by `test/proof.js` (575) + `test/sim.mjs` (376); **2 guards negative-tested**.
+
+v0.60.0's composer assumed the protagonist is an original character and told
+the model "canon relationships never apply to them" — false and actively
+suppressive the moment you play a canon character, whose relationships with
+every NPC are exactly the canon that should ride. The law is now **derived,
+never assumed**: `mcCanonName` resolves your persona against this chat's own
+verified cache (name or alias, case-blind, found entries only). Resolve, and
+the composer is told the protagonist IS that canon character — relationships
+fully apply, written as the live dynamic of the scene, while the player alone
+scripts their words and actions. No resolution, and the stranger law holds
+unchanged. The assembled note never had this gap: a canon-character MC grounds
+like anyone else, so every NPC's "With …" pair-dynamics toward them always
+injected — Advanced now honors the same truth.
+
 ## Changelog — v0.60.0 (✒ Advanced — the AI writes the note, the code verifies it)
 
 Proven by `test/proof.js` (570) + `test/sim.mjs` (370); **7 guards negative-tested**.

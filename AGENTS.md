@@ -129,8 +129,12 @@ also broken.
     the cast body as fluid prose. `composedNoteValid` refuses any composition that
     drops a cast member, loses an appearance detail, leaks scaffolding, or balloons;
     the post-race injector swaps it in only on a `noteFingerprint` match, keeping the
-    header, pins, story position and the ⌀ verdict code-written. Every failure — and
-    the mode being off — is exactly the assembled note of stage 9.
+    header, pins, story position and the ⌀ verdict code-written. Whether the
+    protagonist is themself a canon character is DERIVED per call (`mcCanonName`
+    against the chat's verified cache — name or alias, found entries only): resolved
+    means canon relationships toward them fully apply; unresolved means the stranger
+    law. Every failure — and the mode being off — is exactly the assembled note of
+    stage 9.
 
 ---
 
