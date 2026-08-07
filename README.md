@@ -56,6 +56,29 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.63.0 (✒ composed BEFORE the storyteller thinks — the Now-line contract)
+
+Proven by `test/proof.js` (579) + `test/sim.mjs` (378); **3 guards negative-tested**.
+
+v0.62's detachment guaranteed the composition was always at least one turn
+late — at a real reading pace it trailed further, and the "fingerprint
+matched" line described a note the storyteller had never read. The user's
+verdict was correct, and so was their precedent: the old Now line was
+model-written and still landed before generation, because it ran INSIDE the
+interceptor's wait window. The composer now does exactly that. It composes
+**this turn's** facts — parts built in the raced task from the very inputs
+the assembler uses, so the stable facts-key matches same-turn — and it is
+**awaited inside the window**, whose ceiling rises (`composeWaitMs`, 20s
+default) only while the mode is on. The window is a ceiling, not a sleep:
+stable turns skip the call entirely and release at grounding speed, so the
+mode costs nothing turn-to-turn; the only turns that hold are the ones where
+canon actually changes — the same turns the first-meet wait already holds —
+and on those the fluid note is what the storyteller reads on that very
+reply. Overrun still degrades honestly: assembled note now, composition next
+turn. Gated live: turn one injects the composition SAME turn; a stable turn
+adds zero model calls; a refused composition falls back on the same turn,
+not a stale one.
+
 ## Changelog — v0.62.0 (✒ background, not narration; detached, not slow; a key that lands)
 
 Proven by `test/proof.js` (579) + `test/sim.mjs` (379); **6 guards negative-tested**.

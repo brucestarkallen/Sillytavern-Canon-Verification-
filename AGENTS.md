@@ -124,18 +124,18 @@ also broken.
     a trigger word, or the name typed capitalised). A regex candidate that once
     failed a lookup ("nod back") has neither and stays silent: a guess that went
     nowhere is not evidence of absence.
-11. **Presentation (✒ Advanced)** — with `composerMode` on, the raced task KICKS a
-    DETACHED composition (`composeInFlight` guard — the race never waits) of
-    `lastScreenParts`, the note that actually went out. `composeNote` writes CANON
-    BACKGROUND only: narrating the current scene is banned and the scene is not even
-    sent. `composedNoteValid` refuses any composition that drops a cast member,
-    loses an appearance detail, leaks scaffolding, or balloons; the injector swaps it
-    in only when `parts.key` — a STABLE facts fingerprint (sections + dossier facts +
-    relation keys per character, scene-independent) — matches what is on screen, so a
-    landed composition stays landed until canon itself changes. Whether the
-    protagonist is themself a canon character is DERIVED per call (`mcCanonName`,
-    name or alias, found entries only). Every failure — and the mode being off — is
-    exactly the assembled note of stage 9, at identical speed.
+11. **Presentation (✒ Advanced)** — with `composerMode` on, the raced task builds
+    THIS turn's parts itself (same inputs as the post-race assembler) and AWAITS
+    `composeNote` inside the window, whose ceiling rises to `composeWaitMs` only
+    while the mode is on — the window is a ceiling, not a sleep, so stable turns
+    skip the call (stable `parts.key`: sections + dossier facts + relation keys,
+    scene-independent) and release at grounding speed, while canon-change turns
+    hold like the first-meet wait and the composition injects BEFORE generation.
+    `composeNote` writes CANON BACKGROUND only (narration banned, scene not sent);
+    `composedNoteValid` refuses any composition that drops a cast member, loses an
+    appearance detail, leaks scaffolding, or balloons; whether the protagonist is
+    themself canon is DERIVED per call (`mcCanonName`). Overrun or refusal — and
+    the mode being off — is exactly the assembled note of stage 9.
 
 ---
 
