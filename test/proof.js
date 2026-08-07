@@ -38,6 +38,7 @@ const pieces = [
     "let castFocus = {};                      // stub: scene-focus map written by the parser",
     "let castNeed = {};                       // stub: per-entity \"what this scene needs\" from the parser",
     "let castEvidence = {};                   // stub: evidence map written by the parser",
+    "function activeWikis() { return String(settings().wikis || \"\"); }  // stub: chat-binding resolution (sim owns the real one)",
     grab("const STOPWORDS", "function extractCandidateNames"),
     grab("function extractCandidateNames", "// ------"),
     grab("function isMediaTitle", "async function findPageTitle"),
@@ -87,7 +88,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setNeed: (m) => { castNeed = m; }, orderLinesByNeed,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
-         splitEvidenceStrength,
+         splitEvidenceStrength, unverifiedNamed,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks, emptyNoteDiagnosis,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection, negativeTtl, SOFT_NEGATIVE_TTL, NEGATIVE_TTL,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
@@ -1693,6 +1694,93 @@ sandbox.__settings.llmParser = false; sandbox.__settings.useLedger = false;
 sandbox.__settings.arcInject = false; sandbox.__settings.proseBriefs = false; sandbox.__settings.relationDynamics = false;
 const bnote = api.relevantCanonNote([BORROW], null, null, {});
 T("end to end: the cast in the prose is injected, not erased", /Rukia Kuchiki/.test(bnote || ""));
+
+// ------------------------------------------------- v0.59.0 ⌀ negative verification
+console.log("[v0.59.0 ⌀ negative verification — absence is reported, not swallowed]");
+{
+    const now = Date.now();
+    const S = ["storywiki"];   // === normWikiSet("storywiki")
+    const store = {
+        "winter blood feast": { name: "Winter Blood Feast", sections: {}, found: false, reason: "no-page",       searched: S, ts: now },
+        "old ruin":           { name: "Old Ruin",           sections: {}, found: false, reason: "meta-page",     searched: S, ts: now - 1000 },
+        "mitsugoshi":         { name: "Mitsugoshi",         sections: {}, found: false, reason: "not-character", searched: S, ts: now },
+        "stale miss":         { name: "Stale Miss",         sections: {}, found: false, reason: "no-page",       searched: ["other-wiki"], ts: now },
+        "legacy miss":        { name: "Legacy Miss",        sections: {}, found: false, reason: "no-page",       ts: now },
+        "rose oriana":        { name: "Rose Oriana", found: true, wiki: "w", aliases: [], sections: { identity: "Princess." }, rel: {} },
+        "oriana kingdom":     { name: "Oriana Kingdom", sections: {}, found: false, reason: "no-page", searched: S, ts: now - 2000 },
+        "oriana":             { name: "Oriana",         sections: {}, found: false, reason: "no-page", searched: S, ts: now },
+        "fire burns":         { name: "fire burns",     sections: {}, found: false, reason: "no-page", searched: S, ts: now },
+        "jovan kael":         { name: "Jovan Kael",     sections: {}, found: false, reason: "no-page", searched: S, ts: now },
+        "nod back":           { name: "nod back",       sections: {}, found: false, reason: "no-page", searched: S, ts: now },
+        "mistveil keep":      { name: "Mistveil Keep",  sections: {}, found: false, reason: "no-page", searched: S, ts: now },
+        "vouched thing":      { name: "Vouched Thing",  sections: {}, found: false, reason: "no-page", searched: S, ts: now, trusted: true },
+    };
+    const W = "storywiki";
+    eq("settled no-page miss named by the player is reported",
+        api.unverifiedNamed("do you remember the Winter Blood Feast?", store, W, []), ["Winter Blood Feast"]);
+    eq("meta-page miss is absence too (a router is not an entity)",
+        api.unverifiedNamed("what is the Old Ruin?", store, W, []), ["Old Ruin"]);
+    T("not-character is NOT absence — a page existed",
+        api.unverifiedNamed("tell me about Mitsugoshi", store, W, []).length === 0);
+    T("a miss that never searched the current wiki set is silence, not absence",
+        api.unverifiedNamed("tell me about Stale Miss", store, W, []).length === 0);
+    T("a legacy miss without a searched stamp is silence",
+        api.unverifiedNamed("tell me about Legacy Miss", store, W, []).length === 0);
+    T("not named in THIS message → not reported (responsive, not sticky)",
+        api.unverifiedNamed("she nods and walks on", store, W, []).length === 0);
+    T("a bare token fully owned by FOUND canon is coverage, not absence",
+        api.unverifiedNamed("what about Oriana?", store, W, []).length === 0);
+    eq("…but a distinct entity SHARING a token is its own absence",
+        api.unverifiedNamed("what about the Oriana Kingdom?", store, W, []), ["Oriana Kingdom"]);
+    T("ordinary-vocabulary junk candidates never report — even inside a real question",
+        api.unverifiedNamed("what about the fire burns tonight?", store, W, []).length === 0);
+    T("⌀ ask-intent law: a manufactured bigram in plain prose is not an ask",
+        api.unverifiedNamed("you nod back", store, W, []).length === 0);
+    T("⌀ ask-intent law: uncommon vocab in plain declarative prose still needs intent",
+        api.unverifiedNamed("the mistveil keep gates stand open", store, W, []).length === 0);
+    eq("⌀ ask-intent law: capitalization IS intent (proper-noun signal)",
+        api.unverifiedNamed("Mistveil Keep rises before us.", store, W, []), ["Mistveil Keep"]);
+    eq("⌀ ask-intent law: a trigger word IS intent, caps not required",
+        api.unverifiedNamed("tell me about mistveil keep", store, W, []), ["Mistveil Keep"]);
+    eq("⌀ provenance law: a VOUCHED miss needs no intent — the story asked",
+        api.unverifiedNamed("the vouched thing stirs again", store, W, []), ["Vouched Thing"]);
+    T("⌀ provenance law: the miss write stamps WHO vouched",
+        /trusted: !!trusted, searched: normWikiSet\(activeWikis\(\)\)/.test(api.__src));
+    T("⌀ provenance law: a trusted caller upgrades an untrusted miss in place",
+        /if \(trusted && !existing\.trusted\) \{ existing\.trusted = true; saveCache\(\); \}/.test(api.__src));
+    T("a principal is silent even as part of a longer name (any-token exclude)",
+        api.unverifiedNamed("Jovan Kael looks around", store, W, ["Jovan"]).length === 0);
+    T("explicit exclude (blocklist) silences a miss",
+        api.unverifiedNamed("the Winter Blood Feast?", store, W, ["Winter Blood Feast"]).length === 0);
+    const store4 = { ...store,
+        "fourth thing": { name: "Fourth Thing", sections: {}, found: false, reason: "no-page", searched: S, ts: now + 5 } };
+    eq("cap 3, freshest ask first",
+        api.unverifiedNamed("Fourth Thing, Winter Blood Feast, Old Ruin, Oriana Kingdom — any of these?", store4, W, []),
+        ["Fourth Thing", "Winter Blood Feast", "Old Ruin"]);
+    // note integration — the one door
+    const keepWikis = sandbox.__settings.wikis, keepCache = sandbox.__settings.cache;
+    sandbox.__settings.wikis = W;
+    sandbox.__settings.cache = {
+        "winter blood feast": { name: "Winter Blood Feast", sections: {}, found: false, reason: "no-page", searched: S, ts: now },
+        "alpha": { name: "Alpha", found: true, wiki: "w", aliases: [], sections: { identity: "An elf.", physical: "hair: blonde" }, rel: {} },
+    };
+    const nnote = api.relevantCanonNote(["alpha waits"], ["Alpha"], null, { userMsg: "alpha, do you remember the Winter Blood Feast?" });
+    T("the note carries the ⌀ block alongside the cast",
+        /Not found in this story's canon sources/.test(nnote) && /"Winter Blood Feast"/.test(nnote) && /Alpha:/.test(nnote));
+    T("the reasons panel names the absence",
+        api.getReasons().some(r => /⌀ "Winter Blood Feast"/.test(r)));
+    const only = api.relevantCanonNote([""], [], null, { userMsg: "do you remember the Winter Blood Feast?" });
+    T("a notice-ONLY note still injects — verification IS an answer",
+        /Not found in this story's canon sources/.test(only) && only.length > 0);
+    const blocked = api.relevantCanonNote([""], [], null, { userMsg: "the Winter Blood Feast?", blockNames: ["Winter Blood Feast"] });
+    T("blocked means absent — totally: no notice either", !/Not found/.test(blocked));
+    sandbox.__settings.reportUnverified = false;
+    T("toggle off → silent", !/Not found/.test(api.relevantCanonNote([""], [], null, { userMsg: "the Winter Blood Feast?" })));
+    sandbox.__settings.reportUnverified = true;
+    T("no userMsg → the path stays dormant (old call sites unchanged)",
+        !/Not found/.test(api.relevantCanonNote([""], [], null, {})));
+    sandbox.__settings.wikis = keepWikis; sandbox.__settings.cache = keepCache;
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -42,6 +42,11 @@ globalThis.fetch = async (url) => {
         if (sr) return { ok: true, json: async () => ({ query: { search: [{ title: "Zar Blade" }] } }) };
     }
     if (u.hostname.startsWith("missslug.") && sr) return { ok: true, json: async () => ({ query: { search: [] } }) };
+    if (u.hostname === "verifyless.fandom.com") {
+        // a wiki that cleanly has NOTHING: exact-title misses, search comes back empty
+        if (titles) return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };
+        if (sr) return { ok: true, json: async () => ({ query: { search: [] } }) };
+    }
     if (u.hostname === "memory-alpha.fandom.com" && sr) {
         // a real Star Trek wiki: it knows Star Trek, and nothing else
         const hit = /spock|kirk|enterprise|vulcan/i.test(sr) ? [{ title: sr }] : [];
@@ -1518,6 +1523,79 @@ console.log("[57] v0.58.0 the briefing file is not allowed to rot");
 // reading manifest.version; a feature commit that bumps only CG_VERSION ships an
 // extension nobody's install will pull. The history has that drift in it.
 console.log("[40] version stamp == manifest version");
+// [58] v0.59.0 ⌀ negative verification — asked-about, not in canon
+console.log("[58] v0.59.0 ⌀ negative verification — the wiki's silence is reported");
+{
+    // Wiring witnesses: the guard must be CALLED, from the one door, and the
+    // emptiness check must count the notice as content — comments stripped, so
+    // a mention cannot pass for a call.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const callsTo = fn => (code.match(new RegExp("(?<!function\\s)\\b" + fn + "\\s*\\(", "g")) || []).length;
+    T("unverifiedNamed is actually CALLED, not merely defined", callsTo("unverifiedNamed") >= 1);
+    const rcn = code.slice(code.indexOf("function relevantCanonNote"), code.indexOf("function getProfiles"));
+    T("…and the call site is INSIDE the note builder (one door, every surface)", /unverifiedNamed\(/.test(rcn));
+    T("the empty-note check counts the notice as content",
+        /!blocks\.length && !arcBlock && !pinBlock && !unvBlock/.test(src));
+    T("the preview reads the player's message like the turn does",
+        /userMsg: lastUserMsg/.test(src.slice(src.indexOf('$("#cg_preview")'))));
+    T("only settled no-page/meta-page misses qualify — not-character is not absence",
+        /e\.reason !== "no-page" && e\.reason !== "meta-page"/.test(src));
+
+    // Live: a fresh chat bound to a wiki that has nothing; the player asks about
+    // an event; the SAME turn grounds the miss and the note reports the absence.
+    // Same convention as [8]: no CHAT_CHANGED wiring in the sim harness — the
+    // swap is direct. Fresh metadata means a fresh per-chat cache; stale module
+    // cast state can admit nobody (nothing it names exists in this chat's cache).
+    globalThis.__ctx.chat = [];
+    // The settled pin, in the shape bindChatWiki actually writes for a manual
+    // binding — a guessed shape sent discovery hunting and stalled the turn.
+    globalThis.__ctx.chatMetadata = {
+        canon_grounding_wiki: "verifyless",
+        canon_grounding_wiki_ok: { wikis: "verifyless", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+    };
+    // The arc judge is its own feature with its own tests; "Feast" would summon
+    // it here and park the turn on an LLM call this scenario never answers.
+    extension_settings.canon_grounding.autoArc = false;
+    const q58 = parseQueue.length;
+    globalThis.__ctx.chat.push(msg("Do you remember the Winter Blood Feast?", true));
+    const run58 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    T("the recall question opens the parser gate", parseQueue.length === q58 + 1);
+    if (parseQueue.length === q58 + 1) parseQueue[q58].resolve('[{"name": "Winter Blood Feast", "now": "asked about", "need": "history", "evidence": "Winter Blood Feast"}]');
+    await run58;
+    const cache58 = globalThis.__ctx.chatMetadata.canon_grounding_cache || {};
+    T("the miss settled as a durable no-page verdict",
+        !!cache58["winter blood feast"] && cache58["winter blood feast"].found === false
+        && cache58["winter blood feast"].reason === "no-page");
+    T("the SAME turn's note reports the absence",
+        /Not found in this story's canon sources/.test(lastInjection()) && /"Winter Blood Feast"/.test(lastInjection()));
+    T("…as a real injection, even with zero grounded cast", lastInjection().length > 0);
+
+    // Responsive, not sticky: a turn that does not name it carries no notice.
+    // A new player message always earns a parse — answer each one, or the turn
+    // parks on the race and the assertion measures the timeout, not the feature.
+    globalThis.__ctx.chat.push(msg("She only nods."));
+    globalThis.__ctx.chat.push(msg("you nod back", true));
+    const q58b = parseQueue.length;
+    const run58b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    if (parseQueue.length > q58b) parseQueue[q58b].resolve("[]");
+    await run58b;
+    T("a turn that does not name it is clean", !/Not found in this story's canon sources/.test(lastInjection()));
+
+    // The toggle is honored end-to-end.
+    extension_settings.canon_grounding.reportUnverified = false;
+    globalThis.__ctx.chat.push(msg("the Winter Blood Feast, again?", true));
+    const q58c = parseQueue.length;
+    const run58c = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    if (parseQueue.length > q58c) parseQueue[q58c].resolve('[{"name": "Winter Blood Feast", "now": "asked again", "need": "history", "evidence": "Winter Blood Feast"}]');
+    await run58c;
+    T("toggle off → the interceptor injects no notice", !/Not found in this story's canon sources/.test(lastInjection()));
+    extension_settings.canon_grounding.reportUnverified = true;
+    extension_settings.canon_grounding.autoArc = true;
+}
+
 {
     const mf = JSON.parse(fs.readFileSync(path.join(here, "..", "manifest.json"), "utf8"));
     const stamp = (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1];
