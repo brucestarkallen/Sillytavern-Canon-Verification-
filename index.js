@@ -93,7 +93,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.58.0";
+const CG_VERSION = "0.59.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -300,6 +300,18 @@ const defaultSettings = {
     // scene ("the Bushin Festival begins"), the story position advances itself —
     // grounded with the full plot summary + spoiler guard, superseding the old one.
     autoArc: true,
+    // ⌀ NEGATIVE VERIFICATION: canon states what is true — and what is ABSENT.
+    // When the player's own message names something every configured wiki was
+    // cleanly searched for and none has (a settled no-page/meta-page miss), the
+    // note says so: the storyteller is told it is original to this story or not
+    // established in canon, instead of quietly composing "canon" for it.
+    // "do you remember the Winter Blood Feast?" with no such page is answered by
+    // verification, not invention — and an original character named Ichigo stays
+    // THIS story's Ichigo instead of slowly attracting the wiki one's facts.
+    // Fires only for names in the CURRENT player message; the persona, the
+    // active card, and blocklisted names are exempt (the story's own principals
+    // are known-original by construction, and blocked means absent).
+    reportUnverified: true,
     // 📝 Prose briefs: the character's block opens with the curator's WRITTEN
     // paragraph instead of labeled fragments — a narrator's briefing, not a
     // database row. Scene-conditional lines (Now, Facts, With, Voice, Secrets)
@@ -1541,7 +1553,13 @@ async function ensureGrounded(name, trusted = false) {
             // recorded before the user added a wiki says nothing about that wiki.
             if (!missCoversCurrentWikis(existing, activeWikis())) {
                 debug(`↻ wiki list grew since "${name}" missed — re-searching`);
-            } else if (!(existing.reason === "not-character" && trusted)) return existing;
+            } else if (!(existing.reason === "not-character" && trusted)) {
+                // A trusted caller vouching for an UNTRUSTED miss upgrades the
+                // stamp without a re-search: the wikis were already covered —
+                // trust changes who vouched, not what the wiki has.
+                if (trusted && !existing.trusted) { existing.trusted = true; saveCache(); }
+                return existing;
+            }
         }
     }
 
@@ -1632,7 +1650,11 @@ async function ensureGrounded(name, trusted = false) {
     // prevents re-fetching the same dead end every turn. Transient network errors are NOT
     // locked in (hadError skips this), and the 24h TTL lets it retry later.
     if (!hadError) {
-        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, searched: normWikiSet(activeWikis()), ts: Date.now() };
+        // WHO VOUCHED is part of the verdict. A parser/ledger/pin miss means the
+        // STORY referenced something canon lacks; a regex-candidate miss means a
+        // guess went nowhere ("nod back"). Only the former is evidence of absence
+        // — the ⌀ notice reads this stamp, so junk can never be "verified missing".
+        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, trusted: !!trusted, searched: normWikiSet(activeWikis()), ts: Date.now() };
         saveCache();
         debug(`✕ no usable wiki page for "${name}" on: ${activeWikis()}`);
     }
@@ -2516,6 +2538,100 @@ function orderLinesByNeed(lines, need) {
 }
 
 /**
+ * ⌀ NEGATIVE VERIFICATION — the missing half of "verify". Grounding answers
+ * "what does canon say about X?"; this answers "does canon say ANYTHING about
+ * X?" — and reports the no. A settled miss (every currently-configured wiki
+ * searched cleanly, no page found) that the player names in their CURRENT
+ * message becomes a one-line notice, so the storyteller treats X as this
+ * story's own invention instead of improvising fake canon for it. Responsive,
+ * not sticky: the line rides only on turns where the player names the thing.
+ * Pure and parameterized — store, wiki set, and exclusions are inputs — so the
+ * proof harness holds it to account without SillyTavern.
+ * Only no-page / meta-page misses qualify: "not-character" means a page
+ * EXISTED (lore that failed the untrusted character gate), and a transient
+ * error is never cached at all — neither is evidence of absence.
+ */
+function unverifiedNamed(userMsg, store, wikisCsv, excludes = []) {
+    if (!userMsg || !store) return [];
+    const lcMsg = String(userMsg).toLowerCase();
+    const ex = new Set((excludes || []).map(n => String(n || "").trim().toLowerCase()).filter(Boolean));
+    const exTokens = new Set();
+    for (const x of ex) for (const t of x.split(/[^\p{L}\p{N}'-]+/u)) if (t.length >= 3) exTokens.add(t);
+    // Tokens of FOUND entities. A miss whose EVERY token is owned by found
+    // canon ("Oriana" while "Rose Oriana" is grounded) is a partial reference
+    // to someone known, not something absent; a miss with its OWN token
+    // ("Oriana Kingdom") is a distinct thing and its absence is real news.
+    const foundTokens = new Set();
+    for (const e of Object.values(store)) {
+        if (!e || !e.found || !e.name) continue;
+        for (const n of [e.name, ...(e.aliases || [])]) {
+            for (const t of String(n).toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+                if (t.length >= 3) foundTokens.add(t);
+            }
+        }
+    }
+    // ⌀ ask-intent law: the report is an INSTRUCTION ("treat X as original to
+    // this story"), so it demands evidence the player meant X as a NAME. The
+    // lowercase candidate fallback manufactures bigrams out of ordinary short
+    // prose ("you nod back" → "nod back"), and once such junk fails a lookup it
+    // sits in the cache as a settled miss — mentioned() alone would then report
+    // it every time those words recur. Two proofs are accepted, the extractor's
+    // own vocabulary: the message shows explicit ask intent (a "?" or a
+    // question/command trigger word), or the name itself appears CAPITALIZED in
+    // the message (proper-noun signal; caseless scripts degenerate to
+    // mentioned(), which errs toward reporting — the junk hazard is
+    // Latin-shaped). No word blacklist: a list that must grow per incident is a
+    // counter-rule, not a law.
+    const askIntent = /\?/.test(userMsg)
+        || String(userMsg).toLowerCase().split(/\s+/)
+            .some(t => LOWER_TRIGGERS.has(t.replace(/[.,;:!?]+$/, "")));
+    const capNamed = (nameToks) => nameToks.some(t => {
+        const cap = t.charAt(0).toUpperCase() + t.slice(1);
+        return new RegExp(`(?<![\\p{L}\\p{M}])${escapeRegex(cap)}(?![\\p{L}\\p{M}])`, "u").test(userMsg);
+    });
+    const out = [];
+    for (const [key, e] of Object.entries(store)) {
+        if (!e || e.found || !e.reason) continue;
+        if (e.reason !== "no-page" && e.reason !== "meta-page") continue;
+        // Provenance OR intent — two independent proofs, either admits:
+        //   · VOUCHED (e.trusted): the parser/ledger/pin referenced this name,
+        //     so the STORY asked — however the player happened to type it.
+        //   · ASK-INTENT (gate below, on the message): the player visibly
+        //     asked — capitalization or an explicit question — however the
+        //     name happened to be grounded.
+        // A regex candidate that failed a lookup ("nod back") has neither: a
+        // guess that went nowhere must never read as "verified missing". But
+        // requiring BOTH proofs would kill regex mode (parser off), where
+        // nothing is ever vouched — "have you seen Mary?" deserves its
+        // verdict there too.
+        const vouched = e.trusted === true;
+        // A miss is a fact about the wikis that were searched, nothing more —
+        // never searched the current set means silence, not absence.
+        if (!missCoversCurrentWikis(e, wikisCsv)) continue;
+        const nm = String(e.name || key).trim();
+        if (!nm || nm.length > 40) continue;
+        const lcName = nm.toLowerCase();
+        if (ex.has(lcName)) continue;
+        const toks = lcName.split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3);
+        // Junk immunity: a candidate built ENTIRELY from ordinary vocabulary is
+        // a sentence fragment that once failed a lookup, not a thing the story
+        // asked about.
+        if (!toks.length || toks.every(t => NOISE_WORDS.has(t) || COMMON_LOWERCASE.has(t))) continue;
+        if (toks.every(t => foundTokens.has(t))) continue;
+        // Principals exclude by ANY shared token: the persona "Jovan" silences
+        // "Jovan Kael" too — principals are few, and noise about the player
+        // themself is pure dead weight. (Found-canon coverage above is the
+        // stricter EVERY-token rule, deliberately: different hazard.)
+        if (exTokens.size && toks.some(t => exTokens.has(t))) continue;
+        if (!mentioned(lcName, lcMsg)) continue;     // only what the player JUST named
+        if (!vouched && !askIntent && !capNamed(toks)) continue;  // no proof of a real ask (law above)
+        out.push({ name: nm, ts: e.ts || 0 });
+    }
+    out.sort((a, b) => b.ts - a.ts);                 // freshest ask first
+    return out.slice(0, 3).map(x => x.name);
+}
+
+/**
  * Build the canon note.
  *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
  *    present THIS turn), inject exactly those, in that order. This is pronoun-proof: a
@@ -3001,10 +3117,30 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         reasons.push("pinned canon text");
     }
 
-    if (!blocks.length && !arcBlock && !pinBlock) return "";
+    // ⌀ NEGATIVE VERIFICATION rides un-trimmed, like the header and pins — it
+    // IS the verification verdict, and it is tiny. One definition, one door:
+    // computed HERE from extras.userMsg, so every surface that builds a note
+    // (interceptor, preview, post-generation rebuilds) carries it by
+    // construction instead of each call site remembering to.
+    let unvBlock = "";
+    if (s.reportUnverified !== false && extras.userMsg) {
+        let principals = [];
+        try { const c = getContext(); principals = [c.name1, c.name2]; } catch (e) { /* harness: no ST context */ }
+        const unv = unverifiedNamed(extras.userMsg, store, activeWikis(),
+            [...principals, ...(extras.blockNames || [])]);
+        if (unv.length) {
+            unvBlock = `Not found in this story's canon sources (no wiki page): ` +
+                unv.map(n => `"${clip(n, 40)}"`).join(", ") +
+                ` — treat these as original to this story or not established in canon. ` +
+                `Never import outside facts for them; characters know only what this story itself has shown.\n`;
+            for (const n of unv) reasons.push(`⌀ "${n}" ← named by you — no page on: ${activeWikis() || "(no wiki configured)"}`);
+        }
+    }
+
+    if (!blocks.length && !arcBlock && !pinBlock && !unvBlock) return "";
     return (
         ((settings().promptHeader || "").trim() || defaultPromptHeader()) +
-        pinBlock + arcBlock + blocks.join("\n")
+        pinBlock + arcBlock + unvBlock + blocks.join("\n")
     );
 }
 
@@ -4748,6 +4884,11 @@ async function addSettingsUI() {
                 </label>
                 <small class="cg-hint">Injecting a character also injects their essential background as one-line Context — "rose oriana" brings the Oriana Kingdom with her, because her kingdom IS her story. OFF = strict: only what the scene itself earns. (Entities dossier'd before this feature learn their Context on re-ground — ✕ them once.)</small>
                 <label class="checkbox_label">
+                    <input id="cg_unverified" type="checkbox">
+                    <span>Report what is NOT in canon ⌀</span>
+                </label>
+                <small class="cg-hint">When your message names something no configured wiki has a page for (an asked-about event, an original character), the note says so — "not established in canon, never import outside facts" — instead of letting the AI quietly invent canon for it. Fires only on turns where you name the thing; your persona, the active card, and blocklisted names are exempt.</small>
+                <label class="checkbox_label">
                     <input id="cg_lowercase" type="checkbox">
                     <span>Lowercase names open the gate</span>
                 </label>
@@ -4959,6 +5100,9 @@ async function addSettingsUI() {
     $("#cg_smart").prop("checked", s.smartExpansion).on("input", function () {
         s.smartExpansion = $(this).prop("checked"); saveSettingsDebounced();
     });
+    $("#cg_unverified").prop("checked", s.reportUnverified !== false).on("input", function () {
+        s.reportUnverified = $(this).prop("checked"); saveSettingsDebounced();
+    });
     $("#cg_prose").prop("checked", s.proseBriefs).on("input", function () {
         s.proseBriefs = $(this).prop("checked"); saveSettingsDebounced();
     });
@@ -5168,10 +5312,19 @@ async function addSettingsUI() {
             const ctx = getContext();
             const scene = sceneMessages(ctx, s.contextWindow);
             const cast = pruneStaleCast((ctx.chat || []).filter(m => !m.is_system).length, scene);
+            // The preview must build the note the way the TURN does, or the
+            // panel lies: the player's own message drives tier-1 ordering AND
+            // the ⌀ not-in-canon notice, so it is read here the same way the
+            // interceptor reads it.
+            const lastUserMsg = stripMetaBlocks(([...(ctx.chat || [])].reverse().find(m => m.is_user) || {}).mes || "");
+            const lgN = ledgerNames();
             const note = relevantCanonNote(scene, cast, chatArc(), {
                 pinNames: chatPinNames(), blockNames: chatBlockNames(),
                 settingKey: chatSettingKey(),
                 chatPin: chatPin(), globalPin: s.pinnedGlobal,
+                userNames: castNamedIn(lastUserMsg),
+                ledgerNames: lgN ? lgN.filter(n => mentioned(n.toLowerCase(), scene.join("\n").toLowerCase())) : [],
+                userMsg: lastUserMsg,
             });
             lastInjection = note;
             lastInjectionAt = Date.now();
