@@ -56,6 +56,34 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.60.0 (✒ Advanced — the AI writes the note, the code verifies it)
+
+Proven by `test/proof.js` (570) + `test/sim.mjs` (370); **7 guards negative-tested**.
+
+The rigid skeleton exists because a model composing canon each turn is the
+hallucination path this extension was built to close. ✒ Advanced keeps the
+proof and frees the prose: the code still gathers, verifies, budgets and
+orders every fact exactly as before — the model only **rewrites the
+presentation** as one fluid storyteller briefing shaped by the live scene.
+New faces are strangers to your protagonist (who is never a canon character,
+so canon relationships never apply); established ones carry their canon;
+franchise context the model is certain of may ride along in a clause, and
+"unsure" means write nothing.
+
+Trust is enforced, not hoped for. Every composition passes a validator before
+it may inject: every cast member still named, every character's appearance
+details intact (a wrong face is the failure this extension exists to
+prevent), no leaked scaffolding, no JSON, no runaway length. Any failure —
+or a slow model — degrades to the assembled note, so the mode can never be
+worse than OFF. The composer runs **inside the raced task**, targeting the
+facts that actually went out last turn, and the injector swaps a composition
+in only when its facts-fingerprint matches what is on screen right now;
+header, pins, story position and the ⌀ verdict stay code-written around the
+composed body. Compositions are cached per fingerprint (a stable scene costs
+no extra model call; a failed one cools down instead of burning a call per
+turn), and 👁 Preview composes on demand through the same door. Off by
+default — the ✒ checkbox in settings turns it on.
+
 ## Changelog — v0.59.0 (⌀ — the wiki's silence is an answer too)
 
 Proven by `test/proof.js` (554) + `test/sim.mjs` (352); **7 guards negative-tested**.

@@ -94,7 +94,7 @@ throws about overlapping slices, fix the markers — do not widen them past each
 
 ## 3. The pipeline — where a symptom lives
 
-A character can be missing at any of ten stages. Find the stage before you fix
+A character can be missing at any of eleven stages. Find the stage before you fix
 anything; a character blocked at stage 1 never reaches stage 7 to reveal stage 7 is
 also broken.
 
@@ -124,6 +124,13 @@ also broken.
     a trigger word, or the name typed capitalised). A regex candidate that once
     failed a lookup ("nod back") has neither and stays silent: a guess that went
     nowhere is not evidence of absence.
+11. **Presentation (✒ Advanced)** — with `composerMode` on, `composeNote` (inside the
+    raced task, targeting `lastScreenParts`: the note that actually went out) rewrites
+    the cast body as fluid prose. `composedNoteValid` refuses any composition that
+    drops a cast member, loses an appearance detail, leaks scaffolding, or balloons;
+    the post-race injector swaps it in only on a `noteFingerprint` match, keeping the
+    header, pins, story position and the ⌀ verdict code-written. Every failure — and
+    the mode being off — is exactly the assembled note of stage 9.
 
 ---
 
