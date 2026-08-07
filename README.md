@@ -56,6 +56,34 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.59.0 (⌀ — the wiki's silence is an answer too)
+
+Proven by `test/proof.js` (554) + `test/sim.mjs` (352); **7 guards negative-tested**.
+
+Ask the story "do you remember the Winter Blood Feast?" and, until now, a name
+the wikis do not have was swallowed: the miss went into the negative cache and
+the storyteller heard nothing — free to invent "canon" for it. Now a settled
+`no-page`/`meta-page` miss that your latest message names is reported in the
+note: *not found in this story's canon sources — treat it as original to this
+story; never import outside facts for it.* Verification became two-directional.
+
+The guard earned its laws the honest way: the first cut reported junk. The
+lowercase candidate fallback manufactures bigrams out of plain prose ("you nod
+back" → "nod back"), and once such a guess fails a lookup it sits as a settled
+miss — the live sim caught the note calling it missing canon. The class fix is
+provenance, not a word blacklist: every miss now records **who vouched**
+(`trusted` — parser/ledger/pin), a trusted revisit upgrades an untrusted miss
+in place, and the notice demands either that stamp **or** visible ask-intent in
+the message itself (a question, a trigger word, or the name typed capitalised).
+A guess that went nowhere can never read as "verified missing".
+
+One door: the check lives inside `relevantCanonNote`, so the live turn, the
+preview (which now reads your latest message exactly like the turn does), and
+every future surface agree. A notice-only note still injects — verification IS
+an answer. Principals, the blocklist, and names fully owned by found canon stay
+silent; freshest ask first, capped at 3; `⌀` lines in the reasons panel;
+`reportUnverified` is the switch, on by default.
+
 ## Changelog — v0.57.0 (a place has a look too)
 
 Proven by `test/proof.js` (529) + `test/sim.mjs` (328); 1 guard negative-tested.

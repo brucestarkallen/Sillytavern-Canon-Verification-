@@ -94,7 +94,7 @@ throws about overlapping slices, fix the markers — do not widen them past each
 
 ## 3. The pipeline — where a symptom lives
 
-A character can be missing at any of nine stages. Find the stage before you fix
+A character can be missing at any of ten stages. Find the stage before you fix
 anything; a character blocked at stage 1 never reaches stage 7 to reveal stage 7 is
 also broken.
 
@@ -116,6 +116,14 @@ also broken.
    named, then scene recency. Case-blind throughout.
 9. **Budget** — four passes: presence → appearance → pair dynamics → depth.
    Verbosity must never delete someone who is in the scene.
+10. **Absence (⌀)** — `unverifiedNamed`, called only inside `relevantCanonNote` (the
+    one door: live turn, preview and every future surface agree). A settled
+    `no-page`/`meta-page` miss the player just named is reported as not-in-canon —
+    but only when the reference is VOUCHED (the miss's `trusted` stamp:
+    parser/ledger/pin asked) **or** the message itself shows ask-intent (a question,
+    a trigger word, or the name typed capitalised). A regex candidate that once
+    failed a lookup ("nod back") has neither and stays silent: a guess that went
+    nowhere is not evidence of absence.
 
 ---
 
