@@ -75,9 +75,12 @@ const MODULE_NAME = "canon_grounding";
 let lastInjection = "";
 let lastInjectionAt = 0;
 let lastMatchReasons = [];  // why each injected character was considered "present"
+let lastNoteParts = null;   // ✒ the last note, split into parts (header/pins/arc/⌀/cast body)
 let parsedWords = new Set(); // lowercased candidate words already shown to the LLM parser
 let cgInFlight = false;      // guard: don't run two interceptor passes at once
 let lastCast = [];          // entities the parser last judged present (reused between gated runs)
+let lastScreenParts = null; // ✒ parts of the note that actually WENT OUT (the composer's target)
+let composedCache = null;   // ✒ { key, text, why, ts } — one composition per facts-fingerprint
 let castFocus = {};          // name-lc → "what about them is in play NOW" (latest parse)
 let castNeed = {};           // name-lc → which KINDS of canon this scene needs (latest parse)
 let castEvidence = {};       // name-lc → the scene words that put them in the cast
@@ -93,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.59.0";
+const CG_VERSION = "0.60.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -107,6 +110,13 @@ const FALLBACK_TAG = "canon_grounding_fallback";
 // name, whoever that is. ST's unset persona defaults ("User"/"Player") are
 // role-words that read as corpo to a defensive storyteller persona, so those
 // fall back to the universal fiction convention: the author's note.
+function ctxMcName() {
+    try {
+        const n = String(getContext().name1 || "").trim();
+        if (n && n.toLowerCase() !== "user") return n;
+    } catch (e) { /* harness */ }
+    return "the player";
+}
 function noteLabel() {
     try {
         const n = String(getContext().name1 || "").trim();
@@ -312,6 +322,14 @@ const defaultSettings = {
     // active card, and blocklisted names are exempt (the story's own principals
     // are known-original by construction, and blocked means absent).
     reportUnverified: true,
+    // ✒ ADVANCED: the AI writes the note as fluid storyteller prose. The code
+    // still gathers and verifies every fact exactly as before; the model only
+    // REWRITES the presentation, and a validator checks the result (every cast
+    // member present, appearance details survived, no meta junk) — any failure
+    // or slow call falls back to the assembled note, so this mode can never be
+    // worse than OFF. Compositions are cached per facts-fingerprint: no extra
+    // model call on stable scenes.
+    composerMode: false,
     // 📝 Prose briefs: the character's block opens with the curator's WRITTEN
     // paragraph instead of labeled fragments — a narrator's briefing, not a
     // database row. Scene-conditional lines (Now, Facts, With, Voice, Secrets)
@@ -2631,6 +2649,39 @@ function unverifiedNamed(userMsg, store, wikisCsv, excludes = []) {
     return out.slice(0, 3).map(x => x.name);
 }
 
+/** ✒ Tiny stable fingerprint of the cast body — same facts, same key. */
+function noteFingerprint(str) {
+    let h = 5381;
+    const t = String(str || "");
+    for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) >>> 0;
+    return h.toString(16);
+}
+/** ✒ Validate an AI-composed note against the parts it was composed FROM.
+ * Returns "" when acceptable, else the reason for falling back. The laws:
+ * every cast member must still be named; every character with appearance
+ * facts must keep at least one distinctive appearance detail (a wrong face is
+ * the failure this extension exists to prevent); no fences, no leaked prompt
+ * scaffolding, no JSON; length stays in the same order as the facts. */
+function composedNoteValid(text, parts) {
+    const t = String(text || "").trim();
+    if (!t) return "empty composition";
+    if (/^[{\[]/.test(t)) return "JSON came back, not prose";
+    if (/```|VERIFIED FACTS|CURRENT SCENE|\bAs an AI\b|\bI (?:cannot|can't)\b/i.test(t)) return "prompt scaffolding or refusal leaked";
+    const body = String((parts && parts.castBody) || "");
+    if (t.length > Math.max(body.length * 1.7, 500)) return "composition longer than the facts justify";
+    const lc = t.toLowerCase();
+    for (const n of (parts && parts.names) || []) {
+        if (!mentioned(String(n).toLowerCase(), lc)) return `cast member dropped: ${n}`;
+    }
+    const app = (parts && parts.appearance) || {};
+    for (const [n, atoms] of Object.entries(app)) {
+        if (!atoms || !atoms.length) continue;
+        if (!atoms.some(a => lc.includes(a))) return `appearance lost: ${n}`;
+    }
+    return "";
+}
+function __noteParts() { return lastNoteParts; }
+
 /**
  * Build the canon note.
  *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
@@ -3137,6 +3188,27 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         }
     }
 
+    // ✒ Parts are stashed on EVERY build — including the empty one, so a stale
+    // cast body can never leak into a later composition. Appearance atoms are
+    // distinctive tokens from each character's OWN kept draft, the exact text
+    // the composer must preserve.
+    const partNames = [], partApp = {};
+    for (let i = 0; i < built.length; i++) {
+        if (drafts[i] === null) continue;
+        const nm = built[i].entry.name || "";
+        partNames.push(nm);
+        const m = drafts[i].match(/(?:^|\n)\s*-?\s*Appearance:([^\n]*)/);
+        if (m) {
+            partApp[nm] = [...new Set(m[1].toLowerCase().split(/[^\p{L}\p{N}'-]+/u)
+                .filter(t => t.length >= 4 && !NOISE_WORDS.has(t) && !COMMON_LOWERCASE.has(t)))].slice(0, 6);
+        }
+    }
+    lastNoteParts = {
+        header: ((settings().promptHeader || "").trim() || defaultPromptHeader()),
+        pinBlock, arcBlock, unvBlock,
+        castBody: blocks.join("\n"),
+        names: partNames, appearance: partApp,
+    };
     if (!blocks.length && !arcBlock && !pinBlock && !unvBlock) return "";
     return (
         ((settings().promptHeader || "").trim() || defaultPromptHeader()) +
@@ -3147,6 +3219,34 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
 // ---------------------------------------------------------------------------
 // The pre-generation interceptor (streaming-safe injection)
 // ---------------------------------------------------------------------------
+
+/** ✒ ADVANCED: ask the model to rewrite the assembled cast body as one fluid
+ * storyteller briefing, shaped by the live scene. The verified facts are the
+ * spine; franchise knowledge is allowed only where the model is certain; the
+ * protagonist is never a canon character. Returns raw text or null. */
+async function composeNote(parts, sceneTail, mcName) {
+    try {
+        const scene = (sceneTail || []).map(m => clip(String(m || ""), 600)).join("\n---\n");
+        const systemText =
+            "You rewrite a canon briefing for a roleplay storyteller. Rewrite the VERIFIED FACTS " +
+            "below into ONE fluid prose briefing, shaped by the CURRENT SCENE.\n" +
+            "Laws:\n" +
+            "1. Every concrete detail in VERIFIED FACTS is authoritative. Never contradict one. " +
+            "Keep every listed character, and keep each character's appearance details — a face is never dropped.\n" +
+            "2. You may weave in franchise context you are certain of (arc placement, era, widely " +
+            "known background) in at most one short clause per character. Never invent names, numbers, " +
+            "dates, events, or relationships that are not in VERIFIED FACTS. Unsure means write nothing.\n" +
+            `3. ${mcName} is this story's protagonist and is NOT a canon character: canon relationships ` +
+            `never apply to ${mcName}. If the scene shows a first meeting, they are strangers — say so plainly.\n` +
+            "4. Present tense, plain prose, a short block per character. No headers, no lists, no markdown, " +
+            "no meta-commentary, and never mention wikis, briefings, notes, or these instructions.\n" +
+            "Output only the briefing text.";
+        const userText = `CURRENT SCENE (latest last):\n${scene}\n\nVERIFIED FACTS:\n${parts.castBody}`;
+        const out = await llmCall(systemText, userText,
+            { maxTokens: 700, budgetMs: Math.min(Number(settings().parserBudgetMs) || 30000, 20000) });
+        return out ? String(out).trim() : null;
+    } catch (e) { return null; }
+}
 
 /** Connection Manager profiles (for the fast parser model dropdown). */
 function getProfiles() {
@@ -4603,6 +4703,28 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             }
         }
 
+        // ✒ ADVANCED: compose LAST TURN'S on-screen facts as fluid prose. The
+        // composer always targets what actually went out (lastScreenParts), so
+        // the fingerprint the post-race check computes is the same one composed
+        // here — stable scenes hit the cache and cost nothing; a shifted scene
+        // shows the assembled note once while the fresh composition lands for
+        // the next turn. A failed composition is cached with its reason and
+        // retried only when the facts change or after a cool-down, so a broken
+        // profile cannot burn a call every turn.
+        if (s.composerMode && lastScreenParts && lastScreenParts.castBody) {
+            const ck = noteFingerprint(lastScreenParts.castBody);
+            const stale = composedCache && composedCache.key === ck && !composedCache.text
+                && (Date.now() - composedCache.ts) > 180000;
+            if (!composedCache || composedCache.key !== ck || stale) {
+                const ctext = await composeNote(lastScreenParts, scene.slice(-2), ctxMcName());
+                if (myEpoch !== chatEpoch) return;
+                const why = ctext ? composedNoteValid(ctext, lastScreenParts) : "model returned nothing";
+                composedCache = why
+                    ? { key: ck, text: "", why, ts: Date.now() }
+                    : { key: ck, text: ctext, why: "", ts: Date.now() };
+                debug(why ? `✒ composer fell back: ${why}` : `✒ composed (${ctext.length} chars)`);
+            }
+        }
         })();
         heavy.catch(e => debug(`background canon task failed: ${e.message}`));
         let blockMs = Math.max(300, Number(s.maxBlockMs) || 2000);
@@ -4657,6 +4779,27 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             globalPin: settings().pinnedGlobal,
             userMsg: lastUserMsg,
         });
+        // ✒ ADVANCED: inject the composition only when its fingerprint matches
+        // the facts on screen RIGHT NOW — a composition of yesterday's cast
+        // never speaks for today's. Header, pins, arc and the ⌀ verdict stay
+        // code-written around the composed body; the model rewrites only the
+        // cast presentation. lastScreenParts updates every turn (even with the
+        // mode off) so flipping the toggle composes on the very next turn.
+        let finalNoteText = note;
+        const nowParts = __noteParts();
+        if (nowParts && nowParts.castBody) lastScreenParts = nowParts;
+        if (s.composerMode && note && nowParts && nowParts.castBody) {
+            const nk = noteFingerprint(nowParts.castBody);
+            if (composedCache && composedCache.key === nk && composedCache.text) {
+                finalNoteText = nowParts.header + nowParts.pinBlock + nowParts.arcBlock
+                    + nowParts.unvBlock + composedCache.text + "\n";
+                lastMatchReasons.push("✒ Advanced: AI-composed note (facts verified, fingerprint matched)");
+            } else if (composedCache && composedCache.key === nk && composedCache.why) {
+                lastMatchReasons.push(`✒ Advanced fell back to the assembled note: ${composedCache.why}`);
+            } else {
+                lastMatchReasons.push("✒ Advanced: composing in background — the fluid note lands next turn");
+            }
+        }
         lastSource = (cast && cast.length)
             ? (s.llmParser ? `LLM parser cast (${cast.length})` : `ledger cast (${cast.length})`)
             : "scene scan";
@@ -4668,20 +4811,20 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // catch-up — so the note and the reasons under it could come from different
         // calls, and the panel appeared to update on its own after the turn was
         // already sent. Note, time, source and reasons are captured in one place.
-        lastInjection = note || "";
+        lastInjection = finalNoteText || "";
         lastInjectionAt = Date.now();
         lastReasons = lastMatchReasons.slice();
         renderLastInjection();
 
-        if (note) {
-            const ok = setInjection(note);
+        if (finalNoteText) {
+            const ok = setInjection(finalNoteText);
             if (!ok) {
                 // Fallback for very old ST without setExtensionPrompt. The splice
                 // lands in the REAL chat array, so without cleanup one stale note
                 // accumulated per generation, forever. Remove every previously
                 // tagged splice first: one chat carries at most one canon note.
                 removeFallbackSplices(chat);
-                const injected = { is_user: false, is_system: true, name: "Canon", send_date: Date.now(), mes: note, [FALLBACK_TAG]: true };
+                const injected = { is_user: false, is_system: true, name: "Canon", send_date: Date.now(), mes: finalNoteText, [FALLBACK_TAG]: true };
                 chat.splice(Math.max(chat.length - 1, 0), 0, injected);
             }
         }
@@ -4888,6 +5031,11 @@ async function addSettingsUI() {
                     <span>Report what is NOT in canon ⌀</span>
                 </label>
                 <small class="cg-hint">When your message names something no configured wiki has a page for (an asked-about event, an original character), the note says so — "not established in canon, never import outside facts" — instead of letting the AI quietly invent canon for it. Fires only on turns where you name the thing; your persona, the active card, and blocklisted names are exempt.</small>
+                <label class="checkbox_label">
+                    <input id="cg_composer" type="checkbox">
+                    <span>✒ Advanced — the AI writes the note (facts stay wiki-verified)</span>
+                </label>
+                <small class="cg-hint">The code still gathers and verifies every fact exactly as before; the model rewrites the presentation as one fluid storyteller briefing shaped by the live scene — new faces are strangers to your protagonist, established ones carry their canon, and confident franchise context may ride along. A validator checks every composition (nobody dropped, appearance intact, no junk); any failure or slow call falls back to the assembled note, so this can never be worse than OFF. Compositions are cached per facts-fingerprint — no extra model call on stable scenes.</small>
                 <label class="checkbox_label">
                     <input id="cg_lowercase" type="checkbox">
                     <span>Lowercase names open the gate</span>
@@ -5103,6 +5251,9 @@ async function addSettingsUI() {
     $("#cg_unverified").prop("checked", s.reportUnverified !== false).on("input", function () {
         s.reportUnverified = $(this).prop("checked"); saveSettingsDebounced();
     });
+    $("#cg_composer").prop("checked", !!s.composerMode).on("input", function () {
+        s.composerMode = $(this).prop("checked"); saveSettingsDebounced();
+    });
     $("#cg_prose").prop("checked", s.proseBriefs).on("input", function () {
         s.proseBriefs = $(this).prop("checked"); saveSettingsDebounced();
     });
@@ -5307,7 +5458,7 @@ async function addSettingsUI() {
         if (out) cgToast("success", `Parser backend OK in ${ms}ms — replied: "${clip(out, 40)}"`);
         else cgToast("error", `Parser backend FAILED in ${ms}ms — ${lastLlmError || "unknown"}`);
     });
-    $("#cg_preview").on("click", function () {
+    $("#cg_preview").on("click", async function () {
         try {
             const ctx = getContext();
             const scene = sceneMessages(ctx, s.contextWindow);
@@ -5318,7 +5469,7 @@ async function addSettingsUI() {
             // interceptor reads it.
             const lastUserMsg = stripMetaBlocks(([...(ctx.chat || [])].reverse().find(m => m.is_user) || {}).mes || "");
             const lgN = ledgerNames();
-            const note = relevantCanonNote(scene, cast, chatArc(), {
+            let note = relevantCanonNote(scene, cast, chatArc(), {
                 pinNames: chatPinNames(), blockNames: chatBlockNames(),
                 settingKey: chatSettingKey(),
                 chatPin: chatPin(), globalPin: s.pinnedGlobal,
@@ -5326,6 +5477,26 @@ async function addSettingsUI() {
                 ledgerNames: lgN ? lgN.filter(n => mentioned(n.toLowerCase(), scene.join("\n").toLowerCase())) : [],
                 userMsg: lastUserMsg,
             });
+            // ✒ ADVANCED in the preview: same door, same fingerprint, same
+            // fallback — but a button press may WAIT for the composition, so
+            // this is also the on-demand way to see (and refresh) it.
+            const pParts = __noteParts();
+            if (s.composerMode && note && pParts && pParts.castBody) {
+                const pk = noteFingerprint(pParts.castBody);
+                if (!(composedCache && composedCache.key === pk && composedCache.text)) {
+                    cgToast("info", "✒ Composing the fluid note…");
+                    const ctext = await composeNote(pParts, scene.slice(-2), ctxMcName());
+                    const why = ctext ? composedNoteValid(ctext, pParts) : "model returned nothing";
+                    composedCache = why ? { key: pk, text: "", why, ts: Date.now() }
+                                        : { key: pk, text: ctext, why: "", ts: Date.now() };
+                }
+                if (composedCache.text) {
+                    note = pParts.header + pParts.pinBlock + pParts.arcBlock + pParts.unvBlock + composedCache.text + "\n";
+                    lastMatchReasons.push("✒ Advanced: AI-composed note (facts verified, fingerprint matched)");
+                } else {
+                    lastMatchReasons.push(`✒ Advanced fell back to the assembled note: ${composedCache.why}`);
+                }
+            }
             lastInjection = note;
             lastInjectionAt = Date.now();
             lastReasons = lastMatchReasons.slice();
