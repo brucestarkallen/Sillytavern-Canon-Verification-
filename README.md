@@ -56,6 +56,31 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.62.0 (✒ background, not narration; detached, not slow; a key that lands)
+
+Proven by `test/proof.js` (579) + `test/sim.mjs` (379); **6 guards negative-tested**.
+
+Live testing surfaced three defects in ✒ Advanced, all three at the root here.
+**It narrated instead of briefing:** the prompt fed the model the live scene
+and said "shaped by the current scene" — an instruction to become a second
+storyteller. The composer now writes CANON BACKGROUND only — who each
+character IS — with narration of the present moment explicitly banned, and the
+scene is not even sent. **It was slow:** the composer was awaited inside the
+raced task, so a 20-second model call starved the race and even the
+already-finished assembled note went out stale — mode ON slowed everything,
+falsifying the "never worse than OFF" guarantee. The kick is now detached
+(fire-and-forget behind an in-flight guard): every turn injects the fresh
+assembled note at exactly mode-OFF speed, and the composition lands in the
+cache whenever the model returns. **It never injected:** the fingerprint
+hashed the note's TEXT, which reorders with every message (scene-scored), so
+the key churned each turn and the composition stayed perpetually one key
+behind. The key now hashes the FACTS — sections, dossier facts, relation keys
+per character — scene-independent, so a landed composition injects on the next
+turn and STAYS injected until canon itself changes. Both behaviors are gated
+in the simulator: a turn whose composition is still in flight must inject the
+fresh assembled note, and a changed message with unchanged facts must inject
+the composition.
+
 ## Changelog — v0.61.0 (✒ playing a canon character is a fact, not an exception)
 
 Proven by `test/proof.js` (575) + `test/sim.mjs` (376); **2 guards negative-tested**.

@@ -124,17 +124,18 @@ also broken.
     a trigger word, or the name typed capitalised). A regex candidate that once
     failed a lookup ("nod back") has neither and stays silent: a guess that went
     nowhere is not evidence of absence.
-11. **Presentation (✒ Advanced)** — with `composerMode` on, `composeNote` (inside the
-    raced task, targeting `lastScreenParts`: the note that actually went out) rewrites
-    the cast body as fluid prose. `composedNoteValid` refuses any composition that
-    drops a cast member, loses an appearance detail, leaks scaffolding, or balloons;
-    the post-race injector swaps it in only on a `noteFingerprint` match, keeping the
-    header, pins, story position and the ⌀ verdict code-written. Whether the
-    protagonist is themself a canon character is DERIVED per call (`mcCanonName`
-    against the chat's verified cache — name or alias, found entries only): resolved
-    means canon relationships toward them fully apply; unresolved means the stranger
-    law. Every failure — and the mode being off — is exactly the assembled note of
-    stage 9.
+11. **Presentation (✒ Advanced)** — with `composerMode` on, the raced task KICKS a
+    DETACHED composition (`composeInFlight` guard — the race never waits) of
+    `lastScreenParts`, the note that actually went out. `composeNote` writes CANON
+    BACKGROUND only: narrating the current scene is banned and the scene is not even
+    sent. `composedNoteValid` refuses any composition that drops a cast member,
+    loses an appearance detail, leaks scaffolding, or balloons; the injector swaps it
+    in only when `parts.key` — a STABLE facts fingerprint (sections + dossier facts +
+    relation keys per character, scene-independent) — matches what is on screen, so a
+    landed composition stays landed until canon itself changes. Whether the
+    protagonist is themself a canon character is DERIVED per call (`mcCanonName`,
+    name or alias, found entries only). Every failure — and the mode being off — is
+    exactly the assembled note of stage 9, at identical speed.
 
 ---
 
