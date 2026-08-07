@@ -79,7 +79,6 @@ let lastNoteParts = null;   // ✒ the last note, split into parts (header/pins/
 let parsedWords = new Set(); // lowercased candidate words already shown to the LLM parser
 let cgInFlight = false;      // guard: don't run two interceptor passes at once
 let lastCast = [];          // entities the parser last judged present (reused between gated runs)
-let lastScreenParts = null; // ✒ parts of the note that actually WENT OUT (the composer's target)
 let composedCache = null;   // ✒ { key, text, why, ts } — one composition per facts-fingerprint
 let composeInFlight = false; // ✒ one composition at a time — turns never stack model calls
 let castFocus = {};          // name-lc → "what about them is in play NOW" (latest parse)
@@ -97,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.62.0";
+const CG_VERSION = "0.63.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -331,6 +330,11 @@ const defaultSettings = {
     // worse than OFF. Compositions are cached per facts-fingerprint: no extra
     // model call on stable scenes.
     composerMode: false,
+    // ✒ How long a turn may hold for the composition (a CEILING, not a sleep:
+    // stable turns skip the call and release at grounding speed — only turns
+    // where canon changes wait, the same turns the first-meet wait already
+    // holds, so the fluid note is ready BEFORE the storyteller thinks).
+    composeWaitMs: 20000,
     // 📝 Prose briefs: the character's block opens with the curator's WRITTEN
     // paragraph instead of labeled fragments — a narrator's briefing, not a
     // database row. Scene-conditional lines (Now, Facts, With, Voice, Secrets)
@@ -4748,31 +4752,43 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // the next turn. A failed composition is cached with its reason and
         // retried only when the facts change or after a cool-down, so a broken
         // profile cannot burn a call every turn.
-        // v0.61 awaited the composer inside the raced task, so a 20s model call
-        // starved the race and even the already-finished ASSEMBLED note went
-        // stale: mode ON slowed everything. The kick is now fire-and-forget
-        // with an in-flight guard: the raced task finishes at grounding speed,
-        // THIS turn injects fresh as always, the composition lands whenever the
-        // model returns and — on the stable facts-key — STAYS injected until
-        // canon itself changes. Failures cool down; calls never stack.
-        if (s.composerMode && !composeInFlight && lastScreenParts && lastScreenParts.castBody) {
-            const target = lastScreenParts;
-            const ck = target.key;
-            const stale = composedCache && composedCache.key === ck && !composedCache.text
-                && (Date.now() - composedCache.ts) > 180000;
-            if (!composedCache || composedCache.key !== ck || stale) {
-                composeInFlight = true;
-                (async () => {
+        // ✒ ADVANCED — composed INSIDE the window, for THIS turn, like the
+        // parser and the Now line before it: the interceptor is allowed to hold
+        // generation (the same contract the first-meet wait uses), so the
+        // composition is ready BEFORE the storyteller thinks. The parts are
+        // built here from the very inputs the post-race assembler uses, so the
+        // stable facts-key matches same-turn; stable turns skip the call and
+        // release at grounding speed. Overrun degrades honestly: assembled
+        // note now, composition next turn. Failures cool down.
+        if (s.composerMode && !composeInFlight) {
+            relevantCanonNote(scene, cast, chatArc(), {
+                pinNames,
+                userNames: castNamedIn(lastUserMsg),
+                ledgerNames: lgNames ? lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase())) : [],
+                blockNames: chatBlockNames(),
+                settingKey: chatSettingKey(),
+                chatPin: chatPin(),
+                globalPin: settings().pinnedGlobal,
+                userMsg: lastUserMsg,
+            });
+            const hParts = __noteParts();
+            if (hParts && hParts.castBody) {
+                const ck = hParts.key;
+                const stale = composedCache && composedCache.key === ck && !composedCache.text
+                    && (Date.now() - composedCache.ts) > 180000;
+                if (!composedCache || composedCache.key !== ck || stale) {
+                    composeInFlight = true;
                     try {
-                        const ctext = await composeNote(target, ctxMcName());
-                        const why = ctext ? composedNoteValid(ctext, target) : "model returned nothing";
+                        const ctext = await composeNote(hParts, ctxMcName());
+                        const why = ctext ? composedNoteValid(ctext, hParts) : "model returned nothing";
                         composedCache = why
                             ? { key: ck, text: "", why, ts: Date.now() }
                             : { key: ck, text: ctext, why: "", ts: Date.now() };
                         debug(why ? `✒ composer fell back: ${why}` : `✒ composed (${ctext.length} chars)`);
                     } catch (e) { /* one attempt per key; the cool-down governs retries */ }
                     finally { composeInFlight = false; }
-                })();
+                    if (myEpoch !== chatEpoch) return;
+                }
             }
         }
         })();
@@ -4784,6 +4800,11 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             debug(`⏱🤝 first meeting in your message — extending wait ${blockMs}ms → ${meet}ms so the introduction is grounded`);
             blockMs = meet;
         }
+        // ✒ The window is a CEILING, not a sleep: the turn releases the moment
+        // work finishes, so raising it costs nothing on stable turns — and on
+        // the turn canon changes, the composition finishes INSIDE the window
+        // and injects before generation, like the Now line always did.
+        if (s.composerMode) blockMs = Math.max(blockMs, Number(s.composeWaitMs) || 20000);
         // A THROW inside `heavy` must degrade exactly like a TIMEOUT. Bare
         // `heavy.then(() => true)` re-rejects, which threw out of the whole
         // interceptor: setInjection("") had already cleared this turn's canon,
@@ -4837,7 +4858,6 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // mode off) so flipping the toggle composes on the very next turn.
         let finalNoteText = note;
         const nowParts = __noteParts();
-        if (nowParts && nowParts.castBody) lastScreenParts = nowParts;
         if (s.composerMode && note && nowParts && nowParts.castBody) {
             const nk = nowParts.key;
             if (composedCache && composedCache.key === nk && composedCache.text) {
