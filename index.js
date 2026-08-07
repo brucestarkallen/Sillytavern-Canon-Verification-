@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.60.0";
+const CG_VERSION = "0.61.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2681,6 +2681,19 @@ function composedNoteValid(text, parts) {
     return "";
 }
 function __noteParts() { return lastNoteParts; }
+/** ✒ Is the player's protagonist themself a CANON character? Resolved against
+ * the chat's own verified cache (name or alias, case-blind) — a decision the
+ * composer derives, never assumes. Returns the canonical name, or null. */
+function mcCanonName(mcName, store) {
+    const lc = String(mcName || "").trim().toLowerCase();
+    if (!lc || !store) return null;
+    for (const e of Object.values(store)) {
+        if (!e || !e.found || !e.name) continue;
+        if (String(e.name).toLowerCase() === lc) return e.name;
+        if ((e.aliases || []).some(a => String(a).toLowerCase() === lc)) return e.name;
+    }
+    return null;
+}
 
 /**
  * Build the canon note.
@@ -3227,6 +3240,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
 async function composeNote(parts, sceneTail, mcName) {
     try {
         const scene = (sceneTail || []).map(m => clip(String(m || ""), 600)).join("\n---\n");
+        const canonMc = mcCanonName(mcName, cache());
         const systemText =
             "You rewrite a canon briefing for a roleplay storyteller. Rewrite the VERIFIED FACTS " +
             "below into ONE fluid prose briefing, shaped by the CURRENT SCENE.\n" +
@@ -3236,8 +3250,13 @@ async function composeNote(parts, sceneTail, mcName) {
             "2. You may weave in franchise context you are certain of (arc placement, era, widely " +
             "known background) in at most one short clause per character. Never invent names, numbers, " +
             "dates, events, or relationships that are not in VERIFIED FACTS. Unsure means write nothing.\n" +
-            `3. ${mcName} is this story's protagonist and is NOT a canon character: canon relationships ` +
-            `never apply to ${mcName}. If the scene shows a first meeting, they are strangers — say so plainly.\n` +
+            (canonMc
+                ? `3. The protagonist ${mcName} IS the canon character ${canonMc}: canon relationships between ` +
+                  `${canonMc} and the others fully apply — write them as the live dynamic of the scene. ` +
+                  `${mcName} is played by the player: brief how others see and treat ${mcName}, and never ` +
+                  `script ${mcName}'s actions, words, or thoughts.\n`
+                : `3. ${mcName} is this story's protagonist and is NOT a canon character: canon relationships ` +
+                  `never apply to ${mcName}. If the scene shows a first meeting, they are strangers — say so plainly.\n`) +
             "4. Present tense, plain prose, a short block per character. No headers, no lists, no markdown, " +
             "no meta-commentary, and never mention wikis, briefings, notes, or these instructions.\n" +
             "Output only the briefing text.";
