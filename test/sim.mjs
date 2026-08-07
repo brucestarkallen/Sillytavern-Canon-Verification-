@@ -1596,6 +1596,92 @@ console.log("[58] v0.59.0 ⌀ negative verification — the wiki's silence is re
     extension_settings.canon_grounding.autoArc = true;
 }
 
+// [59] v0.60.0 ✒ Advanced — the AI writes the note; the code verifies it, and
+// any failure degrades to exactly the assembled note this extension shipped with.
+console.log("[59] v0.60.0 ✒ Advanced (composer) — fluid prose, verified spine, honest fallback");
+{
+    // Wiring witnesses (comments stripped so a mention can't pass for a call).
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const h0 = code.indexOf("if (s.composerMode && lastScreenParts");
+    const heavySlice = code.slice(h0, code.indexOf("heavy.catch", h0));
+    T("the composer runs INSIDE the raced task — it can never block beyond the race", h0 > -1 && /composeNote\(/.test(heavySlice));
+    T("…and composes what actually WENT OUT, so fingerprints converge", /composeNote\(lastScreenParts/.test(heavySlice));
+    T("every composition is validated before it may ever inject", /composedNoteValid\(/.test(heavySlice));
+    T("a failed composition cools down instead of burning a call per turn", /> 180000/.test(heavySlice));
+    const pr0 = code.indexOf("let finalNoteText");
+    const postRace = code.slice(pr0, code.indexOf("renderLastInjection", pr0));
+    T("injection swaps in the composition ONLY on a live fingerprint match",
+        /composedCache\.key === nk && composedCache\.text/.test(postRace));
+    T("header, pins, arc and the ⌀ verdict stay code-written around the composed body",
+        /nowParts\.header \+ nowParts\.pinBlock \+ nowParts\.arcBlock[\s\S]{0,40}nowParts\.unvBlock \+ composedCache\.text/.test(postRace));
+    T("the composer's target updates every turn, mode on or off",
+        /if \(nowParts && nowParts\.castBody\) lastScreenParts = nowParts;/.test(postRace));
+    T("the preview waits for a composition through the same door", /await composeNote\(pParts/.test(code));
+
+    // Live: a fresh story, one grounded knight, the composer turned on.
+    globalThis.__ctx.chat = [];
+    globalThis.__ctx.chatMetadata = {
+        canon_grounding_wiki: "testwiki",
+        canon_grounding_wiki_ok: { wikis: "testwiki", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+        canon_grounding_cache: {
+            "velran ashe": { name: "Velran Ashe", found: true, wiki: "testwiki", aliases: [], ts: Date.now(),
+                sections: { identity: "A knight of the border.", physical: "hair: crimson; eyes: gold" }, rel: {} },
+        },
+    };
+    extension_settings.canon_grounding.composerMode = true;
+    extension_settings.canon_grounding.autoArc = false;
+
+    // One turn = player message → parser answered → any composer request
+    // answered with the given text ("" = model returned nothing).
+    async function turn59(text, composed) {
+        globalThis.__ctx.chat.push(msg(text, true));
+        const q = parseQueue.length;
+        const run = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+        await sleep(20);
+        if (parseQueue.length > q) parseQueue[q].resolve('["Velran Ashe"]');
+        await sleep(30);
+        let grew = parseQueue.length - q;
+        for (let i = q + 1; i < parseQueue.length; i++) parseQueue[i].resolve(composed);
+        await run;
+        return grew;
+    }
+
+    // Turn 1 — nothing composed for THIS cast yet: assembled note goes out.
+    await turn59("Velran Ashe stands at the gate.", "");
+    T("turn 1 injects the assembled note (nothing composed yet)", /Appearance:/.test(lastInjection()));
+
+    // Turn 2 — the composer targeted turn 1's on-screen facts; same facts on
+    // screen now, so the fingerprint matches and the FLUID note injects.
+    const FLUID = "Velran Ashe holds the gate alone — crimson hair loose, gold eyes steady — a knight of the border meeting Jovan for the first time, strangers still.";
+    const g2 = await turn59("Velran Ashe waits.", FLUID);
+    T("turn 2 queued exactly parser + composer", g2 === 2);
+    T("turn 2 injects the COMPOSED note", lastInjection().includes(FLUID));
+    T("…the rigid skeleton is gone from the body", !/Appearance:/.test(lastInjection()));
+    T("…and the code-written header still leads it", /canon from this series' wiki/.test(lastInjection()));
+
+    // Turn 3 — same facts: the cache answers, no new composer call at all.
+    const g3 = await turn59("Velran Ashe nods once.", "");
+    T("a stable scene costs no extra model call", g3 === 1);
+    T("…and still carries the composition", lastInjection().includes(FLUID));
+
+    // Turn 4 — the facts change (new eye colour) → new fingerprint → recompose;
+    // the model comes back WITHOUT the face → validator refuses → assembled note.
+    globalThis.__ctx.chatMetadata.canon_grounding_cache["velran ashe"].sections.physical = "hair: crimson; eyes: violet";
+    await turn59("Velran Ashe turns.", "");
+    const g5 = await turn59("Velran Ashe frowns.", "The gatehouse stands quiet; Velran Ashe keeps her long watch.");
+    T("a composition that loses the face is REFUSED — assembled note injects", /Appearance:/.test(lastInjection()) && !/gatehouse stands quiet/.test(lastInjection()));
+
+    // Turn 6 — same failed fingerprint inside the cool-down: no retry burn.
+    const g6 = await turn59("Velran Ashe waits again.", "");
+    T("a failed composition is not retried every turn", g6 === 1 && /Appearance:/.test(lastInjection()));
+
+    // Toggle honored end-to-end.
+    extension_settings.canon_grounding.composerMode = false;
+    const g7 = await turn59("Velran Ashe stands.", "");
+    T("toggle off → no composer request, assembled note as always", g7 === 1 && /Appearance:/.test(lastInjection()));
+    extension_settings.canon_grounding.autoArc = true;
+}
+
 {
     const mf = JSON.parse(fs.readFileSync(path.join(here, "..", "manifest.json"), "utf8"));
     const stamp = (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1];

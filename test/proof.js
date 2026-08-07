@@ -88,7 +88,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setNeed: (m) => { castNeed = m; }, orderLinesByNeed,
          setParsedWords: (a) => { parsedWords = new Set(a); },
          setEvidence: (m) => { castEvidence = m; },
-         splitEvidenceStrength, unverifiedNamed,
+         splitEvidenceStrength, unverifiedNamed, composedNoteValid, noteFingerprint, __noteParts,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks, emptyNoteDiagnosis,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection, negativeTtl, SOFT_NEGATIVE_TTL, NEGATIVE_TTL,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
@@ -1780,6 +1780,43 @@ console.log("[v0.59.0 ⌀ negative verification — absence is reported, not swa
     T("no userMsg → the path stays dormant (old call sites unchanged)",
         !/Not found/.test(api.relevantCanonNote([""], [], null, {})));
     sandbox.__settings.wikis = keepWikis; sandbox.__settings.cache = keepCache;
+}
+
+// ------------------------------------------------- v0.60.0 ✒ Advanced (composer)
+console.log("[v0.60.0 ✒ Advanced — the AI writes the note; the code verifies it]");
+{
+    T("fingerprint is stable", api.noteFingerprint("abc") === api.noteFingerprint("abc"));
+    T("fingerprint separates different facts", api.noteFingerprint("abc") !== api.noteFingerprint("abd"));
+    const parts = {
+        castBody: "Velran Ashe\nAppearance: hair: crimson; eyes: gold\nA knight of the border.",
+        names: ["Velran Ashe"],
+        appearance: { "Velran Ashe": ["crimson", "gold"] },
+    };
+    T("a faithful composition passes", api.composedNoteValid("Velran Ashe keeps the gate, crimson hair loose, gold eyes steady.", parts) === "");
+    T("one surviving appearance atom is enough", api.composedNoteValid("Velran Ashe waits, crimson-haired and silent.", parts) === "");
+    T("empty composition falls back", /empty/.test(api.composedNoteValid("   ", parts)));
+    T("JSON falls back — prose was asked for", /JSON/.test(api.composedNoteValid('{"note":"x"}', parts)));
+    T("leaked scaffolding falls back", /scaffolding|refusal/.test(api.composedNoteValid("VERIFIED FACTS: Velran Ashe, crimson.", parts)));
+    T("a refusal falls back", /scaffolding|refusal/.test(api.composedNoteValid("I cannot write about Velran Ashe crimson.", parts)));
+    T("a dropped cast member falls back", /dropped/.test(api.composedNoteValid("A crimson-haired, gold-eyed knight watches.", parts)));
+    T("a lost face falls back — appearance is a must", /appearance lost/.test(api.composedNoteValid("Velran Ashe keeps her long watch at the gate.", parts)));
+    T("a runaway length falls back", /longer/.test(api.composedNoteValid("Velran Ashe crimson " + "pad ".repeat(300), parts)));
+    // The parts stash — through the one door, reset on empty.
+    const keepW = sandbox.__settings.wikis, keepC = sandbox.__settings.cache;
+    sandbox.__settings.wikis = "storywiki";
+    sandbox.__settings.cache = { "velran ashe": { name: "Velran Ashe", found: true, wiki: "w", aliases: [],
+        sections: { identity: "A knight of the border.", physical: "hair: crimson; eyes: gold" }, rel: {} } };
+    const note60 = api.relevantCanonNote(["velran ashe waits"], ["Velran Ashe"], null, {});
+    const p60 = api.__noteParts();
+    T("parts carry exactly the cast body the note carries", !!p60 && !!p60.castBody && note60.includes(p60.castBody));
+    T("parts name everyone injected", p60.names.length === 1 && p60.names[0] === "Velran Ashe");
+    T("appearance atoms are distinctive tokens from the KEPT draft", (p60.appearance["Velran Ashe"] || []).includes("crimson"));
+    T("header, pins, arc and ⌀ ride outside the composable body",
+        "header" in p60 && "pinBlock" in p60 && "arcBlock" in p60 && "unvBlock" in p60 && !p60.castBody.includes(p60.header));
+    api.relevantCanonNote([""], [], null, {});
+    const pE = api.__noteParts();
+    T("an empty build resets the parts — no stale cast body can leak into a composition", !!pE && pE.castBody === "");
+    sandbox.__settings.wikis = keepW; sandbox.__settings.cache = keepC;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
