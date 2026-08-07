@@ -1602,16 +1602,22 @@ console.log("[59] v0.60.0 ✒ Advanced (composer) — fluid prose, verified spin
 {
     // Wiring witnesses (comments stripped so a mention can't pass for a call).
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-    const h0 = code.indexOf("if (s.composerMode && lastScreenParts");
+    const h0 = code.indexOf("if (s.composerMode && !composeInFlight");
     const heavySlice = code.slice(h0, code.indexOf("heavy.catch", h0));
-    T("the composer runs INSIDE the raced task — it can never block beyond the race", h0 > -1 && /composeNote\(/.test(heavySlice));
-    T("…and composes what actually WENT OUT, so fingerprints converge", /composeNote\(lastScreenParts/.test(heavySlice));
+    T("the composer is KICKED from the raced task but runs DETACHED — the race never waits on it",
+        h0 > -1 && /composeInFlight = true;\s*\(async \(\) => \{/.test(heavySlice));
+    T("…and composes what actually WENT OUT, snapshotted at kick time",
+        /const target = lastScreenParts;/.test(heavySlice) && /composeNote\(target, ctxMcName\(\)\)/.test(heavySlice));
     T("every composition is validated before it may ever inject", /composedNoteValid\(/.test(heavySlice));
     T("a failed composition cools down instead of burning a call per turn", /> 180000/.test(heavySlice));
+    T("the briefing is BACKGROUND, never narration — and the scene is not even sent",
+        /Reference material, not narration/.test(code) && !/CURRENT SCENE/.test(code));
     const pr0 = code.indexOf("let finalNoteText");
     const postRace = code.slice(pr0, code.indexOf("renderLastInjection", pr0));
     T("injection swaps in the composition ONLY on a live fingerprint match",
         /composedCache\.key === nk && composedCache\.text/.test(postRace));
+    T("…and the fingerprint is the STABLE facts-key, not the scene-ordered text",
+        /const nk = nowParts\.key;/.test(postRace) && /const ck = target\.key;/.test(heavySlice));
     T("header, pins, arc and the ⌀ verdict stay code-written around the composed body",
         /nowParts\.header \+ nowParts\.pinBlock \+ nowParts\.arcBlock[\s\S]{0,40}nowParts\.unvBlock \+ composedCache\.text/.test(postRace));
     T("the composer's target updates every turn, mode on or off",
@@ -1646,29 +1652,35 @@ console.log("[59] v0.60.0 ✒ Advanced (composer) — fluid prose, verified spin
         return grew;
     }
 
-    // Turn 1 — nothing composed for THIS cast yet: assembled note goes out.
+    // Turn 1 — kick composes the LEFTOVER screen (fail-cached ""), this turn's
+    // facts become the new target; the assembled note goes out untouched.
     await turn59("Velran Ashe stands at the gate.", "");
     T("turn 1 injects the assembled note (nothing composed yet)", /Appearance:/.test(lastInjection()));
 
-    // Turn 2 — the composer targeted turn 1's on-screen facts; same facts on
-    // screen now, so the fingerprint matches and the FLUID note injects.
-    const FLUID = "Velran Ashe holds the gate alone — crimson hair loose, gold eyes steady — a knight of the border meeting Jovan for the first time, strangers still.";
+    // Turn 2 — the kick composes turn 1's facts, DETACHED: this turn still
+    // injects the fresh assembled note (the race never waited), and the
+    // composition lands in the cache as the turn ends.
+    const FLUID = "Velran Ashe is a knight of the border — crimson hair, gold eyes — sworn to the wall she watches; to Jovan she is a stranger still, no history between them.";
     const g2 = await turn59("Velran Ashe waits.", FLUID);
     T("turn 2 queued exactly parser + composer", g2 === 2);
-    T("turn 2 injects the COMPOSED note", lastInjection().includes(FLUID));
+    T("turn 2 still injects the fresh ASSEMBLED note — the race never waits on the composer", /Appearance:/.test(lastInjection()));
+
+    // Turn 3 — the stable facts-key matches (the message changed; the facts
+    // did not): the composition injects, at zero extra model calls.
+    const g3 = await turn59("The wind rises over the parapet.", "");
+    T("a stable scene costs no extra model call", g3 === 1);
+    T("turn 3 injects the COMPOSED note on the stable facts-key", lastInjection().includes(FLUID));
     T("…the rigid skeleton is gone from the body", !/Appearance:/.test(lastInjection()));
     T("…and the code-written header still leads it", /canon from this series' wiki/.test(lastInjection()));
 
-    // Turn 3 — same facts: the cache answers, no new composer call at all.
-    const g3 = await turn59("Velran Ashe nods once.", "");
-    T("a stable scene costs no extra model call", g3 === 1);
-    T("…and still carries the composition", lastInjection().includes(FLUID));
-
-    // Turn 4 — the facts change (new eye colour) → new fingerprint → recompose;
-    // the model comes back WITHOUT the face → validator refuses → assembled note.
+    // Turns 4–5 — the facts change (new eye colour) → new stable key → the
+    // kick recomposes; the model comes back WITHOUT the face → the validator
+    // refuses → the assembled note keeps riding.
     globalThis.__ctx.chatMetadata.canon_grounding_cache["velran ashe"].sections.physical = "hair: crimson; eyes: violet";
     await turn59("Velran Ashe turns.", "");
     const g5 = await turn59("Velran Ashe frowns.", "The gatehouse stands quiet; Velran Ashe keeps her long watch.");
+    T("turn 5 recomposed the changed facts", g5 === 2);
+    const g5b = await turn59("Velran Ashe waits by the arch.", "");
     T("a composition that loses the face is REFUSED — assembled note injects", /Appearance:/.test(lastInjection()) && !/gatehouse stands quiet/.test(lastInjection()));
 
     // Turn 6 — same failed fingerprint inside the cool-down: no retry burn.

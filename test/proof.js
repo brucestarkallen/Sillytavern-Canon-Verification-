@@ -1805,14 +1805,24 @@ console.log("[v0.60.0 ✒ Advanced — the AI writes the note; the code verifies
     const keepW = sandbox.__settings.wikis, keepC = sandbox.__settings.cache;
     sandbox.__settings.wikis = "storywiki";
     sandbox.__settings.cache = { "velran ashe": { name: "Velran Ashe", found: true, wiki: "w", aliases: [],
-        sections: { identity: "A knight of the border.", physical: "hair: crimson; eyes: gold" }, rel: {} } };
-    const note60 = api.relevantCanonNote(["velran ashe waits"], ["Velran Ashe"], null, {});
+        sections: { identity: "A knight of the border.", physical: "hair: crimson; eyes: gold" }, rel: {},
+        dossier: { facts: ["Keeps the beacon towers lit through winter", "Trained the garrison's youngest riders"] } } };
+    const note60 = api.relevantCanonNote(["velran ashe waits with the riders"], ["Velran Ashe"], null, {});
     const p60 = api.__noteParts();
     T("parts carry exactly the cast body the note carries", !!p60 && !!p60.castBody && note60.includes(p60.castBody));
     T("parts name everyone injected", p60.names.length === 1 && p60.names[0] === "Velran Ashe");
     T("appearance atoms are distinctive tokens from the KEPT draft", (p60.appearance["Velran Ashe"] || []).includes("crimson"));
     T("header, pins, arc and ⌀ ride outside the composable body",
         "header" in p60 && "pinBlock" in p60 && "arcBlock" in p60 && "unvBlock" in p60 && !p60.castBody.includes(p60.header));
+    T("parts carry a stable facts-key", typeof p60.key === "string" && p60.key.length > 0);
+    api.relevantCanonNote(["velran ashe frowns at the far towers tonight"], ["Velran Ashe"], null, {});
+    const pScene = api.__noteParts();
+    T("(detector premise) the PRESENTATION really did reorder between scenes", pScene.castBody !== p60.castBody);
+    T("the key ignores the scene — same facts, different messages, SAME key", pScene.key === p60.key);
+    sandbox.__settings.cache["velran ashe"].sections.physical = "hair: silver; eyes: gold";
+    api.relevantCanonNote(["velran ashe waits"], ["Velran Ashe"], null, {});
+    const pFacts = api.__noteParts();
+    T("the key follows canon — changed facts, changed key", pFacts.key !== p60.key);
     api.relevantCanonNote([""], [], null, {});
     const pE = api.__noteParts();
     T("an empty build resets the parts — no stale cast body can leak into a composition", !!pE && pE.castBody === "");
