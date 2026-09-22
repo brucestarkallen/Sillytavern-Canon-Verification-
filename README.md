@@ -56,6 +56,19 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.67.1 (the not-in-canon notice names each thing once)
+
+Proven by `test/proof.js` (598) + `test/sim.mjs` (423); **1 guard negative-tested**.
+
+A test of the ⌀ notice failed now and then — and v0.67.0 misread it as a slow
+machine's race window. The real root: the sweep also looks up the FRAGMENTS of a
+name the player asks about ("Crimson Pact", "Ulveth" inside "Do you remember the
+Crimson Pact of Ulveth?"), and whenever those lookups landed before the note was
+built, the notice named three unknown things for one, fragments first. A name that
+is a whole-word part of a longer asked-about name is no longer listed beside it; two
+different things asked about are both still named. [64] checks the turn's own note
+again.
+
 ## Changelog — v0.67.0 (🔭 the story's lens — canon is a timeline, and a story may leave it)
 
 Proven by `test/proof.js` (596) + `test/sim.mjs` (423); **3 guards negative-tested**.
