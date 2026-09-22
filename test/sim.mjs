@@ -1942,6 +1942,30 @@ console.log("[63] v0.65.0 one home for a face; no Relationships line repeating a
     Object.assign(S, saved63);
 }
 
+// [64] v0.66.0 — the note speaks to the storyteller, never about one: the story
+// position's spoiler guard says "your map", and the ⌀ notice names no machinery.
+console.log("[64] v0.66.0 the note's own words are second person and plain");
+{
+    const S = extension_settings.canon_grounding;
+    const saved64 = { arcInject: S.arcInject, llmParser: S.llmParser, useLedger: S.useLedger, reportUnverified: S.reportUnverified, autoArc: S.autoArc };
+    S.arcInject = true; S.llmParser = false; S.useLedger = true; S.autoArc = false; S.reportUnverified = true;
+    globalThis.__ctx.chat = [msg("Do you remember the Crimson Pact of Ulveth?", true)];
+    globalThis.__ctx.chatMetadata = {
+        canon_grounding_wiki: "verifyless",
+        canon_grounding_wiki_ok: { wikis: "verifyless", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+        canon_grounding_arc: { title: "The Winter Arc", summary: "The court gathers; a duel is fought on the ice.", mode: "begun", ts: Date.now() },
+        canon_grounding_cache: { "crimson pact of ulveth": { name: "Crimson Pact of Ulveth", found: false, reason: "no-page", trusted: true, searched: ["verifyless"], ts: Date.now() } },
+        summaryception: { ledger: { Hostala: { present: true } } },
+    };
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    const n64 = lastInjection();
+    T("the story position rides", /Where our story is — The Winter Arc \(just beginning\)/.test(n64));
+    const arc64 = (n64.match(/Where our story is —[^\n]*\n\([^\n]*\)/) || [""])[0];
+    T("…its guard is YOUR map, never the storyteller's", /is your map of canon events/.test(arc64) && !/storyteller/i.test(arc64));
+    T("the ⌀ notice names what is missing, not the machinery", /Not found in this story's canon sources: "Crimson Pact of Ulveth"/.test(n64) && !/wiki page/.test(n64));
+    Object.assign(S, saved64);
+}
+
 {
     const mf = JSON.parse(fs.readFileSync(path.join(here, "..", "manifest.json"), "utf8"));
     const stamp = (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1];
