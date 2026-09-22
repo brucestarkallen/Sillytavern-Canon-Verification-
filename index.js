@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.65.0";
+const CG_VERSION = "0.66.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -3287,7 +3287,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         // the original "everything above has occurred" semantics byte-for-byte.
         arcBlock = (arcNote.mode === "begun")
             ? `Where our story is — ${arcNote.title} (just beginning): ${arcNote.summary}\n` +
-              `(The story is at the START of this arc: the summary above is the storyteller's map of canon events that have NOT yet happened — let them unfold naturally, never treat them as past, and no character knows them. Events from earlier arcs have happened. Canon beyond this arc, and every unrevealed identity, is likewise unknown to every character — never foreshadow or use it.)\n`
+              `(The story is at the START of this arc: the summary above is your map of canon events that have NOT yet happened — let them unfold naturally, never treat them as past, and no character knows them. Events from earlier arcs have happened. Canon beyond this arc, and every unrevealed identity, is likewise unknown to every character — never foreshadow or use it.)\n`
             : `Where our story is — ${arcNote.title}: ${arcNote.summary}\n` +
               `(Only events up to this point have happened. Later canon events, reveals, and ` +
               `identities are unknown to every character — never foreshadow or use them.)\n`;
@@ -3313,7 +3313,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         const unv = unverifiedNamed(extras.userMsg, store, activeWikis(),
             [...principals, ...(extras.blockNames || [])]);
         if (unv.length) {
-            unvBlock = `Not found in this story's canon sources (no wiki page): ` +
+            unvBlock = `Not found in this story's canon sources: ` +
                 unv.map(n => `"${clip(n, 40)}"`).join(", ") +
                 ` — treat these as original to this story or not established in canon. ` +
                 `Never import outside facts for them; characters know only what this story itself has shown.\n`;
