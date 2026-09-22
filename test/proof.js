@@ -1899,5 +1899,20 @@ console.log("[v0.64.0 a pinned short name resolves as the note resolves it, with
     T("a word two people share resolves to nobody", api.cacheEntryIn(store, "kotetsu") === null);
 }
 
+// ------------------------------------------------- v0.67.1 a fragment of a name is not a second unknown
+console.log("[v0.67.1 the not-in-canon notice names each asked-about thing once, never its fragments]");
+{
+    const now = Date.now();
+    const store = {
+        "crimson pact of ulveth": { name: "Crimson Pact of Ulveth", found: false, reason: "no-page", trusted: true, searched: ["w"], ts: now },
+        "crimson pact": { name: "Crimson Pact", found: false, reason: "no-page", trusted: false, searched: ["w"], ts: now + 5 },
+        "ulveth": { name: "Ulveth", found: false, reason: "no-page", trusted: false, searched: ["w"], ts: now + 6 },
+    };
+    const got = api.unverifiedNamed("Do you remember the Crimson Pact of Ulveth?", store, "w", []);
+    T("the whole name, once — its fragments (looked up later) are not listed beside it", JSON.stringify(got) === JSON.stringify(["Crimson Pact of Ulveth"]));
+    const two = api.unverifiedNamed("Is Ulveth near Varnhold?", { ...store, "varnhold": { name: "Varnhold", found: false, reason: "no-page", trusted: false, searched: ["w"], ts: now } }, "w", []);
+    T("…while two different things asked about are both named", two.includes("Ulveth") && two.includes("Varnhold"));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

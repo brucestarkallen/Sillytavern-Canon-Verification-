@@ -1960,9 +1960,7 @@ console.log("[64] v0.66.0 the note's own words are second person and plain");
         summaryception: { ledger: { Hostala: { present: true } } },
     };
     await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
-    // the words are checked on the note built from what is kept (the preview IS the turn's own door) — a turn's
-    // race window under a loaded machine must not decide a test of WORDING
-    const n64 = (await globalThis.CanonGrounding_api.preview()).note || lastInjection();
+    const n64 = lastInjection();   // v0.67.1: the fragments race is fixed at its root (unverifiedNamed) — the turn's own note
     T("the story position rides", /Where our story is — The Winter Arc \(just beginning\)/.test(n64));
     const arc64 = (n64.match(/Where our story is —[^\n]*\n\([^\n]*\)/) || [""])[0];
     T("…its guard is YOUR map, never the storyteller's", /is your map of canon events/.test(arc64) && !/storyteller/i.test(arc64));
