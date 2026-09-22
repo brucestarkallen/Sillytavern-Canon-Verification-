@@ -140,6 +140,19 @@ Nobles gather at the palace; a poisoning is uncovered; the banquet ends in chaos
 `The '''Winter Gala''' is the capital's midwinter celebration.
 == Summary ==
 The gala opens with a masquerade and closes with a duel on the ice.` } } }) };
+    if (page === "Hostala" || page === "Hostbeta") {
+        const other = page === "Hostala" ? "Hostbeta" : "Hostala";
+        return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'''${page}''' is a duelist of the east wing.
+{{Infobox
+| hair = ${page}-colored
+}}
+== Personality ==
+Calm.
+== Relationships ==
+=== ${other} ===
+${page} trusts ${other} with her life and teases ${other} constantly.` } } }) };
+    }
     if (page) return { ok: true, json: async () => ({ parse: { wikitext: { "*": `{{Infobox\n| hair = ${page}-colored\n}}\n== Personality ==\nCalm.` } } }) };
     return { ok: true, json: async () => ({}) };
 };
@@ -680,8 +693,12 @@ T("manual pin is a decree: reached list wiped; auto appends",
     /if \(mode !== "begun"\) return \{ note: \{ \.\.\.note, mode: "reached" \}, reached: \[\] \};/.test(src));
 T("clearing the position also clears the tracker's memory",
     /setChatArc\(null\); setChatPin\("canon_grounding_arc_reached", \[\]\);/.test(src));
+// v0.64.0: the table's thunks resolve through promptDefault (one definition, shared
+// with the host surface) — the property is unchanged: the row is in the table AND
+// its default is the built-in referee prompt.
 T("the referee prompt is user-visible like every other (🧾 wired)",
-    /\["#cg_prompt_arcjudge",\s*"promptArcJudge",[^\]]*DEFAULT_PROMPT_ARCJUDGE\]/.test(src) && /cg_prompt_arcjudge_reset/.test(src));
+    /\["#cg_prompt_arcjudge",\s*"promptArcJudge",\s*\(\) => promptDefault\("promptArcJudge"\)\]/.test(src)
+    && /case "promptArcJudge": return DEFAULT_PROMPT_ARCJUDGE;/.test(src) && /cg_prompt_arcjudge_reset/.test(src));
 
 // [25] v0.36.0 — 🔭 wiki discovery: verify first, discover when needed, settle forever.
 console.log("[25] wiki discovery: verify -> discover -> settle, wiki.gg beats a frozen fork");
@@ -885,7 +902,8 @@ T("the Scan button AWAITS discovery, and FORCES it — an explicit scan re-opens
 T("an EMPTY preview names the wiki state instead of leaving the user guessing",
     /wikiStateHint\(\)/.test(src) && /NOT verified for this chat yet/.test(src));
 T("the discovery prompt is user-visible like every other (🧾 wired)",
-    /\["#cg_prompt_discover",\s*"promptDiscover",[^\]]*DEFAULT_PROMPT_DISCOVER\]/.test(src) && /cg_prompt_discover_reset/.test(src));
+    /\["#cg_prompt_discover",\s*"promptDiscover",\s*\(\) => promptDefault\("promptDiscover"\)\]/.test(src)
+    && /case "promptDiscover": return DEFAULT_PROMPT_DISCOVER;/.test(src) && /cg_prompt_discover_reset/.test(src));
 
 // [32] v0.40.0 — LO's live report: SillyTavern's NEUTRAL card on a blank chat.
 // There is no protagonist and nothing the story has said, so there is nothing a
@@ -1001,8 +1019,11 @@ T("the proposer is told that guessing is worse than nothing",
 
 // [37] v0.40.1 — static witnesses: the preview measures, the ghost panel clears.
 console.log("[37] v0.40.1 static witnesses — measured preview, no ghost reasons");
+// v0.64.0: the preview is ONE function (previewNote) the panel and a host share; the
+// diagnosis is built there and the panel's toast shows exactly what it measured.
 T("the empty-preview toast calls the DIAGNOSIS, not a canned three-claim string",
-    /Preview is EMPTY \\u2014 \$\{emptyNoteDiagnosis\(scene, cast, \{/.test(src)
+    /empty: note \? "" : `\$\{emptyNoteDiagnosis\(scene, cast, \{/.test(src)
+    && /Preview is EMPTY \\u2014 \$\{r\.empty\}/.test(src)
     && !/nothing cached is named in the scene window, cast is empty, and no pins\/arc are set/.test(src));
 T("the diagnosis is measured: counts, pin resolution, and the meta-only hunt",
     /function emptyNoteDiagnosis\(rawMsgs, castNames, extras = \{\}\)/.test(src)
@@ -1425,7 +1446,7 @@ console.log("[52] v0.52.0 the relationship pass");
     T("both emitters feed the dynamics band",
         (src.match(/dyn\.push\(\.\.\.dynLines\(\)\);/g) || []).length === 2
         && !/lines\.push\(\.\.\.dynLines\(\)\)/.test(src));
-    T("the bands are carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, lines: rest, look, dyn \}\);/.test(src));
+    T("the bands are carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, viaLedger, lines: rest, look, dyn \}\);/.test(src));
     T("appearance is allocated before the relationship pass",
         src.indexOf("PASS ONE-AND-A-HALF") < src.indexOf("PASS TWO — WHO THESE PEOPLE ARE"));
     T("it gets its own pass, before any solo depth",
@@ -1744,6 +1765,145 @@ console.log("[60] v0.61.0 ✒ the canon-MC law is a decision, not an assumption"
     delete globalThis.__ctx.name1;
     extension_settings.canon_grounding.composerMode = false;
     extension_settings.canon_grounding.autoArc = true;
+}
+
+// [61] v0.64.0 — a HOST's ledger that knows who is in the room is heard; the host
+// may frame the note in its own voice; the host drives the panel's own functions.
+console.log("[61] v0.64.0 the host's ledger puts people on screen; the host's framing; one function per lever");
+{
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    // Wiring witnesses — ONE door for the ledger's on-screen cast, called from every surface.
+    T("no door filters the ledger by name alone any more", !/lgN(ames)?\.filter\(n => mentioned/.test(code));
+    T("ledgerOnScreen is CALLED from the turn, the stale fallback, the composer and the preview",
+        (code.match(/ledgerOnScreen\(sceneText\)/g) || []).length >= 5 && /ledgerNames: ledgerOnScreen\(scene\.join\("\\n"\)\)/.test(code));
+    T("the pair pool includes the ledger's on-screen cast",
+        /const pairPool = \[\.\.\.\(cast \|\| \[\]\), \.\.\.pinNames, \.\.\.ledgerOnScreen\(sceneText\)\];/.test(code));
+    T("the panel's buttons and the host surface are ONE function each",
+        /\$\("#cg_preview"\)[\s\S]{0,140}await previewNote\(\)/.test(code) && /preview: \(\) => previewNote\(\)/.test(code)
+        && /await scanScene\(\{ onStart:/.test(code) && /scan: \(opts\) => scanScene\(/.test(code)
+        && /\$\("#cg_clear"\)[\s\S]{0,80}clearCache\(\);/.test(code) && /clearCache: \(\) => clearCache\(\)/.test(code)
+        && /forgetEntry\(key\); renderCacheList\(\);/.test(code) && /forget: \(key\) => forgetEntry\(key\)/.test(code)
+        && /resetAllSettings\(\);\s*\n\s*cgToast\("success", "Defaults restored/.test(code) && /resetAll: \(\) => resetAllSettings\(\)/.test(code));
+
+    const S = extension_settings.canon_grounding;
+    const saved61 = { llmParser: S.llmParser, useLedger: S.useLedger, relationDynamics: S.relationDynamics, autoArc: S.autoArc };
+    S.useLedger = true; S.relationDynamics = true; S.autoArc = false;
+    const bound = () => ({
+        canon_grounding_wiki: "testwiki",
+        canon_grounding_wiki_ok: { wikis: "testwiki", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+    });
+    const seeded = () => ({ hostala: { name: "Hostala", found: true, wiki: "testwiki", aliases: [], ts: Date.now(),
+        sections: { identity: "A duelist of the east wing.", physical: "hair: Hostala-colored" }, rel: {} } });
+    const nameless = "She pours the tea and waits.";
+
+    // Ledger mode (parser off): the host's mark alone puts her on screen — no name anywhere in the window.
+    S.llmParser = false;
+    globalThis.__ctx.chat = [msg(nameless, true)];
+    globalThis.__ctx.chatMetadata = { ...bound(), summaryception: { ledger: { Hostala: { present: true }, Farawaychar: {} } } };
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    T("a host-marked present character rides with no name in the scene", /Hostala-colored/.test(lastInjection()));
+    T("…grounded on the spot, as the story's own cast", !!(globalThis.__ctx.chatMetadata.canon_grounding_cache || {}).hostala);
+    T("an unmarked ledger name the scene never names stays home",
+        !/Farawaychar/.test(lastInjection()) && !(globalThis.__ctx.chatMetadata.canon_grounding_cache || {}).farawaychar);
+    // NEGATIVE CONTROL — the same cached person, the same nameless scene, no mark: she does NOT ride.
+    // (A door that treated every ledger name as present would fail exactly here.)
+    globalThis.__ctx.chat = [msg(nameless, true)];
+    globalThis.__ctx.chatMetadata = { ...bound(), canon_grounding_cache: seeded(), summaryception: { ledger: { Hostala: {}, Farawaychar: {} } } };
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    T("NEGATIVE CONTROL: cached, in the ledger, unmarked and unnamed — she stays home", !/Hostala-colored/.test(lastInjection()));
+
+    // Parser mode: the parser naming nobody does not un-seat the ledger's present cast, and the pair is resolved.
+    S.llmParser = true;
+    globalThis.__ctx.chat = [msg(nameless, true)];
+    globalThis.__ctx.chatMetadata = { ...bound(), summaryception: { ledger: { Hostala: { present: true }, Hostbeta: { present: true } } } };
+    const q61 = parseQueue.length;
+    const run61 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    if (parseQueue.length > q61) parseQueue[q61].resolve("[]");
+    await run61;
+    const note61 = lastInjection(); if (process.env.SHOW61) console.log("NOTE61>>>", note61, "\nCACHE>>>", JSON.stringify(globalThis.__ctx.chatMetadata.canon_grounding_cache, null, 1).slice(0, 1500));
+    T("parser on: both present-marked people ride though the parser named nobody",
+        /Hostala-colored/.test(note61) && /Hostbeta-colored/.test(note61));
+    T("…and who they are to each other is resolved for the pair",
+        /With Hostbeta: Hostala trusts Hostbeta/.test(note61) && /With Hostala: Hostbeta trusts Hostala/.test(note61));
+    const api = globalThis.CanonGrounding_api;
+    T("the host surface exists and is frozen", !!api && Object.isFrozen(api) && api.version === (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1]);
+    T("the reason says the story's own ledger put them there",
+        api.last().reasons.some(r => /^Hostala ← in the scene by the story's own ledger/.test(r)));
+
+    // The host's framing opens the note; without one, the player's-note default, byte for byte.
+    globalThis.__ctx.canonHeaderDefault = "Host framing line.";
+    const q61b = parseQueue.length;
+    globalThis.__ctx.chat.push(msg("She looks up from the cup.", true));
+    const run61b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    if (parseQueue.length > q61b) parseQueue[q61b].resolve("[]");
+    await run61b;
+    T("a host's own framing opens the note", lastInjection().startsWith("Host framing line.\n") && /Hostala-colored/.test(lastInjection()));
+    T("…and the host sees that framing as the header's default", api.promptDefault("promptHeader") === "Host framing line.\n");
+    delete globalThis.__ctx.canonHeaderDefault;
+    const q61c = parseQueue.length;
+    globalThis.__ctx.chat.push(msg("She sets the cup down.", true));
+    const run61c = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    if (parseQueue.length > q61c) parseQueue[q61c].resolve("[]");
+    await run61c;
+    const turnNote = lastInjection();
+    T("no host framing = the player's-note default, unchanged", /^Author's note — canon from this series' wiki/.test(turnNote));
+
+    // One function per lever: the host's preview IS the turn's note for the same scene.
+    const pv = await api.preview();
+    T("the host's preview builds exactly the note the turn sent", pv.note === turnNote && pv.empty === "");
+    T("…and records itself as a preview, as the panel always did", api.last().source === "preview");
+    // Decrees through the host surface are this chat's own.
+    api.setPins({ names: ["Hostbeta"], text: "The engagement is broken." });
+    T("pins written through the host land in the chat's metadata",
+        globalThis.__ctx.chatMetadata.canon_grounding_pin_names === "Hostbeta" && api.pins().text === "The engagement is broken.");
+    T("…and the next note carries the pinned words", /The engagement is broken\./.test((await api.preview()).note));
+    api.setPins({ block: ["Hostala"] });
+    T("never-inject through the host keeps her out of the note", !/Hostala-colored/.test((await api.preview()).note));
+    api.setPins({ names: "", text: "", block: "" });
+    // Look it up again = forgotten AND fetched now; forget = gone.
+    const f0 = fetchLog.length;
+    const again = await api.lookAgain("hostala");
+    T("look it up again: fetched NOW, not on the next mention", !!(again && again.found) && fetchLog.length > f0);
+    T("forget lets an entry go, and only a real one", api.forget("hostala") === true && !api.cache().hostala && api.forget("nobody") === false);
+    // A story's wiki bound by the host is a manual decree for THIS chat, and purges another universe's canon.
+    api.cache().foreignchar = { name: "Foreignchar", found: true, wiki: "otherwiki", sections: { identity: "x" }, ts: Date.now() };
+    api.bindWiki("testwiki");
+    const w = api.wiki();
+    T("the host binds this chat's wiki as a decree", w.binding === "testwiki" && !!w.verified && w.verified.manual === true);
+    T("…and canon from another universe goes with the old binding", !api.cache().foreignchar);
+    // Clearing the story position clears the tracker's memory too.
+    globalThis.__ctx.chatMetadata.canon_grounding_arc = { title: "Some Arc", summary: "x", mode: "begun", ts: 1 };
+    globalThis.__ctx.chatMetadata.canon_grounding_arc_reached = ["older arc"];
+    api.clearArc();
+    T("clearing the story position through the host clears the passed positions too",
+        api.arc() === null && (globalThis.__ctx.chatMetadata.canon_grounding_arc_reached || []).length === 0);
+
+    Object.assign(S, saved61);
+}
+
+// [62] v0.64.0 — no wiki, no verdict: a story with no wiki to ask records no miss and
+// reports no absence (the ⌀ notice used to call every vouched name "not in canon").
+console.log("[62] v0.64.0 searching no wiki proves nothing");
+{
+    const S = extension_settings.canon_grounding;
+    const saved62 = { wikis: S.wikis, autoDiscoverWiki: S.autoDiscoverWiki, llmParser: S.llmParser, autoArc: S.autoArc, reportUnverified: S.reportUnverified };
+    S.wikis = ""; S.autoDiscoverWiki = false; S.llmParser = true; S.autoArc = false; S.reportUnverified = true;
+    globalThis.__ctx.chat = [msg("Have you seen Kestrel Vane?", true)];
+    globalThis.__ctx.chatMetadata = {};
+    const f62 = fetchLog.length;
+    const q62 = parseQueue.length;
+    const run62 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    if (parseQueue.length > q62) parseQueue[q62].resolve('[{"name":"Kestrel Vane","evidence":"Kestrel Vane"}]');
+    await run62;
+    const c62 = globalThis.__ctx.chatMetadata.canon_grounding_cache || {};
+    T("no wiki: nothing is fetched", fetchLog.length === f62);
+    T("…and no miss is recorded for a name no wiki was asked about", !c62["kestrel vane"]);
+    T("…and the note claims no absence", !/Not found in this story's canon sources/.test(lastInjection()));
+    Object.assign(S, saved62);
 }
 
 {

@@ -81,7 +81,7 @@ saveCache = () => {};   // persistence is sim's job — the real saveCache needs
 return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
          extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
-         clip, cacheEntryFor, pruneStaleCast, isUnhandledName,
+         clip, cacheEntryFor, cacheEntryIn, pruneStaleCast, isUnhandledName,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier, normalizeDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
@@ -1841,6 +1841,62 @@ console.log("[v0.61.0 ✒ the protagonist's canon status is a decision, not an a
     T("an original-character MC resolves to null", api.mcCanonName("Jovan", st) === null);
     T("a MISS entry is not canon — found is required", api.mcCanonName("The Ghost", st) === null);
     T("no name, no store → null, never a throw", api.mcCanonName("", st) === null && api.mcCanonName("Rukia", null) === null);
+}
+
+// ------------------------------------------------- v0.64.0 a heading that opens straight into its subsections
+console.log("[v0.64.0 a section that opens straight into its subsections is read whole]");
+{
+    // The common Fandom layout the old fixtures never had: no intro line under the heading.
+    const REL = "== Relationships ==\n=== Cid Kagenou ===\nUtterly devoted to him; around Cid her stoic mask slips into open warmth.\n=== Beta ===\nTrusted fellow founder.\n== Trivia ==\n* x";
+    const raw = api.extractSectionRaw(REL, ["relationships"]);
+    T("a heading-only Relationships section yields its people", /=== Cid Kagenou ===/.test(raw) && /=== Beta ===/.test(raw) && !/Trivia/.test(raw));
+    T("…and the pair line is found on the page itself (no subpage needed)", /stoic mask slips/.test(api.relationFor(raw, ["Cid"])));
+    // Deeper nesting: a person's group heading that is itself heading-only.
+    const NEST = "== Relationships ==\n=== Family ===\n==== Cid Kagenou ====\nHer younger brother, whom she dotes on.\n=== Allies ===\nThe council.\n== Gallery ==\n<gallery>x.png</gallery>";
+    const nraw = api.extractSectionRaw(NEST, ["relationships"]);
+    T("a heading-only subsection does not cut the subtree short", /==== Cid Kagenou ====/.test(nraw) && /=== Allies ===/.test(nraw) && !/Gallery/.test(nraw));
+    T("…and the person under it is found", /dotes on/.test(api.relationFor(nraw, ["Cid Kagenou"])));
+    // A person's own heading that opens straight into sub-subsections.
+    const PERSON = "\n=== Cid Kagenou ===\n==== Early days ====\nShe met him in the rain.\n==== Later ====\nShe follows him anywhere.\n=== Beta ===\nA friend.";
+    const pr = api.relationFor(PERSON, ["Cid"]);
+    T("a person heading that opens into sub-subsections still yields them", /met him in the rain/.test(pr) && /follows him anywhere/.test(pr) && !/A friend/.test(pr));
+    // The cleaned reader reads the subtree too: History split into eras was an empty history.
+    const HIST = "'''Rose''' is a princess.\n== History ==\n=== Early life ===\nShe was born in the Oriana Kingdom.\n=== Academy ===\nShe enrolled at Midgar Academy.\n== Trivia ==\n* She likes tea very much indeed.";
+    const hist = api.extractSection(HIST, ["history"], 400);
+    T("a history told in eras is read, every era", /born in the Oriana Kingdom/.test(hist) && /enrolled at Midgar Academy/.test(hist) && !/likes tea/.test(hist));
+    T("…its sub-headings do not leak into the text", !/===|Early life ===/.test(hist));
+    T("the character gate sees a page whose sections all open into subsections",
+        api.extractSection("== Personality ==\n=== In the anime ===\nShe is proud and stern.", ["personality", "relationships", "appearance"], 40) !== "");
+    // Unchanged where a section has its own body and flat subsections (the old fixtures' shape).
+    const FLAT = "== Personality ==\nCalm and kind.\n== Relationships ==\nIntro.";
+    T("a section with its own body still stops at its sibling", api.extractSection(FLAT, ["personality"], 200) === "Calm and kind.");
+    T("the lead (no heading) is never a section", api.extractSectionRaw("Just a lead.", ["just"]) === "");
+}
+
+// ------------------------------------------------- v0.64.0 no wiki, no verdict
+console.log("[v0.64.0 searching no wiki proves nothing]");
+{
+    const miss = { name: "Kestrel Vane", found: false, reason: "no-page", trusted: true, searched: [], ts: Date.now() };
+    T("a miss never covers an EMPTY wiki list", api.missCoversCurrentWikis(miss, "") === false && api.missCoversCurrentWikis(miss, " , ") === false);
+    T("…while a real list still decides as before", api.missCoversCurrentWikis({ ...miss, searched: ["bleach"] }, "bleach") === true);
+    T("the ⌀ notice says nothing when no wiki was asked", api.unverifiedNamed("Have you seen Kestrel Vane?", { "kestrel vane": miss }, "", []).length === 0);
+    T("…and still reports a real, searched absence", api.unverifiedNamed("Have you seen Kestrel Vane?", { "kestrel vane": { ...miss, searched: ["bleach"] } }, "bleach", []).length === 1);
+}
+
+// ------------------------------------------------- v0.64.0 the resolver, pure, for a host's own decrees
+console.log("[v0.64.0 a pinned short name resolves as the note resolves it, with no side effects]");
+{
+    const store = {
+        "rukia kuchiki": { name: "Rukia Kuchiki", found: true, sections: {}, aliases: [] },
+        "rukia": { name: "Rukia", found: false, reason: "no-page", searched: ["bleach"] },
+        "isane kotetsu": { name: "Isane Kotetsu", found: true, sections: {}, aliases: [] },
+        "kiyone kotetsu": { name: "Kiyone Kotetsu", found: true, sections: {}, aliases: [] },
+    };
+    const before = JSON.stringify(store);
+    const hit = api.cacheEntryIn(store, "rukia");
+    T("a pinned “Rukia” is Rukia Kuchiki, as the note decides", !!hit && hit.key === "rukia kuchiki" && hit.stale === "rukia");
+    T("…and resolving buries nothing — pure", JSON.stringify(store) === before);
+    T("a word two people share resolves to nobody", api.cacheEntryIn(store, "kotetsu") === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
