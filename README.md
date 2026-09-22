@@ -56,6 +56,29 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.65.0 (🏠 one home for a fact — the note stops repeating what the host's ledger says)
+
+Proven by `test/proof.js` (596) + `test/sim.mjs` (413); **2 guards negative-tested**.
+
+Measured in Cozy Tavern on an ordinary three-person scene, the storyteller read
+the same canon facts two and three times a page: Rukia's violet eyes in the
+note's Appearance line, again in the host ledger's locked truths, again on her
+character page; and inside the note itself, the "With Byakuya" line and the
+"Relationships" line were the same sentence. Two roots here:
+
+**A host that already shows someone's face says so.** A ledger entry marked
+`holds: ["appearance"]` (its own truths show that face this turn) gets no
+Appearance line: the face is said once, by the host, and the note's budget goes
+to depth. One door (`ledgerFaceHeld`) feeds every call of the note builder —
+the turn, the composer's parts, the preview. SillyTavern with Summaryception
+marks nobody, so every Appearance line stays.
+
+**A Relationships line never repeats a pair line.** Since v0.64.0 reads a
+section with its subtree, a Relationships section that is only the other
+person's subsection gave the fallback note the same sentences twice — once as
+"With B", once as "Relationships". The fallback now builds the pair lines first
+and leaves out of the Relationships line every sentence they already say.
+
 ## Changelog — v0.64.0 (🧩 a host that knows who is in the room; a section read whole)
 
 Proven by `test/proof.js` (596) + `test/sim.mjs` (406); **9 guards negative-tested**.
