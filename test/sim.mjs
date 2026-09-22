@@ -2029,6 +2029,52 @@ console.log("[65] v0.67.0 the story's lens");
     Object.assign(S, saved65);
 }
 
+// [66] v0.68.0 — WHERE THE SCENE IS follows the host's place (its header), never the
+// parser's guess at a place someone mentioned; a place canon does not know leaves no
+// setting at all.
+console.log("[66] v0.68.0 the setting follows the host's place");
+{
+    const S = extension_settings.canon_grounding;
+    const saved66 = { llmParser: S.llmParser, useLedger: S.useLedger, autoArc: S.autoArc };
+    S.llmParser = false; S.useLedger = true; S.autoArc = false;
+    const places = () => ({
+        "kuchiki manor": { name: "Kuchiki Manor", found: true, kind: "place", wiki: "testwiki", aliases: [], ts: Date.now(), sections: { identity: "The ancestral estate of the Kuchiki clan." } },
+        "karakura town": { name: "Karakura Town", found: true, kind: "place", wiki: "testwiki", aliases: [], ts: Date.now(), sections: { identity: "A town in the Human World." } },
+    });
+    const setup = (settingKey) => {
+        globalThis.__ctx.chat = [msg("Word arrived from Karakura Town this morning.", true)];
+        globalThis.__ctx.chatMetadata = {
+            canon_grounding_wiki: "testwiki",
+            canon_grounding_wiki_ok: { wikis: "testwiki", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+            canon_grounding_cache: places(),
+            canon_grounding_setting: settingKey || "",
+            summaryception: { ledger: { Hostala: { present: true } } },
+        };
+    };
+    setup("karakura town");
+    globalThis.__ctx.canonScenePlace = "Kuchiki Manor — the tea room";
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    T("the setting is where the host says the scene is (a part of its place's name)", globalThis.__ctx.chatMetadata.canon_grounding_setting === "kuchiki manor");
+    const why66 = globalThis.CanonGrounding_api.last().reasons;
+    T("…and rides as the setting — the place merely mentioned is only mentioned",
+        why66.some((r) => /^Kuchiki Manor ← current setting/.test(r)) && !why66.some((r) => /^Karakura Town ← current setting/.test(r)));
+    globalThis.__ctx.canonScenePlace = "a ramen stall by the river";
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    T("a place canon does not know leaves NO setting — never a wrong one", globalThis.__ctx.chatMetadata.canon_grounding_setting === "");
+    globalThis.__ctx.canonScenePlace = "";
+    setup("kuchiki manor");
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    T("a host that knows of no place clears it", globalThis.__ctx.chatMetadata.canon_grounding_setting === "");
+    // NEGATIVE CONTROL: no host place — the setting is the extension's own, untouched by this door
+    delete globalThis.__ctx.canonScenePlace;
+    setup("kuchiki manor");
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    T("NEGATIVE CONTROL: with no host place the setting is left to the extension's own tracker", globalThis.__ctx.chatMetadata.canon_grounding_setting === "kuchiki manor");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    T("with a host place, the parser's own place is never made the setting", /hostScenePlace\(\) === null && \(hit\.entry\.kind === "place"/.test(code));
+    Object.assign(S, saved66);
+}
+
 {
     const mf = JSON.parse(fs.readFileSync(path.join(here, "..", "manifest.json"), "utf8"));
     const stamp = (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1];
