@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.67.0";
+const CG_VERSION = "0.67.1";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2748,8 +2748,14 @@ function unverifiedNamed(userMsg, store, wikisCsv, excludes = []) {
         if (!vouched && !askIntent && !capNamed(toks)) continue;  // no proof of a real ask (law above)
         out.push({ name: nm, ts: e.ts || 0 });
     }
-    out.sort((a, b) => b.ts - a.ts);                 // freshest ask first
-    return out.slice(0, 3).map(x => x.name);
+    // A FRAGMENT of a longer name the player asked about is not a second unknown
+    // thing: "Crimson Pact" and "Ulveth" inside "Crimson Pact of Ulveth" were
+    // reported beside it whenever the sweep's sub-phrase lookups had landed before
+    // the note was built — a race, and three "unknowns" for one.
+    const whole = out.filter(x => !out.some(y => y !== x && y.name.length > x.name.length
+        && mentioned(x.name.toLowerCase(), y.name.toLowerCase())));
+    whole.sort((a, b) => b.ts - a.ts);                 // freshest ask first
+    return whole.slice(0, 3).map(x => x.name);
 }
 
 /** ✒ Tiny stable fingerprint of the cast body — same facts, same key. */
