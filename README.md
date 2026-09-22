@@ -56,6 +56,18 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.66.0 (🗣 the note speaks to the storyteller, never about one)
+
+Proven by `test/proof.js` (596) + `test/sim.mjs` (416); **2 guards negative-tested**.
+
+Found auditing Cozy Tavern's persona law (nothing that reaches the storyteller
+may read like the machinery talking): the note is written TO the storyteller,
+yet the story position's spoiler guard called its summary "the storyteller's
+map" — a third person inside a second-person note — and the ⌀ notice named the
+machinery ("(no wiki page)"). The guard now says "your map"; the notice says
+"Not found in this story's canon sources: …", nothing more. The meaning of both
+is unchanged.
+
 ## Changelog — v0.65.0 (🏠 one home for a fact — the note stops repeating what the host's ledger says)
 
 Proven by `test/proof.js` (596) + `test/sim.mjs` (413); **2 guards negative-tested**.
