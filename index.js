@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.67.2";
+const CG_VERSION = "0.68.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2150,6 +2150,37 @@ function ledgerPresentNames() {
     return Object.keys(ledger).filter(k => ledger[k] && typeof ledger[k] === "object" && ledger[k].present === true);
 }
 
+/**
+ * WHERE THE SCENE IS, BY THE HOST. A frontend whose own ledger reads each page's
+ * header ("[13th Division barracks — Monday | 09:00 | …]") knows the scene's place
+ * better than any guess from the parser at a place someone mentioned: it passes it as
+ * getContext().canonScenePlace (a string; "" = it knows of no place). null: no host
+ * place — the parser's own setting tracker, as always.
+ */
+function hostScenePlace() {
+    try { const p = getContext().canonScenePlace; return typeof p === "string" ? p : null; } catch (e) { return null; }
+}
+
+/**
+ * The setting follows the host's place: the canon place already looked up under that
+ * name (or one of its parts — "Kuchiki Manor — the tea room") becomes the setting;
+ * a place canon does not know leaves NO setting — never a wrong one. Nothing is looked
+ * up here (a header's words are no evidence of a wiki page), and nothing is announced.
+ */
+function followHostPlace() {
+    const place = String(hostScenePlace() || "").trim();
+    let want = "";
+    if (place) {
+        const parts = [place, ...place.split(/\s*(?:—|–|,|;|\s-\s|\()\s*/).map(x => x.replace(/\)$/, "").trim())]
+            .map(x => x.replace(/^the\s+/i, "").trim()).filter(x => x.length >= 3);
+        for (const part of parts) {
+            const hit = cacheEntryFor(part.toLowerCase());
+            if (hit && (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name))) { want = hit.key; break; }
+        }
+    }
+    if ((chatSettingKey() || "") !== want) setChatPin("canon_grounding_setting", want);
+}
+
 /** The host's story lens, when it has one (see lensedEntry). */
 function hostLens() {
     try { const f = getContext().canonLens; return typeof f === "function" ? f : null; } catch (e) { return null; }
@@ -3985,7 +4016,8 @@ async function applyCastWorldState(names, sceneText, myEpoch) {
                     if (renderArcStatus) try { renderArcStatus(); } catch (e) {}
                 }
             }).catch(() => {});
-        } else if (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name)) {
+        } else if (hostScenePlace() === null && (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name))) {
+            // (v0.68.0: a host that knows where the scene is decides the setting — see followHostPlace.)
             // MENTIONING A PLACE IS NOT TRAVELLING TO IT. This used to pin any place
             // the parser returned, so a character saying "word from Karakura Town"
             // moved the whole story out of Seireitei. The arc has had a judge for
@@ -4818,6 +4850,10 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 if (myEpoch !== chatEpoch) return;
             }
         }
+
+        // v0.68.0: a host whose own ledger knows WHERE the scene is says so, and the
+        // setting follows it — never the parser's guess at a place someone mentioned.
+        if (hostScenePlace() !== null) followHostPlace();
 
         // Pinned entities: user-decreed always-present. Ground them (cache absorbs
         // repeats), and let them participate in pair dynamics with the live cast.
