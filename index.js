@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.66.0";
+const CG_VERSION = "0.67.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2150,6 +2150,11 @@ function ledgerPresentNames() {
     return Object.keys(ledger).filter(k => ledger[k] && typeof ledger[k] === "object" && ledger[k].present === true);
 }
 
+/** The host's story lens, when it has one (see lensedEntry). */
+function hostLens() {
+    try { const f = getContext().canonLens; return typeof f === "function" ? f : null; } catch (e) { return null; }
+}
+
 /**
  * People whose FACE the host's own ledger already shows the storyteller this turn
  * (an entry marked `holds: ["appearance"]`). The note then leaves their Appearance
@@ -2794,6 +2799,33 @@ function mcCanonName(mcName, store) {
 }
 
 /**
+ * THE STORY'S LENS. Canon is a timeline, and a wiki describes its END: "she is the
+ * current Captain … married to Renji, with a daughter" — true of the series, not of
+ * a story where the protagonist became captain instead and she never married. A HOST
+ * that knows its story's premise may say, per person, what of canon HOLDS there
+ * (getContext().canonLens(entry) → an overlay: identity, brief, facts, secrets,
+ * dynamics, the per-pair lines, the fallback's identity/relationship/biography); the
+ * block is written from canon seen through it. What the story changed, or has not
+ * reached, is then neither a fact nor a prophecy — it simply is not said. The cache
+ * itself stays canon (a lens is the host's, applied only here). No host lens: canon
+ * as it is, byte for byte.
+ */
+function lensedEntry(entry, lens) {
+    let L = null;
+    try { L = typeof lens === "function" ? lens(entry) : null; } catch (e) { L = null; }
+    if (!L || typeof L !== "object") return entry;
+    const e = { ...entry };
+    if (entry.dossier && typeof entry.dossier === "object") {
+        const d = { ...entry.dossier };
+        for (const k of ["identity", "brief", "facts", "secrets", "dynamics"]) if (L[k] !== undefined) d[k] = L[k];
+        e.dossier = d;
+    }
+    if (L.sections && typeof L.sections === "object" && entry.sections) e.sections = { ...entry.sections, ...L.sections };
+    if (L.pairs && typeof L.pairs === "object") e.rel = { ...(entry.rel || {}), ...L.pairs };
+    return e;
+}
+
+/**
  * Build the canon note.
  *  - If `castNames` is given (from the LLM parser or ledger — the entities judged to be
  *    present THIS turn), inject exactly those, in that order. This is pronoun-proof: a
@@ -3024,8 +3056,9 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
     const built = [];
-    for (const { entry, matchedName, pinned, swept, setting, viaLedger } of present) {
+    for (const { entry: canonEntry, matchedName, pinned, swept, setting, viaLedger } of present) {
         if (built.length >= s.maxCharacters) break;
+        const entry = lensedEntry(canonEntry, extras.lens);   // the story's lens, when the host has one
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
         const lines = [];
@@ -3287,7 +3320,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         // the original "everything above has occurred" semantics byte-for-byte.
         arcBlock = (arcNote.mode === "begun")
             ? `Where our story is — ${arcNote.title} (just beginning): ${arcNote.summary}\n` +
-              `(The story is at the START of this arc: the summary above is your map of canon events that have NOT yet happened — let them unfold naturally, never treat them as past, and no character knows them. Events from earlier arcs have happened. Canon beyond this arc, and every unrevealed identity, is likewise unknown to every character — never foreshadow or use it.)\n`
+              `(The story is at the START of this arc: the summary above is your map of canon events that have NOT yet happened — canon's course, never this story's script (what happens is decided on the page); never treat them as past, and no character knows them. Events from earlier arcs have happened. Canon beyond this arc, and every unrevealed identity, is likewise unknown to every character — never foreshadow or use it.)\n`
             : `Where our story is — ${arcNote.title}: ${arcNote.summary}\n` +
               `(Only events up to this point have happened. Later canon events, reveals, and ` +
               `identities are unknown to every character — never foreshadow or use them.)\n`;
@@ -4884,6 +4917,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 userNames: castNamedIn(lastUserMsg),
                 ledgerNames: ledgerOnScreen(sceneText),
                 faceHeld: ledgerFaceHeld(),
+                lens: hostLens(),
                 blockNames: chatBlockNames(),
                 settingKey: chatSettingKey(),
                 chatPin: chatPin(),
@@ -4964,6 +4998,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             userNames: tierUser,
             ledgerNames: tierLedger,
             faceHeld: ledgerFaceHeld(),
+            lens: hostLens(),
             blockNames: chatBlockNames(),
             settingKey: chatSettingKey(),
             chatPin: chatPin(),
@@ -5835,7 +5870,7 @@ function promptDefault(key) {
  * on-demand way to see (and refresh) it. Recorded as the last injection with
  * source "preview", exactly as the panel always did.
  */
-async function previewNote() {
+async function previewNote(opts = {}) {
     const s = settings();
     const ctx = getContext();
     const scene = sceneMessages(ctx, s.contextWindow);
@@ -5848,6 +5883,7 @@ async function previewNote() {
         userNames: castNamedIn(lastUserMsg),
         ledgerNames: ledgerOnScreen(scene.join("\n")),
         faceHeld: ledgerFaceHeld(),
+        lens: hostLens(),
         userMsg: lastUserMsg,
     });
     const pParts = __noteParts();
@@ -5870,7 +5906,8 @@ async function previewNote() {
     lastInjection = note;
     lastInjectionAt = Date.now();
     lastReasons = lastMatchReasons.slice();
-    lastSource = "preview";
+    lastSource = opts.asTurn ? "turn (rebuilt)" : "preview";
+    if (opts.asTurn) setInjection(note || "");
     renderLastInjection();
     return {
         note,
@@ -6045,6 +6082,7 @@ const HOST_API = Object.freeze({
     discoverWiki: (opts) => verifyOrDiscoverWiki(opts || {}),
     scan: (opts) => scanScene(opts || {}),
     preview: () => previewNote(),
+    rebuild: () => previewNote({ asTurn: true }),
     last: () => ({ text: lastInjection, at: lastInjectionAt, source: lastSource, reasons: lastReasons.slice() }),
     cache: () => cache(),
     entryFor: (name) => cacheEntryFor(String(name || "").toLowerCase()),
