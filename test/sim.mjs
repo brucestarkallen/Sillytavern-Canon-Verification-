@@ -1034,8 +1034,10 @@ T("unclosed meta blocks are line-bounded — a stray bracket cannot blind the sc
     /\[\^\\\]\\n\]\*/.test(src.match(/function stripMetaBlocks[\s\S]{0,2600}?\n\}/)[0]));
 T("the setting pin resolves through cacheEntryFor, not exact-key-or-nothing",
     /const direct = store\[sk\] && store\[sk\]\.found \? \{ key: sk, entry: store\[sk\] \} : cacheEntryFor\(sk\);/.test(src));
+// v0.67.0: previewNote is also the host's rebuild door (asTurn) — the preview still stamps "preview",
+// a rebuilt turn stamps itself as the turn's.
 T("the preview stamps its source",
-    /lastSource = "preview";/.test(src));
+    /lastSource = opts\.asTurn \? "turn \(rebuilt\)" : "preview";/.test(src));
 
 // ---------------------------------------------------------------------------
 // [38] v0.41.0 — ONE discovery at a time, and only on real turns.
@@ -1958,12 +1960,72 @@ console.log("[64] v0.66.0 the note's own words are second person and plain");
         summaryception: { ledger: { Hostala: { present: true } } },
     };
     await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
-    const n64 = lastInjection();
+    // the words are checked on the note built from what is kept (the preview IS the turn's own door) — a turn's
+    // race window under a loaded machine must not decide a test of WORDING
+    const n64 = (await globalThis.CanonGrounding_api.preview()).note || lastInjection();
     T("the story position rides", /Where our story is — The Winter Arc \(just beginning\)/.test(n64));
     const arc64 = (n64.match(/Where our story is —[^\n]*\n\([^\n]*\)/) || [""])[0];
     T("…its guard is YOUR map, never the storyteller's", /is your map of canon events/.test(arc64) && !/storyteller/i.test(arc64));
     T("the ⌀ notice names what is missing, not the machinery", /Not found in this story's canon sources: "Crimson Pact of Ulveth"/.test(n64) && !/wiki page/.test(n64));
     Object.assign(S, saved64);
+}
+
+// [65] v0.67.0 — THE STORY'S LENS: a host that knows its story's premise says what of
+// canon holds there; the block is written through it, the cache stays canon; the
+// turn's note can be rebuilt when the lens moves; a story position is canon's course,
+// never this story's script.
+console.log("[65] v0.67.0 the story's lens");
+{
+    const S = extension_settings.canon_grounding;
+    const saved65 = { llmParser: S.llmParser, useLedger: S.useLedger, relationDynamics: S.relationDynamics, autoArc: S.autoArc, llmDossier: S.llmDossier, arcInject: S.arcInject };
+    S.llmParser = false; S.useLedger = true; S.relationDynamics = true; S.autoArc = false; S.llmDossier = true; S.arcInject = true;
+    const hostala = () => ({ name: "Hostala", found: true, kind: "character", wiki: "testwiki", aliases: [], ts: Date.now(),
+        sections: { identity: "Hostala is the current captain of the east wing.", physical: "hair: Hostala-colored" },
+        rel: { hostbeta: "Hostala married Hostbeta in the epilogue." },
+        dossier: { identity: "The current captain of the east wing", brief: "A calm duelist who leads the east wing.",
+            facts: ["Married to Hostbeta", "Wields a spear"], secrets: [], abilities: [], voice: [], related: [],
+            dynamics: { Hostbeta: "Her husband, whom she adores." } } });
+    const hostbeta = () => ({ name: "Hostbeta", found: true, kind: "character", wiki: "testwiki", aliases: [], ts: Date.now(),
+        sections: { identity: "Hostbeta is a duelist.", physical: "hair: Hostbeta-colored" }, rel: {} });
+    const setup = () => {
+        globalThis.__ctx.chat = [msg("She sets down her spear.", true)];
+        globalThis.__ctx.chatMetadata = {
+            canon_grounding_wiki: "testwiki",
+            canon_grounding_wiki_ok: { wikis: "testwiki", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+            canon_grounding_cache: { hostala: hostala(), hostbeta: hostbeta() },
+            canon_grounding_arc: { title: "The Winter Arc", summary: "A duel is fought on the ice.", mode: "begun", ts: Date.now() },
+            summaryception: { ledger: { Hostala: { present: true }, Hostbeta: { present: true } } },
+        };
+    };
+    // NEGATIVE CONTROL first: no lens, canon as it is
+    setup();
+    delete globalThis.__ctx.canonLens;
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    const plain = lastInjection();
+    T("NEGATIVE CONTROL: with no lens, canon's end-state rides", /Married to Hostbeta/.test(plain) && /married Hostbeta in the epilogue/.test(plain) && /leads the east wing/.test(plain));
+    // the story's lens: here she leads nothing and never married him
+    setup();
+    globalThis.__ctx.canonLens = (e) => e.name === "Hostala"
+        ? { identity: "A duelist of the east wing", brief: "A calm duelist.", facts: ["Wields a spear"], dynamics: {}, pairs: { hostbeta: "" } }
+        : null;
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    const seen = lastInjection();
+    T("through the lens: what the story keeps rides", /Wields a spear/.test(seen) && /A calm duelist\./.test(seen));
+    T("…and what the story changed is not said at all — no fact, no prophecy",
+        !/Married to Hostbeta/.test(seen) && !/leads the east wing/.test(seen) && !/current captain/i.test(seen) && !/Her husband/.test(seen) && !/married Hostbeta in the epilogue/.test(seen));
+    T("the other person, without a lens, is canon as it is", /Hostbeta:/.test(seen) && /Hostbeta-colored/.test(seen));
+    T("the cache itself stays canon", globalThis.__ctx.chatMetadata.canon_grounding_cache.hostala.dossier.facts.includes("Married to Hostbeta"));
+    // the lens moves after the turn: the host rebuilds the turn's own note
+    globalThis.__ctx.canonLens = (e) => e.name === "Hostala" ? { identity: "A duelist of the east wing", facts: [], dynamics: {}, pairs: { hostbeta: "" } } : null;
+    const api = globalThis.CanonGrounding_api;
+    const r = await api.rebuild();
+    T("rebuilt through the new lens, and handed to the host as the turn's", !/Wields a spear/.test(r.note) && lastInjection() === r.note && api.last().source === "turn (rebuilt)");
+    // canon's course, never this story's script
+    const arc65 = (seen.match(/Where our story is —[^\n]*\n\([^\n]*\)/) || [""])[0];
+    T("a story position is canon's course, never this story's script",
+        /canon's course, never this story's script \(what happens is decided on the page\)/.test(arc65) && !/let them unfold naturally/.test(arc65));
+    delete globalThis.__ctx.canonLens;
+    Object.assign(S, saved65);
 }
 
 {
