@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.63.0";
+const CG_VERSION = "0.64.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -149,7 +149,16 @@ const DEFAULT_PROMPT_HEADER_BODY =
         "contradictions included.\n";
 // The effective default header: the player's name resolved at injection time,
 // so the same shipped default reads as "<their name>'s note" for anyone.
-function defaultPromptHeader() { return noteLabel() + " \u2014 " + DEFAULT_PROMPT_HEADER_BODY; }
+function defaultPromptHeader() {
+    // A HOST may frame the note in its own voice — a frontend whose briefing already
+    // says whose notes these are (Cozy Tavern). SillyTavern supplies none and keeps
+    // the player's-note default, byte for byte.
+    try {
+        const own = getContext().canonHeaderDefault;
+        if (typeof own === "string" && own.trim()) return own.trim() + "\n";
+    } catch (e) { /* harness: no context */ }
+    return noteLabel() + " \u2014 " + DEFAULT_PROMPT_HEADER_BODY;
+}
 const DEFAULT_PROMPT_ASK =
     "You route a user's request about a roleplay canon-injection tool to ONE action. Actions: " +
     '"ground" (fetch canon for an entity so it can appear), ' +
@@ -1153,21 +1162,50 @@ function extractInfoboxFields(wikitextRaw, keywords, maxLen = 240) {
     return out.join("; ").slice(0, maxLen);
 }
 
-/** Return the body of the first section whose title matches one of `titles`. */
+/** A heading line and whatever follows it inside its chunk — a heading that opens straight into a subsection has no body line at all. */
+const HEADING_LINE = /^(=+)\s*(.+?)\s*=+[^\n]*(?:\n([\s\S]*))?$/;
+
+/**
+ * A section WITH ITS SUBTREE. The split cuts at EVERY heading, so a section that
+ * opens straight into its subsections ("== Relationships ==" then "=== Issei ===",
+ * "== History ==" then "=== Early life ===") is a heading-only chunk. The old
+ * readers demanded a line of text after the heading, so such a chunk matched
+ * nothing: the whole section — every person, every era under it — was invisible,
+ * and a relationship the wiki documents on the page itself was only ever found by
+ * a separate /Relationships fetch. Returns {depth, title, body}: the chunk's own
+ * text plus every following chunk whose heading is DEEPER, walked positionally
+ * (not by indexOf, so a duplicate chunk cannot misanchor it); null when the chunk
+ * is not a heading at all (the lead).
+ */
+function sectionAt(chunks, ci, maxLen = 4000) {
+    const m = String(chunks[ci] || "").match(HEADING_LINE);
+    if (!m) return null;
+    const depth = m[1].length;
+    let body = m[3] || "";
+    for (let i = ci + 1; i < chunks.length; i++) {
+        const hm = String(chunks[i] || "").match(HEADING_LINE);
+        if (!hm || hm[1].length <= depth) break;
+        body += "\n" + chunks[i];
+        if (body.length >= maxLen) break;
+    }
+    return { depth, title: m[2].trim(), body: body.slice(0, maxLen) };
+}
+
+/** Return the body of the first section whose title matches one of `titles` — its subsections included. */
 function extractSection(wikitext, titles, maxLen = 260) {
     if (!wikitext) return "";
     // Split before any line that starts a header (== ... ==).
     const chunks = wikitext.split(/\n(?==={1,4}[^=])/);
     const want = titles.map(t => t.toLowerCase());
-    for (const chunk of chunks) {
+    for (let ci = 0; ci < chunks.length; ci++) {
         // [^\n]* after the closing "==" tolerates trailing comments/whitespace
         // ("== Appearance == <!--note-->"), which previously made the whole
         // section invisible.
-        const m = chunk.match(/^=+\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
-        if (!m) continue;
-        const title = m[1].trim().toLowerCase();
+        const sec = sectionAt(chunks, ci, Math.max(4000, maxLen * 4));
+        if (!sec) continue;
+        const title = sec.title.toLowerCase();
         if (want.some(w => title === w || title.includes(w))) {
-            const body = cleanWikitext(m[2]);
+            const body = cleanWikitext(sec.body);
             if (body) return body.length > maxLen ? body.slice(0, maxLen).replace(/\s+\S*$/, "") + "…" : body;
         }
     }
@@ -1183,23 +1221,11 @@ function extractSectionRaw(wikitext, titles, maxLen = 4000) {
     const chunks = wikitext.split(/\n(?==={1,4}[^=])/);
     const want = titles.map(t => t.toLowerCase());
     for (let ci = 0; ci < chunks.length; ci++) {
-        const m = chunks[ci].match(/^(=+)\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
-        if (!m) continue;
-        const title = m[2].trim().toLowerCase();
+        const sec = sectionAt(chunks, ci, maxLen);
+        if (!sec) continue;
+        const title = sec.title.toLowerCase();
         if (!want.some(w => title === w || title.includes(w))) continue;
-        // The split cuts at EVERY header, so deeper subsections (=== X ===) landed in
-        // LATER chunks — re-attach every following chunk whose header is DEEPER than
-        // this one, so the returned body contains the whole subtree. Positional index
-        // (not indexOf) so a duplicate chunk text elsewhere can't misanchor the walk.
-        const depth = m[1].length;
-        let body = m[3];
-        for (let i = ci + 1; i < chunks.length; i++) {
-            const hm = chunks[i].match(/^(=+)\s*.+?\s*=+[^\n]*\n/);
-            if (!hm || hm[1].length <= depth) break;
-            body += "\n" + chunks[i];
-            if (body.length >= maxLen) break;
-        }
-        return body.slice(0, maxLen);
+        return sec.body;
     }
     return "";
 }
@@ -1452,7 +1478,13 @@ function normWikiSet(csv) {
  *  `searched` stamp — always stale, so pre-existing dead rows revive once. */
 function missCoversCurrentWikis(entry, wikisCsv) {
     if (!entry || !Array.isArray(entry.searched)) return false;
-    return normWikiSet(wikisCsv).every(w => entry.searched.includes(w));
+    // NO WIKI, NO VERDICT. "[].every(...)" is true, so a miss once "covered" an empty
+    // wiki list — and with no wiki set (the field emptied, or a story whose universe
+    // is not found yet) every vouched name became a settled "not in canon" the ⌀
+    // notice reported as fact. Searching nothing proves nothing.
+    const current = normWikiSet(wikisCsv);
+    if (!current.length) return false;
+    return current.every(w => entry.searched.includes(w));
 }
 
 /**
@@ -1587,6 +1619,10 @@ async function ensureGrounded(name, trusted = false) {
     }
 
     const wikis = activeWikis().split(",").map(w => w.trim()).filter(Boolean);
+    // No wiki to ask (the field empty, the story's universe not found yet): nothing is
+    // searched, so nothing is recorded — a miss written now would claim an absence no
+    // wiki was ever asked about, and would outlive the wiki arriving.
+    if (!wikis.length) return { name, sections: {}, found: false };
     let hadError = false;          // network / HTTP / parse failure (transient — retry later)
     let missReason = "no-page";    // upgraded to "meta-page" / "not-character" / "no-facts" as we learn more
 
@@ -2083,6 +2119,12 @@ function sceneMessages(ctx, windowSize) {
  * null when Summaryception isn't running / has no ledger.
  */
 function ledgerNames() {
+    const ledger = ledgerObject();
+    return ledger ? Object.keys(ledger) : null;
+}
+
+/** The ledger object itself, or null — one reader for the names AND the presence marks. */
+function ledgerObject() {
     try {
         if (!settings().useLedger) return null;
         // Try the context's metadata, then the imported global — either can be the
@@ -2090,13 +2132,37 @@ function ledgerNames() {
         const sources = [getContext() && getContext().chatMetadata, chat_metadata];
         for (const md of sources) {
             const ledger = md && md.summaryception && md.summaryception.ledger;
-            if (ledger && typeof ledger === "object" && !Array.isArray(ledger)) {
-                const keys = Object.keys(ledger);
-                if (keys.length) return keys;
-            }
+            if (ledger && typeof ledger === "object" && !Array.isArray(ledger) && Object.keys(ledger).length) return ledger;
         }
     } catch (e) { /* Summaryception not present — fall back */ }
     return null;
+}
+
+/**
+ * Ledger entries the HOST marks as standing in the scene right now (`present: true`).
+ * A frontend whose own ledger reads every page for who is in the room (Cozy Tavern's
+ * "Who's here") knows this better than any name test: three pages of "she" are
+ * still her. Summaryception marks nobody, so SillyTavern behaves exactly as before.
+ */
+function ledgerPresentNames() {
+    const ledger = ledgerObject();
+    if (!ledger) return [];
+    return Object.keys(ledger).filter(k => ledger[k] && typeof ledger[k] === "object" && ledger[k].present === true);
+}
+
+/**
+ * WHO THE STORY'S OWN LEDGER PUTS ON SCREEN — ONE definition for every door (the
+ * turn's tier 2, the ledger-mode cast, the on-screen grounding, the stale-turn
+ * fallback, the composer's parts and the preview). Two proofs, the stronger first:
+ * the host's presence mark (a model already read the scene — its read wins over a
+ * name test), then any ledger name the scene window actually names.
+ */
+function ledgerOnScreen(sceneText) {
+    const all = ledgerNames();
+    if (!all) return [];
+    const here = ledgerPresentNames();
+    const lc = String(sceneText || "").toLowerCase();
+    return [...here, ...all.filter(n => !here.includes(n) && mentioned(n.toLowerCase(), lc))];
 }
 
 function clip(str, max) {
@@ -2153,13 +2219,16 @@ function mentioned(name, lowerText) {
 function relationFor(relWikitext, otherNames, maxLen = 350) {
     if (!relWikitext || !otherNames || !otherNames.length) return "";
     const wants = otherNames.map(n => String(n).toLowerCase()).filter(Boolean);
-    // 1) Subsection headed with the other character's name (the common Fandom layout).
-    for (const chunk of relWikitext.split(/\n(?==={1,4}[^=])/)) {
-        const m = chunk.match(/^=+\s*(.+?)\s*=+[^\n]*\n([\s\S]*)$/);
-        if (!m) continue;
-        const title = m[1].trim().toLowerCase();
+    // 1) Subsection headed with the other character's name (the common Fandom layout) —
+    //    with ITS subsections, so a person's heading that opens straight into
+    //    "==== Early days ====" still yields what the wiki says about them.
+    const relChunks = relWikitext.split(/\n(?==={1,4}[^=])/);
+    for (let ci = 0; ci < relChunks.length; ci++) {
+        const sec = sectionAt(relChunks, ci, 4000);
+        if (!sec) continue;
+        const title = sec.title.toLowerCase();
         if (wants.some(w => title === w || title.includes(w) || w.includes(title))) {
-            const body = cleanWikitext(m[2].split(/\n=={1,4}[^=]/)[0]);
+            const body = cleanWikitext(sec.body);
             if (body) return clip(body, maxLen);
         }
     }
@@ -2176,24 +2245,38 @@ function relationFor(relWikitext, otherNames, maxLen = 350) {
     return "";
 }
 
-/** Find the cached, grounded entry for a name (by key, then title/alias). */
+/** Find the cached, grounded entry for a name (by key, then title/alias) — and bury a stale miss the find proves wrong. */
 function cacheEntryFor(nameLcRaw) {
     const c = cache();
-    const nameLc = normName(nameLcRaw);
-    if (c[nameLc] && c[nameLc].found && c[nameLc].sections) {
-        return { key: nameLc, entry: c[nameLc] };
+    const hit = cacheEntryIn(c, nameLcRaw);
+    if (!hit) return null;
+    if (hit.stale) {
+        // The same entity grounded under another key (suffixed/canonical query)
+        // while a stale "not found" sits at THIS key — a corpse that shadows the
+        // real entry for the parser gate and haunts the panel as a duplicate ✕
+        // row. Every resolver path funnels through here: bury it on sight.
+        delete c[hit.stale]; saveCache(); debug(`⚰ stale miss "${hit.stale}" buried — found as "${hit.entry.name}"`);
     }
-    for (const [k, e] of Object.entries(c)) {
-        if (!e.found || !e.sections) continue;
+    return { key: hit.key, entry: hit.entry };
+}
+
+/**
+ * THE RESOLVER ITSELF, pure — any store, no side effects (a host resolves its own
+ * decrees with it: a pinned "Rukia" IS Rukia Kuchiki, exactly as the note decides).
+ * Returns {key, entry, stale} — stale names a miss the find proves wrong, which only
+ * cacheEntryFor (the live chat's store) buries.
+ */
+function cacheEntryIn(c, nameLcRaw) {
+    const store = c && typeof c === "object" ? c : {};
+    const nameLc = normName(nameLcRaw);
+    if (store[nameLc] && store[nameLc].found && store[nameLc].sections) {
+        return { key: nameLc, entry: store[nameLc], stale: null };
+    }
+    const staleHere = store[nameLc] && !store[nameLc].found ? nameLc : null;
+    for (const [k, e] of Object.entries(store)) {
+        if (!e || !e.found || !e.sections) continue;
         const names = [e.name && normName(e.name), normName(k), ...(e.aliases || []).map(normName)].filter(Boolean);
-        if (names.includes(nameLc)) {
-            // The same entity grounded under another key (suffixed/canonical query)
-            // while a stale "not found" sits at THIS key — a corpse that shadows the
-            // real entry for the parser gate and haunts the panel as a duplicate ✕
-            // row. Every resolver path funnels through here: bury it on sight.
-            if (c[nameLc] && !c[nameLc].found) { delete c[nameLc]; saveCache(); debug(`⚰ stale miss "${nameLc}" buried — found as "${e.name}"`); }
-            return { key: k, entry: e };
-        }
+        if (names.includes(nameLc)) return { key: k, entry: e, stale: staleHere };
     }
     // PASS 2 — a WHOLE TOKEN of exactly one character's NAME: "Rukia" must find
     // "Rukia Kuchiki" without a parser round trip. NAME tokens only — aliases stay
@@ -2204,19 +2287,16 @@ function cacheEntryFor(nameLcRaw) {
     // nothing — no guessing; the parser can disambiguate that one.
     if (nameLc.length >= 3 && !NOISE_WORDS.has(nameLc)) {
         let hit = null;
-        for (const [k, e] of Object.entries(c)) {
-            if (!e.found || !e.sections) continue;
+        for (const [k, e] of Object.entries(store)) {
+            if (!e || !e.found || !e.sections) continue;
             const toks = String(e.name || "").toLowerCase()
                 .split(/[^\p{L}\p{N}'-]+/u).filter(t => t.length >= 3 && !NOISE_WORDS.has(t));
             if (toks.includes(nameLc)) {
                 if (hit && hit.entry.name !== e.name) return null;   // shared by two characters
-                if (!hit) hit = { key: k, entry: e };
+                if (!hit) hit = { key: k, entry: e, stale: staleHere };
             }
         }
-        if (hit) {
-            if (c[nameLc] && !c[nameLc].found) { delete c[nameLc]; saveCache(); debug(`⚰ stale miss "${nameLc}" buried — found as "${hit.entry.name}"`); }
-            return hit;
-        }
+        if (hit) return hit;
     }
     return null;
 }
@@ -2789,7 +2869,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     }
     for (const ln of (extras.ledgerNames || [])) {
         const found = cacheEntryFor(String(ln).toLowerCase());
-        if (found) admit(found.entry, ln, found.key);
+        if (found) admit(found.entry, ln, found.key, { viaLedger: true });
     }
 
     if (castNames && castNames.length) {
@@ -2922,7 +3002,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
     const built = [];
-    for (const { entry, matchedName, pinned, swept, setting } of present) {
+    for (const { entry, matchedName, pinned, swept, setting, viaLedger } of present) {
         if (built.length >= s.maxCharacters) break;
         const nameKey = (entry.name || "").toLowerCase();
         if (seenEntities.has(nameKey)) continue;
@@ -3067,7 +3147,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
         const lookIdx = ordered.findIndex((l, i) => i > 0 && l.startsWith("  - Appearance"));
         const look = lookIdx > 0 ? [ordered[lookIdx]] : [];
         const rest = lookIdx > 0 ? ordered.filter((_, i) => i !== lookIdx) : ordered;
-        built.push({ entry, matchedName, pinned, swept, setting, lines: rest, look, dyn });
+        built.push({ entry, matchedName, pinned, swept, setting, viaLedger, lines: rest, look, dyn });
     }
 
     // BUDGET: PRESENCE BEFORE DEPTH. This used to build each character's whole
@@ -3154,10 +3234,10 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     }
     for (let i = 0; i < built.length; i++) {
         if (drafts[i] === null) continue;
-        const { entry, matchedName, pinned, swept, setting } = built[i];
+        const { entry, matchedName, pinned, swept, setting, viaLedger } = built[i];
         blocks.push(drafts[i]);
         const ev = castEvidence[(entry.name || "").toLowerCase()] || castEvidence[(matchedName || "").toLowerCase()];
-        reasons.push(`${entry.name} ← ${setting ? "current setting (persists without mention)" : pinned ? "pinned" : swept ? `named in scene (as "${matchedName}") — no parser needed` : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${ev ? ` — evidence: "${clip(ev, 60)}"` : ""}${entry.dossier ? " ✦" : ""}`);
+        reasons.push(`${entry.name} ← ${setting ? "current setting (persists without mention)" : pinned ? "pinned" : viaLedger ? "in the scene by the story's own ledger" : swept ? `named in scene (as "${matchedName}") — no parser needed` : (matchedName && matchedName.toLowerCase() !== entry.name.toLowerCase() ? `present (as "${matchedName}")` : "present in scene")}${ev ? ` — evidence: "${clip(ev, 60)}"` : ""}${entry.dossier ? " ✦" : ""}`);
     }
     lastMatchReasons = reasons;
 
@@ -4626,9 +4706,9 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             // DECAYED: entities off-screen for more than the scene window drop out.
             cast = pruneStaleCast(visibleLen, scene);
         } else if (lgNames) {
-            // Ledger present → its real characters that are on-screen (named in the window).
-            const sceneLower = sceneText.toLowerCase();
-            cast = lgNames.filter(n => mentioned(n.toLowerCase(), sceneLower));
+            // Ledger present → its real characters that are on-screen (marked present by
+            // the host, or named in the window).
+            cast = ledgerOnScreen(sceneText);
             if (cast.length) {
                 // Ledger names are LLM-curated (the story's REAL cast) — trusted, same as
                 // parser picks. The untrusted character-page gate was wrongly dropping
@@ -4656,7 +4736,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // The story's REAL cast (Summaryception ledger) that is on-screen right now
         // rides ahead of the parser's judgment — in every mode, not just ledger mode.
         if (lgNames) {
-            const onScreen = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
+            const onScreen = ledgerOnScreen(sceneText);
             if (onScreen.length) {
                 await groundNames(onScreen, true);
                 if (myEpoch !== chatEpoch) return;
@@ -4709,7 +4789,10 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // (resolveRelated) and the dossier self-upgrade need just ONE entity on
         // screen. Gating them behind >1 made solo-character scenes silently lose
         // their Context lines and never self-heal legacy dossiers.
-        const pairPool = [...(cast || []), ...pinNames];
+        // The ledger's on-screen cast rides in the note (tier 2) — its pairs are resolved
+        // like the parser's, or two people the ledger knows are in the room get no
+        // "With …" line on a turn the gated parser did not run.
+        const pairPool = [...(cast || []), ...pinNames, ...ledgerOnScreen(sceneText)];
         if (pairPool.length > 0) {
             const uniq = new Map();
             for (const n of pairPool) {
@@ -4764,7 +4847,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             relevantCanonNote(scene, cast, chatArc(), {
                 pinNames,
                 userNames: castNamedIn(lastUserMsg),
-                ledgerNames: lgNames ? lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase())) : [],
+                ledgerNames: ledgerOnScreen(sceneText),
                 blockNames: chatBlockNames(),
                 settingKey: chatSettingKey(),
                 chatPin: chatPin(),
@@ -4820,7 +4903,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         if (!fresh) {
             debug(`⏱ canon still resolving in background (>${blockMs}ms) — injecting last known state; next turn is fresh`);
             if (s.llmParser) cast = pruneStaleCast(visibleLen, scene);
-            else if (lgNames) cast = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
+            else if (lgNames) cast = ledgerOnScreen(sceneText);
         }
 
         // PRIORITY TIERS are pure filters over the cache - no network, no LLM - so
@@ -4835,7 +4918,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
         // the tier system — which is otherwise correct, and trims from the bottom —
         // had nothing to protect. castNamedIn is case-blind.
         tierUser = castNamedIn(lastUserMsg);
-        if (lgNames) tierLedger = lgNames.filter(n => mentioned(n.toLowerCase(), sceneText.toLowerCase()));
+        tierLedger = ledgerOnScreen(sceneText);
 
         // Build the note. Cast-driven when we have one (parser/ledger); scene-scan otherwise.
         // Scene text hasn't changed since the top of the run — reuse it (the old code
@@ -5339,13 +5422,13 @@ async function addSettingsUI() {
     // compared against the STALE default — storing a frozen old-persona header as a
     // literal override, which also opted that user out of every future default.
     const PROMPTS = [
-        ["#cg_prompt_header",  "promptHeader",  () => defaultPromptHeader()],
-        ["#cg_prompt_parser",  "promptParser",  () => DEFAULT_PROMPT_PARSER],
-        ["#cg_prompt_dossier", "promptDossier", () => DEFAULT_PROMPT_DOSSIER],
-        ["#cg_prompt_auditor", "promptAuditor", () => DEFAULT_PROMPT_AUDITOR],
-        ["#cg_prompt_ask",     "promptAsk",     () => DEFAULT_PROMPT_ASK],
-        ["#cg_prompt_arcjudge", "promptArcJudge", () => DEFAULT_PROMPT_ARCJUDGE],
-        ["#cg_prompt_discover", "promptDiscover", () => DEFAULT_PROMPT_DISCOVER],
+        ["#cg_prompt_header",  "promptHeader",  () => promptDefault("promptHeader")],
+        ["#cg_prompt_parser",  "promptParser",  () => promptDefault("promptParser")],
+        ["#cg_prompt_dossier", "promptDossier", () => promptDefault("promptDossier")],
+        ["#cg_prompt_auditor", "promptAuditor", () => promptDefault("promptAuditor")],
+        ["#cg_prompt_ask",     "promptAsk",     () => promptDefault("promptAsk")],
+        ["#cg_prompt_arcjudge", "promptArcJudge", () => promptDefault("promptArcJudge")],
+        ["#cg_prompt_discover", "promptDiscover", () => promptDefault("promptDiscover")],
     ];
     for (const [sel, key, def] of PROMPTS) {
         $(sel).val((s[key] || "").trim() || def()).on("input", function () {
@@ -5368,19 +5451,7 @@ async function addSettingsUI() {
     };
     $("#cg_factory_reset").on("click", function () {
         if (!confirm("Reset EVERY Canon Grounding setting and instruction to defaults?\nKept: grounded cache, saved wiki library, per-chat pins/arc.")) return;
-        // Behavior resets; CONNECTIONS and USER CONTENT survive: the parser profile
-        // is plumbing (wiping it silently kills parser/dossier/auditor until re-picked),
-        // and the global pin is your authored canon, not a tunable.
-        const keep = { savedWikis: s.savedWikis, wikis: s.wikis, llmProfileId: s.llmProfileId, pinnedGlobal: s.pinnedGlobal };
-        for (const k of Object.keys(s)) delete s[k];
-        // Migration stamps are deliberately NOT re-applied here (the old code stamped
-        // v2/v3/v5 — but not v6/v7 — which locked the reset to STALE pre-migration
-        // caps, 400/3000 instead of the current 1100/6000). defaultSettings IS the
-        // current default; with no stamps, the next settings() call re-runs the
-        // migrations, and each one is an idempotent no-op against current defaults
-        // (they only rewrite untouched sentinel values). One source of truth.
-        Object.assign(s, structuredClone(defaultSettings), keep);
-        saveSettingsDebounced();
+        resetAllSettings();
         cgToast("success", "Defaults restored. Reloading UI…");
         setTimeout(() => location.reload(), 800);
     });
@@ -5438,8 +5509,8 @@ async function addSettingsUI() {
         else $("#cg_arc_status").text("✕ no arc/chapter page found on: " + activeWikis());
     });
     $("#cg_arc_clear").on("click", function () {
-        s.arcTitle = ""; setChatArc(null); setChatPin("canon_grounding_arc_reached", []); $("#cg_arc").val("");
-        saveSettingsDebounced(); renderArc();
+        clearArcPosition(); $("#cg_arc").val("");
+        renderArc();
     });
     $("#cg_arc_inject").prop("checked", s.arcInject).on("input", function () {
         s.arcInject = $(this).prop("checked"); saveSettingsDebounced();
@@ -5522,61 +5593,16 @@ async function addSettingsUI() {
     });
     $("#cg_selftest").on("click", async function () {
         cgToast("info", "Parser self-test running…");
-        const t0 = Date.now();
-        const out = await llmCall("You are a connectivity test. Reply with exactly: ok", "Reply with exactly: ok", { maxTokens: 8 });
-        const ms = Date.now() - t0;
-        if (out) cgToast("success", `Parser backend OK in ${ms}ms — replied: "${clip(out, 40)}"`);
-        else cgToast("error", `Parser backend FAILED in ${ms}ms — ${lastLlmError || "unknown"}`);
+        const r = await parserSelfTest();
+        if (r.ok) cgToast("success", `Parser backend OK in ${r.ms}ms — replied: "${r.reply}"`);
+        else cgToast("error", `Parser backend FAILED in ${r.ms}ms — ${r.error}`);
     });
     $("#cg_preview").on("click", async function () {
         try {
-            const ctx = getContext();
-            const scene = sceneMessages(ctx, s.contextWindow);
-            const cast = pruneStaleCast((ctx.chat || []).filter(m => !m.is_system).length, scene);
-            // The preview must build the note the way the TURN does, or the
-            // panel lies: the player's own message drives tier-1 ordering AND
-            // the ⌀ not-in-canon notice, so it is read here the same way the
-            // interceptor reads it.
-            const lastUserMsg = stripMetaBlocks(([...(ctx.chat || [])].reverse().find(m => m.is_user) || {}).mes || "");
-            const lgN = ledgerNames();
-            let note = relevantCanonNote(scene, cast, chatArc(), {
-                pinNames: chatPinNames(), blockNames: chatBlockNames(),
-                settingKey: chatSettingKey(),
-                chatPin: chatPin(), globalPin: s.pinnedGlobal,
-                userNames: castNamedIn(lastUserMsg),
-                ledgerNames: lgN ? lgN.filter(n => mentioned(n.toLowerCase(), scene.join("\n").toLowerCase())) : [],
-                userMsg: lastUserMsg,
-            });
-            // ✒ ADVANCED in the preview: same door, same fingerprint, same
-            // fallback — but a button press may WAIT for the composition, so
-            // this is also the on-demand way to see (and refresh) it.
-            const pParts = __noteParts();
-            if (s.composerMode && note && pParts && pParts.castBody) {
-                const pk = pParts.key;
-                if (!(composedCache && composedCache.key === pk && composedCache.text)) {
-                    cgToast("info", "✒ Composing the fluid note…");
-                    const ctext = await composeNote(pParts, ctxMcName());
-                    const why = ctext ? composedNoteValid(ctext, pParts) : "model returned nothing";
-                    composedCache = why ? { key: pk, text: "", why, ts: Date.now() }
-                                        : { key: pk, text: ctext, why: "", ts: Date.now() };
-                }
-                if (composedCache.text) {
-                    note = pParts.header + pParts.pinBlock + pParts.arcBlock + pParts.unvBlock + composedCache.text + "\n";
-                    lastMatchReasons.push("✒ Advanced: AI-composed note (facts verified, fingerprint matched)");
-                } else {
-                    lastMatchReasons.push(`✒ Advanced fell back to the assembled note: ${composedCache.why}`);
-                }
-            }
-            lastInjection = note;
-            lastInjectionAt = Date.now();
-            lastReasons = lastMatchReasons.slice();
-            lastSource = "preview";
-            renderLastInjection();
-            cgToast(note ? "success" : "warning", note
-                ? `Preview built: ${lastMatchReasons.length} entr${lastMatchReasons.length === 1 ? "y" : "ies"} — see "Last injection" below.`
-                : `Preview is EMPTY \u2014 ${emptyNoteDiagnosis(scene, cast, {
-                    pinNames: chatPinNames(), settingKey: chatSettingKey(),
-                  })}.` + wikiStateHint());
+            const r = await previewNote();
+            cgToast(r.note ? "success" : "warning", r.note
+                ? `Preview built: ${r.reasons.length} entr${r.reasons.length === 1 ? "y" : "ies"} — see "Last injection" below.`
+                : `Preview is EMPTY \u2014 ${r.empty}`);
         } catch (e) {
             cgToast("error", `Preview failed: ${e.message}`);
         }
@@ -5593,9 +5619,7 @@ async function addSettingsUI() {
     numHandler("#cg_maxtotal", "maxTotalTokens", 150, 1500);
 
     $("#cg_reset_kw").on("click", function () {
-        for (const k of ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords", "quoteKeywords"]) {
-            s[k] = defaultSettings[k];
-        }
+        resetKeywordFields();
         $("#cg_fields").val(s.fields);
         $("#cg_relkw").val(s.relationshipKeywords);
         $("#cg_biokw").val(s.biographyKeywords);
@@ -5603,7 +5627,6 @@ async function addSettingsUI() {
         $("#cg_abikw").val(s.abilitiesKeywords);
         $("#cg_aliaskw").val(s.aliasKeywords);
         $("#cg_quotekw").val(s.quoteKeywords);
-        saveSettingsDebounced();
         cgToast("info", "Fields & keywords reset. Clear the cache to re-fetch with the new fields.");
     });
 
@@ -5636,60 +5659,16 @@ async function addSettingsUI() {
         renderLastInjection();
     });
     $("#cg_clear").on("click", function () {
-        const st = cache();
-        for (const k of Object.keys(st)) delete st[k];
-        saveCache();
-        parsedWords = new Set();   // let the parser re-evaluate every name again
-        lastCast = [];
-        lastCastLen = 0;
+        clearCache();
         renderCacheList();
         cgToast("info", "Canon cache cleared. Send a message (or 'Scan current scene now') to re-ground.");
     });
     $("#cg_rescan").on("click", async function () {
-        const st = settings();
-        if (!st.enabled) { cgToast("warning", "Canon Grounding is disabled."); return; }
-        await verifyOrDiscoverWiki({ force: true });   // \ud83d\udd2d an explicit scan re-opens even a settled chat
-        const ctx = getContext();
-        const sceneText = sceneMessages(ctx, st.contextWindow).join("\n");
-        if (!sceneText.trim()) { cgToast("info", "No visible scene to scan yet."); return; }
-        const myEpoch = chatEpoch;   // switching chats mid-scan must not apply old-chat results
+        if (!settings().enabled) { cgToast("warning", "Canon Grounding is disabled."); return; }
         try {
-            if (st.llmParser) {
-                cgToast("info", "Scanning the current scene…");
-                const mySerial = ++parseSerial;
-                const lastUser = stripMetaBlocks(([...(ctx.chat || [])].reverse().find(m => m.is_user) || {}).mes || "");
-                const parsed = await parseSceneCharacters(sceneText, lastUser);
-                if (myEpoch !== chatEpoch) return;
-                for (const n of extractCandidateNames(sceneText)) parsedWords.add(n.toLowerCase());
-                if (parsed === null) {
-                    cgToast("warning", `Parser: ${lastLlmError || "failed"} — nothing changed.`);
-                } else if (mySerial === parseSerial) {
-                    const names = parsed.map(p => p.name);
-                    lastCast = names;
-                    lastCastLen = (ctx.chat || []).filter(m => !m.is_system).length;
-                    castFocus = {}; castNeed = {};
-                    castEvidence = {};
-                    for (const p of parsed) {
-                        if (p.now) castFocus[p.name.toLowerCase()] = p.now;
-                            if (p.need) castNeed[p.name.toLowerCase()] = p.need;
-                        if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
-                    }
-                    if (names.length) {
-                        await groundNames(names, true);
-                        if (myEpoch !== chatEpoch) return;
-                        await applyCastWorldState(names, sceneText, myEpoch);
-                        if (myEpoch !== chatEpoch) return;
-                        cgToast("success", `Grounded: ${names.join(", ")}`);
-                    } else {
-                        cgToast("info", "Parser says no canon entities are in this scene.");
-                    }
-                }
-            } else {
-                const names = extractCandidateNames(sceneText);
-                await groundNames(names);
-                if (myEpoch !== chatEpoch) return;
-                cgToast("info", `Scanned ${names.length} name(s) from the scene.`);
-            }
+            const r = await scanScene({ onStart: () => cgToast("info", "Scanning the current scene…") });
+            if (r.msg) cgToast(r.kind || "info", r.msg);
+            if (r.dropped) return;
         } catch (e) {
             cgToast("error", "Scan failed: " + e.message);
         }
@@ -5787,11 +5766,262 @@ function renderCacheList() {
         const $row = $('<div class="cg-cache-row"></div>');
         $('<span class="cg-cache-label"></span>').text(label).appendTo($row);
         $('<span class="cg-cache-x">×</span>').on("click", () => {
-            delete cc[key]; saveCache(); renderCacheList();
+            forgetEntry(key); renderCacheList();
         }).appendTo($row);
         $box.append($row);
     }
 }
+
+// ---------------------------------------------------------------------------
+// One definition for every surface — the panel's buttons AND a host's own UI
+// ---------------------------------------------------------------------------
+
+/** The built-in text of one editable instruction, resolved NOW (the header is persona-dependent). */
+function promptDefault(key) {
+    switch (key) {
+        case "promptHeader": return defaultPromptHeader();
+        case "promptParser": return DEFAULT_PROMPT_PARSER;
+        case "promptDossier": return DEFAULT_PROMPT_DOSSIER;
+        case "promptAuditor": return DEFAULT_PROMPT_AUDITOR;
+        case "promptAsk": return DEFAULT_PROMPT_ASK;
+        case "promptArcJudge": return DEFAULT_PROMPT_ARCJUDGE;
+        case "promptDiscover": return DEFAULT_PROMPT_DISCOVER;
+        default: return "";
+    }
+}
+
+/**
+ * 👁 PREVIEW — the note the next turn would carry, built through the turn's own
+ * door: the same tiers, the player's own message (tier-1 order AND the ⌀
+ * notice), the same ledger cast — so the preview cannot lie about the turn.
+ * With ✒ Advanced on it may WAIT for the composition, which also makes it the
+ * on-demand way to see (and refresh) it. Recorded as the last injection with
+ * source "preview", exactly as the panel always did.
+ */
+async function previewNote() {
+    const s = settings();
+    const ctx = getContext();
+    const scene = sceneMessages(ctx, s.contextWindow);
+    const cast = pruneStaleCast((ctx.chat || []).filter(m => !m.is_system).length, scene);
+    const lastUserMsg = stripMetaBlocks(([...(ctx.chat || [])].reverse().find(m => m.is_user) || {}).mes || "");
+    let note = relevantCanonNote(scene, cast, chatArc(), {
+        pinNames: chatPinNames(), blockNames: chatBlockNames(),
+        settingKey: chatSettingKey(),
+        chatPin: chatPin(), globalPin: s.pinnedGlobal,
+        userNames: castNamedIn(lastUserMsg),
+        ledgerNames: ledgerOnScreen(scene.join("\n")),
+        userMsg: lastUserMsg,
+    });
+    const pParts = __noteParts();
+    if (s.composerMode && note && pParts && pParts.castBody) {
+        const pk = pParts.key;
+        if (!(composedCache && composedCache.key === pk && composedCache.text)) {
+            cgToast("info", "✒ Composing the fluid note…");
+            const ctext = await composeNote(pParts, ctxMcName());
+            const why = ctext ? composedNoteValid(ctext, pParts) : "model returned nothing";
+            composedCache = why ? { key: pk, text: "", why, ts: Date.now() }
+                                : { key: pk, text: ctext, why: "", ts: Date.now() };
+        }
+        if (composedCache.text) {
+            note = pParts.header + pParts.pinBlock + pParts.arcBlock + pParts.unvBlock + composedCache.text + "\n";
+            lastMatchReasons.push("✒ Advanced: AI-composed note (facts verified, fingerprint matched)");
+        } else {
+            lastMatchReasons.push(`✒ Advanced fell back to the assembled note: ${composedCache.why}`);
+        }
+    }
+    lastInjection = note;
+    lastInjectionAt = Date.now();
+    lastReasons = lastMatchReasons.slice();
+    lastSource = "preview";
+    renderLastInjection();
+    return {
+        note,
+        reasons: lastReasons.slice(),
+        empty: note ? "" : `${emptyNoteDiagnosis(scene, cast, { pinNames: chatPinNames(), settingKey: chatSettingKey() })}.` + wikiStateHint(),
+    };
+}
+
+/**
+ * 🔍 SCAN NOW — ground whoever the current scene holds, this minute. An explicit
+ * scan re-opens even a settled wiki binding; then the parser (or, with it off,
+ * the name scan) reads the window, and every name it returns is grounded and may
+ * move the story position and the setting — one definition with the turn's own
+ * world-state door. Returns what happened for whichever surface asked:
+ * {ok, kind, msg, names} — `dropped` when the chat changed underneath it.
+ */
+async function scanScene(opts = {}) {
+    const st = settings();
+    if (!st.enabled) return { ok: false, kind: "warning", msg: "Canon Grounding is disabled.", dropped: true };
+    await verifyOrDiscoverWiki({ force: true });   // 🔭 an explicit scan re-opens even a settled chat
+    const ctx = getContext();
+    const sceneText = sceneMessages(ctx, st.contextWindow).join("\n");
+    if (!sceneText.trim()) return { ok: false, kind: "info", msg: "No visible scene to scan yet.", dropped: true };
+    const myEpoch = chatEpoch;   // switching chats mid-scan must not apply old-chat results
+    if (st.llmParser) {
+        if (typeof opts.onStart === "function") { try { opts.onStart(); } catch (e) { /* a surface's own trouble */ } }
+        const mySerial = ++parseSerial;
+        const lastUser = stripMetaBlocks(([...(ctx.chat || [])].reverse().find(m => m.is_user) || {}).mes || "");
+        const parsed = await parseSceneCharacters(sceneText, lastUser);
+        if (myEpoch !== chatEpoch) return { ok: false, kind: "info", msg: "", dropped: true };
+        for (const n of extractCandidateNames(sceneText)) parsedWords.add(n.toLowerCase());
+        if (parsed === null) return { ok: false, kind: "warning", msg: `Parser: ${lastLlmError || "failed"} — nothing changed.`, names: [] };
+        if (mySerial !== parseSerial) return { ok: true, kind: "info", msg: "", names: [] };   // a newer parse already speaks for the scene
+        const names = parsed.map(p => p.name);
+        lastCast = names;
+        lastCastLen = (ctx.chat || []).filter(m => !m.is_system).length;
+        castFocus = {}; castNeed = {};
+        castEvidence = {};
+        for (const p of parsed) {
+            if (p.now) castFocus[p.name.toLowerCase()] = p.now;
+            if (p.need) castNeed[p.name.toLowerCase()] = p.need;
+            if (p.evidence) castEvidence[p.name.toLowerCase()] = p.evidence;
+        }
+        if (!names.length) return { ok: true, kind: "info", msg: "Parser says no canon entities are in this scene.", names };
+        await groundNames(names, true);
+        if (myEpoch !== chatEpoch) return { ok: false, kind: "info", msg: "", dropped: true };
+        await applyCastWorldState(names, sceneText, myEpoch);
+        if (myEpoch !== chatEpoch) return { ok: false, kind: "info", msg: "", dropped: true };
+        return { ok: true, kind: "success", msg: `Grounded: ${names.join(", ")}`, names };
+    }
+    const names = extractCandidateNames(sceneText);
+    await groundNames(names);
+    if (myEpoch !== chatEpoch) return { ok: false, kind: "info", msg: "", dropped: true };
+    return { ok: true, kind: "info", msg: `Scanned ${names.length} name(s) from the scene.`, names };
+}
+
+/** CLEAR ALL — this chat's canon memory wiped, and the parser free to rule on every name again. */
+function clearCache() {
+    const st = cache();
+    for (const k of Object.keys(st)) delete st[k];
+    saveCache();
+    parsedWords = new Set();   // let the parser re-evaluate every name again
+    lastCast = [];
+    lastCastLen = 0;
+}
+
+/** × on one entry: it is let go and fetched again the next time the story names it. */
+function forgetEntry(key) {
+    const cc = cache();
+    if (!key || !Object.prototype.hasOwnProperty.call(cc, key)) return false;
+    delete cc[key];
+    saveCache();
+    return true;
+}
+
+/**
+ * LOOK IT UP AGAIN — let one entry go and ground it NOW, vouched (the person
+ * asking is the authority, like a pin): a wrong page, a stale dossier or a page
+ * the wiki has since improved is replaced on the spot instead of on the next
+ * mention. Returns the fresh entry (found or a settled miss), or null when the
+ * chat changed underneath it.
+ */
+async function lookEntryUpAgain(key) {
+    const cc = cache();
+    const old = key && cc[key];
+    if (!old) return null;
+    const name = String(old.name || key);
+    const myEpoch = chatEpoch;
+    delete cc[key];
+    saveCache();
+    await groundNames([name], true);
+    if (myEpoch !== chatEpoch) return null;
+    const hit = cacheEntryFor(name.toLowerCase());
+    return hit ? hit.entry : (cache()[name.toLowerCase()] || null);
+}
+
+/** Forget the story position — and the tracker's memory of positions it passed. */
+function clearArcPosition() {
+    const s = settings();
+    s.arcTitle = "";
+    setChatArc(null); setChatPin("canon_grounding_arc_reached", []);
+    saveSettingsDebounced();
+}
+
+/** The per-chat decrees a surface may write, by the name it knows them under. */
+const CHAT_PIN_FIELDS = { text: "canon_grounding_pin", names: "canon_grounding_pin_names", block: "canon_grounding_block" };
+/** Write any of this chat's decrees — pinned text, always-present names, never-inject names. */
+function setChatPins(patch) {
+    for (const [k, field] of Object.entries(CHAT_PIN_FIELDS)) {
+        const v = patch ? patch[k] : undefined;
+        if (typeof v === "string") setChatPin(field, v);
+        else if (Array.isArray(v)) setChatPin(field, v.map(x => String(x || "").trim()).filter(Boolean).join(", "));
+    }
+    if (renderChatScoped) try { renderChatScoped(); } catch (e) { /* UI optional */ }
+}
+
+/** 🔬 One tiny call through the parser's backend: which backend answered, how fast, or the exact failure. */
+async function parserSelfTest() {
+    const t0 = Date.now();
+    const out = await llmCall("You are a connectivity test. Reply with exactly: ok", "Reply with exactly: ok", { maxTokens: 8 });
+    const ms = Date.now() - t0;
+    return out ? { ok: true, ms, reply: clip(out, 40) } : { ok: false, ms, error: lastLlmError || "unknown" };
+}
+
+/** The field and keyword lists the reset restores. */
+const KEYWORD_FIELDS = ["fields", "relationshipKeywords", "biographyKeywords", "personalityKeywords", "abilitiesKeywords", "aliasKeywords", "quoteKeywords"];
+/** Put the field and keyword lists back to the defaults (the cache keeps what it found). */
+function resetKeywordFields() {
+    const s = settings();
+    for (const k of KEYWORD_FIELDS) s[k] = defaultSettings[k];
+    saveSettingsDebounced();
+}
+
+/**
+ * ♻ EVERY setting and instruction back to the best-tested defaults. Behaviour
+ * resets; CONNECTIONS and USER CONTENT survive: the parser profile is plumbing
+ * (wiping it silently kills parser/dossier/auditor until re-picked), and the
+ * global pin is authored canon, not a tunable. Migration stamps are deliberately
+ * NOT re-applied (the old code stamped v2/v3/v5 — but not v6/v7 — which locked
+ * the reset to STALE pre-migration caps, 400/3000 instead of the current
+ * 1100/6000): defaultSettings IS the current default, and with no stamps the
+ * next settings() call re-runs the migrations, each an idempotent no-op against
+ * current defaults. One source of truth.
+ */
+function resetAllSettings() {
+    const s = settings();
+    const keep = { savedWikis: s.savedWikis, wikis: s.wikis, llmProfileId: s.llmProfileId, pinnedGlobal: s.pinnedGlobal };
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, structuredClone(defaultSettings), keep);
+    saveSettingsDebounced();
+}
+
+/**
+ * 🧩 THE HOST SURFACE. SillyTavern drives this extension through the panel above;
+ * a frontend that hosts it (Cozy Tavern runs it on a SillyTavern stand-in) needs
+ * the same levers without the panel's DOM. Every entry IS the panel's own
+ * function — nothing here re-implements a behaviour, so the two cannot drift.
+ * Per-chat entries act on the chat getContext() names at the moment of the call.
+ */
+const HOST_API = Object.freeze({
+    version: CG_VERSION,
+    settings: () => settings(),
+    defaultSettings: () => structuredClone(defaultSettings),
+    save: () => saveSettingsDebounced(),
+    promptDefault: (key) => promptDefault(key),
+    ask: (request) => askCanon(String(request || "")),
+    arc: () => chatArc(),
+    setArc: (query) => groundArc(String(query || "").trim()),
+    clearArc: () => clearArcPosition(),
+    wiki: () => ({ binding: chatWikiBinding(), verified: chatWikiOk(), active: activeWikis() }),
+    bindWiki: (csv) => bindChatWiki(String(csv || "").trim(), "(manual)", true),
+    discoverWiki: (opts) => verifyOrDiscoverWiki(opts || {}),
+    scan: (opts) => scanScene(opts || {}),
+    preview: () => previewNote(),
+    last: () => ({ text: lastInjection, at: lastInjectionAt, source: lastSource, reasons: lastReasons.slice() }),
+    cache: () => cache(),
+    entryFor: (name) => cacheEntryFor(String(name || "").toLowerCase()),
+    entryIn: (store, name) => { const hit = cacheEntryIn(store, String(name || "").toLowerCase()); return hit ? { key: hit.key, entry: hit.entry } : null; },
+    forget: (key) => forgetEntry(key),
+    lookAgain: (key) => lookEntryUpAgain(key),
+    clearCache: () => clearCache(),
+    pins: () => ({ text: chatPin(), names: chatPinNames(), block: chatBlockNames(), setting: chatSettingKey() }),
+    setPins: (patch) => setChatPins(patch),
+    clearSetting: () => setChatPin("canon_grounding_setting", ""),
+    selfTest: () => parserSelfTest(),
+    resetKeywords: () => resetKeywordFields(),
+    resetAll: () => resetAllSettings(),
+});
+globalThis.CanonGrounding_api = HOST_API;
 
 // ---------------------------------------------------------------------------
 // Boot

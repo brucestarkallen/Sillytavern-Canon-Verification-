@@ -110,10 +110,16 @@ also broken.
    to delete the person being addressed.
 6. **Lookup** — `findPageTitle` prefers the tightest *covering* title. Fight pages
    (`X vs. Y`), disambiguation pages and franchise pages are rejected.
+   Sections are read WITH their subtree (`sectionAt`): a heading that opens straight
+   into its subsections is a heading-only chunk, and every section reader goes
+   through that one function.
 7. **Negative cache** (`negativeTtl`) — `no-page` is durable (24h). Every other
    reason means *our* resolution failed and heals in 20 minutes.
 8. **Selection & order** (`castNamedIn`) — pins/setting, then whoever the player
    named, then scene recency. Case-blind throughout.
+   The ledger tier is `ledgerOnScreen` — ONE door: entries a host marks
+   `present: true` first (a model already read the room), then ledger names the
+   window names. Never filter the ledger by name anywhere else.
 9. **Budget** — four passes: presence → appearance → pair dynamics → depth.
    Verbosity must never delete someone who is in the scene.
 10. **Absence (⌀)** — `unverifiedNamed`, called only inside `relevantCanonNote` (the
