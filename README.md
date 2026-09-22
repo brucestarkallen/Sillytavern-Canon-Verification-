@@ -56,6 +56,19 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.68.0 (📍 where the scene is, by the host)
+
+Proven by `test/proof.js` (602) + `test/sim.mjs` (430); **2 guards negative-tested**.
+
+The setting tracker picked the scene's place from the parser — a place someone merely
+mentioned could become "where we are", announced with a 📍 toast, while the story's own
+header said otherwise. A host whose ledger knows where the scene is (its header) passes
+it as `getContext().canonScenePlace`: the setting is then the canon place already looked
+up under that name or one of its parts ("Kuchiki Manor — the tea room"); a place canon
+does not know leaves NO setting — never a wrong one; nothing is looked up from a
+header's words and nothing is announced. With a host place, the parser's own place is
+never made the setting. No host place: the extension's own tracker, as always.
+
 ## Changelog — v0.67.2 (the lens reaches powers and the world around them)
 
 Proven by `test/proof.js` (602) + `test/sim.mjs` (424); **1 guard negative-tested**.
