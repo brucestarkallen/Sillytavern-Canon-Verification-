@@ -56,6 +56,12 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.68.1 (order only)
+
+Proven by `test/proof.js` (602) + `test/sim.mjs` (430). The host-place functions now sit
+after the PLACE_WORDS they read (a host's lint flagged the use before the definition —
+safe at run time, but the order is the reader's too). No behaviour changes.
+
 ## Changelog — v0.68.0 (📍 where the scene is, by the host)
 
 Proven by `test/proof.js` (602) + `test/sim.mjs` (430); **2 guards negative-tested**.
