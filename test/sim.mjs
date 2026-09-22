@@ -1443,9 +1443,12 @@ console.log("[51] v0.51.0 director apparatus is not the scene");
 console.log("[52] v0.52.0 the relationship pass");
 {
     T("pair dynamics are collected apart from ordinary depth", /const dyn = \[\];/.test(src));
+    // v0.65.0: the fallback computes its pair lines ONCE, first (dynNow), so its
+    // Relationships line can leave out what they say — the same lines, the same band.
     T("both emitters feed the dynamics band",
-        (src.match(/dyn\.push\(\.\.\.dynLines\(\)\);/g) || []).length === 2
-        && !/lines\.push\(\.\.\.dynLines\(\)\)/.test(src));
+        (src.match(/dyn\.push\(\.\.\.dynLines\(\)\);/g) || []).length === 1
+        && /const dynNow = dynLines\(\);/.test(src) && (src.match(/dyn\.push\(\.\.\.dynNow\);/g) || []).length === 1
+        && !/lines\.push\(\.\.\.dyn(Lines\(\)|Now)\)/.test(src));
     T("the bands are carried on the built entry", /built\.push\(\{ entry, matchedName, pinned, swept, setting, viaLedger, lines: rest, look, dyn \}\);/.test(src));
     T("appearance is allocated before the relationship pass",
         src.indexOf("PASS ONE-AND-A-HALF") < src.indexOf("PASS TWO — WHO THESE PEOPLE ARE"));
@@ -1904,6 +1907,39 @@ console.log("[62] v0.64.0 searching no wiki proves nothing");
     T("…and no miss is recorded for a name no wiki was asked about", !c62["kestrel vane"]);
     T("…and the note claims no absence", !/Not found in this story's canon sources/.test(lastInjection()));
     Object.assign(S, saved62);
+}
+
+// [63] v0.65.0 — ONE HOME FOR A FACT. A host whose ledger already shows someone's
+// face says so (holds: ["appearance"]) and the note leaves that face to it; and a
+// Relationships line never repeats the "With …" line it would duplicate.
+console.log("[63] v0.65.0 one home for a face; no Relationships line repeating a pair");
+{
+    const S = extension_settings.canon_grounding;
+    const saved63 = { llmParser: S.llmParser, useLedger: S.useLedger, relationDynamics: S.relationDynamics, relationship: S.relationship, autoArc: S.autoArc, physical: S.physical, relationshipKeywords: S.relationshipKeywords };
+    // the Relationships section must actually be read for the repeat to be possible
+    // (the sim's own keyword list is "relative" only — it never matched the section)
+    S.useLedger = true; S.relationDynamics = true; S.relationship = true; S.autoArc = false; S.physical = true; S.llmParser = false;
+    S.relationshipKeywords = "relative,relationship";
+    const bound = () => ({
+        canon_grounding_wiki: "testwiki",
+        canon_grounding_wiki_ok: { wikis: "testwiki", name: "sim", fp: "(manual)", manual: true, ts: Date.now() },
+    });
+    globalThis.__ctx.chat = [msg("She pours the tea and waits.", true)];
+    globalThis.__ctx.chatMetadata = { ...bound(), summaryception: { ledger: { Hostala: { present: true, holds: ["appearance"] }, Hostbeta: { present: true } } } };
+    await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    const n63 = lastInjection();
+    T("both ride", /Hostala:/.test(n63) && /Hostbeta:/.test(n63));
+    T("the face the host's ledger shows is left to it", !/Hostala-colored/.test(n63));
+    T("…and a face it does not show still rides", /Hostbeta-colored/.test(n63));
+    T("the pair line rides", /With Hostbeta: Hostala trusts Hostbeta/.test(n63));
+    T("the Relationships section was read (so a repeat was possible)",
+        /trusts Hostbeta/.test(((globalThis.__ctx.chatMetadata.canon_grounding_cache || {}).hostala || { sections: {} }).sections.relationship || ""));
+    T("…and no Relationships line says the same thing again",
+        (n63.match(/Hostala trusts Hostbeta with her life/g) || []).length === 1
+        && (n63.match(/Hostbeta trusts Hostala with her life/g) || []).length === 1);
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    T("every door hands the note what the host holds", (code.match(/faceHeld: ledgerFaceHeld\(\)/g) || []).length === 3);
+    Object.assign(S, saved63);
 }
 
 {
