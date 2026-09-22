@@ -56,6 +56,36 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.67.0 (🔭 the story's lens — canon is a timeline, and a story may leave it)
+
+Proven by `test/proof.js` (596) + `test/sim.mjs` (423); **3 guards negative-tested**.
+
+A wiki describes canon's END. In a story where the protagonist became captain of the
+13th Division instead of Rukia, and she never married Renji, the note still said
+"she is the current Captain … married to Renji Abarai … a daughter named Ichika" —
+as fact, every turn. A storyteller told she is married cannot let the protagonist
+grow close to her; told she is captain, it argues with the story's own premise.
+
+**A host lens.** A host that knows its story's premise may say, per person, what of
+canon HOLDS there: `getContext().canonLens(entry)` returns an overlay (identity,
+brief, facts, secrets, dynamics, the per-pair lines, the fallback's identity /
+relationship / biography), and the person's block is written from canon seen through
+it (`lensedEntry`, handed to every door as `extras.lens`). What the story changed or
+has not reached is then neither a fact nor a prophecy — it simply is not said. The
+cache stays canon; the lens is the host's. No host lens: canon as it is, byte for
+byte. **`rebuild`** on the host surface builds the turn's own note again (the same
+door as the preview) and hands it to the host as the turn's — for a lens that lands
+after the turn's first build.
+
+**A story position is canon's course, never the story's script.** The begun-arc guard
+told the storyteller to "let them unfold naturally" — a push toward canon's events in
+a story free to change them. It now reads: canon's course, never this story's script
+(what happens is decided on the page).
+
+The ⌀ wording test ([64]) now checks the note built from what is kept (the preview,
+the turn's own door): on a loaded machine the turn's race window had decided a test of
+wording.
+
 ## Changelog — v0.66.0 (🗣 the note speaks to the storyteller, never about one)
 
 Proven by `test/proof.js` (596) + `test/sim.mjs` (416); **2 guards negative-tested**.
