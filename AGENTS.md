@@ -120,6 +120,9 @@ also broken.
    The ledger tier is `ledgerOnScreen` — ONE door: entries a host marks
    `present: true` first (a model already read the room), then ledger names the
    window names. Never filter the ledger by name anywhere else.
+   A host that shows a face itself marks the entry `holds: ["appearance"]`
+   (`ledgerFaceHeld`, passed as `extras.faceHeld` by every caller of the note):
+   ONE HOME FOR A FACT — the note never repeats what the host says.
 9. **Budget** — four passes: presence → appearance → pair dynamics → depth.
    Verbosity must never delete someone who is in the scene.
 10. **Absence (⌀)** — `unverifiedNamed`, called only inside `relevantCanonNote` (the

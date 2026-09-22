@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.64.0";
+const CG_VERSION = "0.65.0";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -2151,6 +2151,19 @@ function ledgerPresentNames() {
 }
 
 /**
+ * People whose FACE the host's own ledger already shows the storyteller this turn
+ * (an entry marked `holds: ["appearance"]`). The note then leaves their Appearance
+ * line to the ledger — one home for a face, read once — and spends the budget on
+ * depth. Summaryception marks nobody: SillyTavern keeps every Appearance line.
+ */
+function ledgerFaceHeld() {
+    const ledger = ledgerObject();
+    if (!ledger) return [];
+    return Object.keys(ledger).filter(k => ledger[k] && typeof ledger[k] === "object"
+        && Array.isArray(ledger[k].holds) && ledger[k].holds.includes("appearance"));
+}
+
+/**
  * WHO THE STORY'S OWN LEDGER PUTS ON SCREEN — ONE definition for every door (the
  * turn's tier 2, the ledger-mode cast, the on-screen grounding, the stale-turn
  * fallback, the composer's parts and the preview). Two proofs, the stronger first:
@@ -2999,6 +3012,15 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
 
     const blocks = [];
     const reasons = [];
+    // ONE HOME FOR A FACE: whoever the host's ledger already shows the storyteller a
+    // face for (extras.faceHeld — its own names, resolved like any name here) gets no
+    // Appearance line; the ledger says it once, and the budget goes to depth.
+    const faceHeldNames = new Set();
+    for (const hn of (extras.faceHeld || [])) {
+        const hit = cacheEntryFor(String(hn).toLowerCase());
+        faceHeldNames.add(String(hit ? hit.entry.name : hn).toLowerCase());
+    }
+    const faceHere = (entry) => s.physical && !faceHeldNames.has(String(entry.name || "").toLowerCase());
     const seenEntities = new Set();  // one block per CHARACTER, even if cached under two keys
     let total = 0;
     const built = [];
@@ -3067,7 +3089,7 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
                 lines.push(`  - Identity: ${identity}`);
             }
             const nf = focusLine(); if (nf) lines.push(nf);
-            if (s.physical) {
+            if (faceHere(entry)) {
                 const al = appearanceLine(entry);
                 if (al) lines.push(al);
             }
@@ -3122,15 +3144,28 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
             if (entry.sections.identity) lines.push(`  - Identity: ${entry.sections.identity}`);
             const nf = focusLine(); if (nf) lines.push(nf);
             const inPlayR = ((castFocus[nameKey] || "") + " " + lowerMsgs.slice(-2).join(" ")).toLowerCase();
+            // The pair lines first, so the Relationships line can leave out what they
+            // already say: a page whose Relationships section IS the other person's
+            // subsection (now read whole) gave the same sentences twice.
+            const dynNow = dynLines();
+            const saidInPairs = dynNow.map(l => l.toLowerCase());
             for (const cat of order) {
                 if (cat === "physical") {
-                    if (s.physical) { const al = appearanceLine(entry); if (al) lines.push(al); }
+                    if (faceHere(entry)) { const al = appearanceLine(entry); if (al) lines.push(al); }
                 } else if (cat === "abilities") {
                     const al2 = abilityLine(entry, inPlayR, /powers/.test(castNeed[nameKey] || "")); if (al2) lines.push(al2);
+                } else if (cat === "relationship") {
+                    if (s[cat] && entry.sections[cat]) {
+                        const rest = String(entry.sections[cat]).split(/(?<=[.!?;])\s+/).filter(sn => {
+                            const k = sn.toLowerCase().replace(/[.!?;…\s]+$/, "").trim();
+                            return k && !saidInPairs.some(l => l.includes(k));
+                        }).join(" ").trim();
+                        if (rest) lines.push(`  - ${labels[cat]}: ${rest}`);
+                    }
                 } else if (s[cat] && entry.sections[cat]) {
                     lines.push(`  - ${labels[cat]}: ${entry.sections[cat]}`);
                 }
-                if (cat === "personality") dyn.push(...dynLines());
+                if (cat === "personality") dyn.push(...dynNow);
             }
         }
         if (!lines.length) continue;
@@ -4848,6 +4883,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                 pinNames,
                 userNames: castNamedIn(lastUserMsg),
                 ledgerNames: ledgerOnScreen(sceneText),
+                faceHeld: ledgerFaceHeld(),
                 blockNames: chatBlockNames(),
                 settingKey: chatSettingKey(),
                 chatPin: chatPin(),
@@ -4927,6 +4963,7 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
             pinNames,
             userNames: tierUser,
             ledgerNames: tierLedger,
+            faceHeld: ledgerFaceHeld(),
             blockNames: chatBlockNames(),
             settingKey: chatSettingKey(),
             chatPin: chatPin(),
@@ -5810,6 +5847,7 @@ async function previewNote() {
         chatPin: chatPin(), globalPin: s.pinnedGlobal,
         userNames: castNamedIn(lastUserMsg),
         ledgerNames: ledgerOnScreen(scene.join("\n")),
+        faceHeld: ledgerFaceHeld(),
         userMsg: lastUserMsg,
     });
     const pParts = __noteParts();
