@@ -56,6 +56,14 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.67.2 (the lens reaches powers and the world around them)
+
+Proven by `test/proof.js` (602) + `test/sim.mjs` (424); **1 guard negative-tested**.
+
+A person's powers and the world around them are timeline too: "Ōken Clothing"
+comes from canon's last arc, and the 13th Division's "why" was "her current
+captaincy". A host lens now covers `abilities` and `related` as well as the rest.
+
 ## Changelog — v0.67.1 (the not-in-canon notice names each thing once)
 
 Proven by `test/proof.js` (598) + `test/sim.mjs` (423); **1 guard negative-tested**.
