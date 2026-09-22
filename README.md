@@ -56,6 +56,60 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.64.0 (🧩 a host that knows who is in the room; a section read whole)
+
+Proven by `test/proof.js` (596) + `test/sim.mjs` (406); **9 guards negative-tested**.
+
+Three roots, all found by running the extension inside a host that already knows
+its own scene (Cozy Tavern).
+
+**Searching no wiki proved an absence.** `missCoversCurrentWikis` asked whether
+every current wiki had been searched — and `[].every(...)` is true, so with no
+wiki set (the field emptied, or a story whose universe discovery has not found
+yet) a lookup that searched nothing recorded a settled miss that "covered" the
+empty list, and the ⌀ notice told the storyteller the name was not in canon. A
+miss is a fact about the wikis that were asked: with none, `ensureGrounded`
+now records nothing, and an empty list is covered by nothing.
+
+**A section that opens straight into its subsections was invisible.** The
+section readers split a page at every heading and then demanded a line of text
+under the heading — so `== Relationships ==` followed directly by
+`=== Issei Hyoudou ===`, the common Fandom layout, matched nothing. The page's
+own per-person dynamics were never read (only the budgeted `X/Relationships`
+subpage could supply them), a History told in eras reached the dossier curator
+empty, an arc whose Summary opens into parts fell back to its lead, and a page
+whose Personality, Relationships and Appearance all open into subsections
+failed the character gate. One reader now (`sectionAt`) returns a section with
+its whole subtree, heading-only chunks included, and all four readers use it:
+`extractSection`, `extractSectionRaw`, the subtree walk, and `relationFor`.
+
+**A host's ledger can say who is standing in the room.** Summaryception's
+ledger lists names, so the ledger tier has always meant "a ledger name the
+scene window names". A host whose own ledger reads every page for presence
+marks those entries `present: true`, and they ride — tier 2, grounded as
+trusted, in the pair pool — with no name in the window: three pages of "she"
+are still her. One door (`ledgerOnScreen`) replaces six copies of the name
+filter (the turn's tier, ledger mode, the on-screen grounding, the stale-turn
+fallback, the composer's parts, the preview). The pair pool now includes the
+ledger's on-screen cast, so two people the ledger puts in the room get their
+"With …" lines on a turn the gated parser did not run, and the "why" line says
+`in the scene by the story's own ledger`. SillyTavern with Summaryception is
+unchanged: nothing there marks presence.
+
+**A host can frame the note in its own voice** (`getContext().canonHeaderDefault`);
+SillyTavern supplies none and keeps the player's-note default, byte for byte.
+
+**The host surface** (`globalThis.CanonGrounding_api`). Every button of the
+panel is now one function — preview, scan, clear, forget, look it up again,
+the story position, the chat's pins, the self-test, both resets, the wiki
+binding — and the panel and a host call the same one, so they cannot drift. The name
+resolver itself is one of them: `cacheEntryIn` is the pure form of
+`cacheEntryFor` (any store, no burial), so a host reads a pinned "Rukia" as Rukia
+Kuchiki exactly as the note does.
+Four static tests pinned the panel's old source text (two instruction rows, the
+empty-preview diagnosis, the bands on the built entry); each was rewritten to
+assert the same property on the new shape.
+
 ## Changelog — v0.63.0 (✒ composed BEFORE the storyteller thinks — the Now-line contract)
 
 Proven by `test/proof.js` (579) + `test/sim.mjs` (378); **3 guards negative-tested**.
