@@ -81,7 +81,7 @@ saveCache = () => {};   // persistence is sim's job — the real saveCache needs
 return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
          extractLead, extractAliases, extractFromProse, mentioned, escapeRegex,
-         clip, cacheEntryFor, cacheEntryIn, pruneStaleCast, isUnhandledName,
+         clip, cacheEntryFor, cacheEntryIn, lensedEntry, pruneStaleCast, isUnhandledName,
          relationFor, pickArcHit, relevantCanonNote, extractQuotes, parseDossier, normalizeDossier,
          getReasons: () => lastMatchReasons,
          setFocus: (m) => { castFocus = m; },
@@ -1912,6 +1912,19 @@ console.log("[v0.67.1 the not-in-canon notice names each asked-about thing once,
     T("the whole name, once — its fragments (looked up later) are not listed beside it", JSON.stringify(got) === JSON.stringify(["Crimson Pact of Ulveth"]));
     const two = api.unverifiedNamed("Is Ulveth near Varnhold?", { ...store, "varnhold": { name: "Varnhold", found: false, reason: "no-page", trusted: false, searched: ["w"], ts: now } }, "w", []);
     T("…while two different things asked about are both named", two.includes("Ulveth") && two.includes("Varnhold"));
+}
+
+// ------------------------------------------------- v0.67.2 the lens covers every timeline-bound field
+console.log("[v0.67.2 the story's lens reaches powers and the world around them]");
+{
+    const entry = { name: "Rukia Kuchiki", sections: { identity: "canon lead" }, rel: { renji: "married" },
+        dossier: { identity: "Captain", brief: "b", facts: ["f"], secrets: ["s"], dynamics: { Renji: "husband" },
+            abilities: ["Ōken Clothing: from the last arc", "Sode no Shirayuki"], related: [{ name: "13th Division", why: "her current captaincy" }] } };
+    const seen = api.lensedEntry(entry, () => ({ abilities: ["Sode no Shirayuki"], related: [{ name: "13th Division", why: "" }], facts: [], pairs: { renji: "" } }));
+    T("powers the story has not reached are not carried", JSON.stringify(seen.dossier.abilities) === JSON.stringify(["Sode no Shirayuki"]));
+    T("…nor the world's why that the story changed", seen.dossier.related[0].why === "");
+    T("…and the cache entry itself is untouched", entry.dossier.abilities.length === 2 && entry.dossier.related[0].why === "her current captaincy" && entry.rel.renji === "married");
+    T("no lens: the very same entry", api.lensedEntry(entry, null) === entry);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
