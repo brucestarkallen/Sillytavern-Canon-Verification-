@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.68.2";
+const CG_VERSION = "0.68.3";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -814,6 +814,20 @@ function isMediaTitle(t) {
         || String(t).includes("/"); // subpages
 }
 
+// M573 (Cozy, the audit): EVERY WIKI REQUEST HAS A TIME LIMIT. A request to a wiki that accepts the line and never
+// answers (a phone between towers) stayed pending as long as the browser let it — canon verification waiting on it while
+// its turn window closed and later lookups queued behind. Twenty seconds, then it is a failed lookup like any other (the
+// engine already reads a failure as "nothing found yet" and looks again later).
+const WIKI_TIMEOUT_MS = 20000;
+function wikiFetch(url) {
+    try {
+        if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") return fetch(url, { signal: AbortSignal.timeout(WIKI_TIMEOUT_MS) });
+        const c = new AbortController();
+        const t = setTimeout(() => { try { c.abort(); } catch (e) {} }, WIKI_TIMEOUT_MS);
+        return fetch(url, { signal: c.signal }).finally(() => clearTimeout(t));
+    } catch (e) { return fetch(url); }
+}
+
 async function findPageTitle(wiki, name) {
     // 1) Exact-title lookup first. A character's page is almost always titled with
     //    their name, so this avoids search returning a subpage ("X/Relationships")
@@ -824,7 +838,7 @@ async function findPageTitle(wiki, name) {
     try {
         const exactName = name.replace(/\S+/g, w => w[0].toUpperCase() + w.slice(1));
         const u = `${apiBase(wiki)}?action=query&titles=${encodeURIComponent(exactName)}&redirects=1&format=json&origin=*`;
-        const r = await fetch(u);
+        const r = await wikiFetch(u);
         if (r.ok) {
             const d = await r.json();
             const p = Object.values(d?.query?.pages || {})[0];
@@ -838,7 +852,7 @@ async function findPageTitle(wiki, name) {
     //    character name resolves to the CHARACTER page, not the "(Light Novel)" or
     //    "(Anime)" series pages that also match the query.
     const url = `${apiBase(wiki)}?action=query&list=search&srlimit=8&format=json&origin=*&srsearch=${encodeURIComponent(name)}`;
-    const res = await fetch(url);
+    const res = await wikiFetch(url);
     if (!res.ok) throw new Error(`search HTTP ${res.status}`);
     const hits = (await res.json())?.query?.search || [];
     const usable = hits.filter(h => !isMediaTitle(h.title));
@@ -856,7 +870,7 @@ async function findPageTitle(wiki, name) {
 
 async function fetchWikitext(wiki, title) {
     const url = `${apiBase(wiki)}?action=parse&prop=wikitext&format=json&origin=*&page=${encodeURIComponent(title)}`;
-    const res = await fetch(url);
+    const res = await wikiFetch(url);
     if (!res.ok) throw new Error(`parse HTTP ${res.status}`);
     const data = await res.json();
     return data?.parse?.wikitext?.["*"] || "";
@@ -866,7 +880,7 @@ async function fetchExtract(wiki, title) {
     // Plain-text article extract — used to recover facts that live in prose
     // (e.g. an "Appearance" paragraph) rather than in infobox fields.
     const url = `${apiBase(wiki)}?action=query&prop=extracts&explaintext=1&redirects=1&format=json&origin=*&titles=${encodeURIComponent(title)}`;
-    const res = await fetch(url);
+    const res = await wikiFetch(url);
     if (!res.ok) throw new Error(`extract HTTP ${res.status}`);
     const data = await res.json();
     const pages = data?.query?.pages || {};
@@ -956,20 +970,65 @@ function extractFromProse(text) {
 // Wikitext section extraction (for personality / relationships / biography)
 // ---------------------------------------------------------------------------
 
-/** Drop everything inside {{ … }} at any nesting, stray braces included. */
+/** Drop everything inside {{ … }} that is markup; retain a template's display text.
+ * M487: A TEMPLATE'S OWN WORDS ARE KEPT. The walker dropped every template it did not know WHOLE — and a wiki that wraps
+ * a name or a term in one ({{Translation|Tenth Division|十番隊}}, {{Ruby|shitagi|下着}}, a house template of its own)
+ * lost the word: "The is one of the Gotei 13", "composed of a white , a black , a black". Now an unknown template is
+ * read for its DISPLAY TEXT: the first positional parameter (one with no "=") that carries letters; a template of
+ * key=value parameters alone (an infobox, a navbox) still drops whole, and a template inside another is read the same
+ * way, inside out. The known templates are still handled by their own rules above. */
+function templateText(inner) {
+    const name = inner.split("|")[0].trim().toLowerCase();
+    /* M490-3: reference, media, link and spoiler templates are never prose — a spoiler is canon's LATER events, the
+     * very thing a story that diverges from canon must not be told as fact */
+    if (/^(?:infobox|navbox|character|main|see also|reflist|ref|cite|clear|clr|stub|for\b|hatnote|about|redirect|quote|cquote|quote box|efn|sfn|notelist|note|source|anchor|toc|portal|defaultsort|category|image|img|file|gallery|link|url|external|spoiler|ep\b|episode|chapter|cn\b|citation)/.test(name)) return "";
+    const parts = [];
+    let depth = 0; let cur = "";
+    for (let i = 0; i < inner.length; i++) {
+        const ch = inner[i];
+        if (ch === "[" && inner[i + 1] === "[") depth++;
+        if (ch === "]" && inner[i + 1] === "]") depth = Math.max(0, depth - 1);
+        if (ch === "|" && depth === 0) { parts.push(cur); cur = ""; continue; }
+        cur += ch;
+    }
+    parts.push(cur);
+    for (const p of parts.slice(1)) {
+        const t = p.trim();
+        if (!t || /^[\w\s-]+=/.test(t)) continue;
+        if (/\.(?:png|jpe?g|gif|webp|svg|bmp|ogg|mp3|mp4|webm)\b/i.test(t) || /^(?:https?:)?\/\//i.test(t) || /^(?:www\.)/i.test(t)) continue; /* never a file name or a link */
+        if (/\p{L}/u.test(t)) return t;
+    }
+    return "";
+}
 function stripTemplates(text) {
     let out = "";
     let depth = 0;
+    let buf = "";
     for (let i = 0; i < text.length; i++) {
-        if (text[i] === "{" && text[i + 1] === "{") { depth++; i++; continue; }
-        if (text[i] === "}" && text[i + 1] === "}") { if (depth > 0) { depth--; i++; continue; } i++; continue; }
-        if (depth === 0) out += text[i];
+        if (text[i] === "{" && text[i + 1] === "{") { depth++; i++; if (depth > 1) buf += "{{"; continue; }
+        if (text[i] === "}" && text[i + 1] === "}") {
+            if (depth > 0) {
+                depth--; i++;
+                if (depth === 0) { out += templateText(depth === 0 ? stripTemplates(buf) : buf); buf = ""; }
+                else buf += "}}";
+                continue;
+            }
+            i++; continue;
+        }
+        if (depth === 0) out += text[i]; else buf += text[i];
     }
     return out;
 }
 
+/* M486: what the last generation's note was, and why — for Cozy Tavern's receipt ("What canon says — not part of this
+ * turn: …"), never for the storyteller */
+export function lastInjectionReport() {
+  return { note: lastInjection || '', at: lastInjectionAt || 0, source: lastSource || '', error: lastLlmError || '', reasons: Array.isArray(lastReasons) ? lastReasons.slice(0, 6) : [] };
+}
+export function isEpisodeOrChapterPage(wt) { return isEpisodePage(wt); } /* exported for the harness (M509) */
+export function isCastListLook(t) { return castListLook(t); } /* exported for the harness (M509-2) */
 /** Strip common wiki markup down to readable prose. */
-function cleanWikitext(wt) {
+export function cleanWikitext(wt) { /* exported for the harness (M460) */
     if (!wt) return "";
     let s = wt;
     // BLOCK CONSTRUCTS FIRST — containers whose CONTENT is markup, not prose. The
@@ -1026,7 +1085,19 @@ function cleanWikitext(wt) {
     // {{small|X}}, {{tooltip|term|text}} — must yield their text, not vanish: the
     // depth walker deleting them whole is exactly how "haircolor" disappears while
     // a plain "eyecolor" survives. Keep the LAST parameter (the display text).
-    s = s.replace(/\{\{\s*(?:colou?r|font ?colou?r|nowrap|small|big|tt|abbr|tooltip)\s*\|(?:[^{}]*\|)?([^{}|]*)\}\}/gi, "$1");
+    s = s.replace(/\{\{\s*(?:colou?r|font ?colou?r)\s*\|(?:[^{}]*\|)?([^{}|]*)\}\}/gi, "$1");
+    /* M487: for tt/abbr/tooltip/nowrap/small/big the DISPLAY text is the first parameter ({{tt|shitagi|下着}} shows
+     * "shitagi"); the old rule kept the last — the tooltip — and lost the word */
+    s = s.replace(/\{\{\s*(?:nowrap|small|big|tt|abbr|tooltip)\s*\|([^{}|]*)(?:\|[^{}]*)?\}\}/gi, "$1");
+    // M460 (Cozy): the JAPANESE-TERM templates carry the English term in their FIRST parameter — {{Nihongo|Tenth
+    // Division|十番隊|Jūbantai}}, {{nihongo|kosode|小袖}}. The depth walker deleted them whole, and the Bleach wiki's
+    // prose came through as "The  is one of the Gotei 13" and "a white , a black , a black ,". Keep the term (the
+    // romaji when the English is left empty). {{lang|ja|X}} keeps X.
+    s = s.replace(/\{\{\s*(?:nihongo(?:\s*(?:foot|krt|title)|[234])?|japanese|jap|j)\s*\|([^{}]*)\}\}/gi, (m, inner) => {
+        const p = inner.split("|").map((x) => x.trim());
+        return p[0] || p[2] || p[1] || "";
+    });
+    s = s.replace(/\{\{\s*lang\s*\|\s*[a-z-]{2,8}\s*\|([^{}|]*)(?:\|[^{}]*)?\}\}/gi, "$1");
     // Remove remaining templates with a real DEPTH WALKER. The old regex loop
     // could never match an outer template whose body held a stray brace (the
     // {{{param|}}} triple-brace pattern in big infoboxes like Classroom of the
@@ -1385,6 +1456,20 @@ function isMetaSeriesPage(wikitext) {
     return /\bis an?\s+(?:japanese\s+)?(?:light novel|web novel|manga|anime|novel|visual novel|video game|television|tv)\s+(?:series|franchise)\b/i.test(lead);
 }
 
+/** M509: AN EPISODE OR A CHAPTER IS AN EVENT, NOT A WHO. "Muguruma's 9th Division, Moves Out" — a Bleach episode page,
+ * found for a trusted name — rode the canon pack as a person: its infobox "Appearance" is the episode's CAST LIST
+ * (fourteen names), its lead says it "is the Nth episode of the anime". A trusted name lands here too: the caller
+ * vouched for the name, we chose the page. */
+function isEpisodePage(wikitext) {
+    if (!wikitext) return false;
+    const lead = extractLead(wikitext, 400);
+    if (/\bis the\s+(?:\S+\s+){0,3}(?:episode|chapter|volume|arc|season|opening|ending)\b/i.test(lead) || /\b(?:episode|chapter)\s+(?:no\.?|number|#)?\s*\d+\b.{0,60}\b(?:anime|manga|series)\b/i.test(lead)) return true;
+    const head = wikitext.slice(0, 4000);
+    if (/\{\{\s*(?:episode|chapter|anime episode|manga chapter|infobox episode|infobox chapter|volume)\b/i.test(head)) return true;
+    const fields = extractInfoboxFields(wikitext, ["airdate", "air date", "original airdate", "episode number", "episode no", "chapter number", "chapters covered", "manga chapters", "previous episode", "next episode", "opening theme", "ending theme", "eyecatch"]);
+    return Boolean(fields && String(fields).trim());
+}
+
 /** A disambiguation page injected as canon is pure wrong-info — detect and skip. */
 function isDisambiguation(wikitext) {
     if (!wikitext) return false;
@@ -1458,10 +1543,22 @@ function physicalImplausible(physical) {
         return !!val && !plausibleFieldValue(part.slice(0, i).trim(), val);
     });
 }
+/** M509-2: a "look" that is a CAST LIST — six or more capitalised names and not one lowercase sentence — is an episode's
+ *  Appearance field, not a face. Such an entry (grounded before the episode gate) is poisoned: the heal below re-reads
+ *  its page and lets it go. */
+function castListLook(text) {
+    const t = String(text || "").replace(/^\s*(?:look|appearance)\s*:\s*/i, "").trim();
+    if (t.length < 40) return false;
+    const words = t.split(/\s+/).filter(Boolean);
+    const caps = words.filter(w => /^[\p{Lu}][\p{L}'’.-]*$/u.test(w)).length;
+    return words.length >= 8 && caps / words.length >= 0.85 && !/[.!?]\s/.test(t);
+}
 function entryPoisoned(entry) {
     const sec = entry && entry.sections;
     if (!sec) return false;
     if (physicalImplausible(sec.physical)) return true;
+    if (castListLook(sec.look) || castListLook(sec.physical)) return true;
+    if (/\bis the\s+(?:\S+\s+){0,3}(?:episode|chapter|volume)\b/i.test(String(sec.identity || ""))) return true;
     return ["look", "physical", "identity", "personality", "relationship", "biography", "abilities", "trivia", "voice"]
         .some(k => sec[k] && SECTION_JUNK.test(sec[k]));
 }
@@ -1642,9 +1739,9 @@ async function ensureGrounded(name, trusted = false) {
             // "not-character" is the reason that gets re-fetched for trusted callers
             // (a place/org is still valid lore) — a meta page never becomes valid, so
             // it must settle instead of re-fetching the same dead page every turn.
-            if (isDisambiguation(wikitext) || isMetaSeriesPage(wikitext)) {
+            if (isDisambiguation(wikitext) || isMetaSeriesPage(wikitext) || isEpisodePage(wikitext)) {
                 missReason = "meta-page";
-                debug(`⚠ "${title}" is a disambiguation/series page, not an entity — skipped`);
+                debug(`⚠ "${title}" is a disambiguation/series/episode page, not an entity — skipped`);
                 continue;
             }
 
@@ -1687,6 +1784,20 @@ async function ensureGrounded(name, trusted = false) {
                 // at note time for exactly the pair that's on screen.
                 const relRaw = extractSectionRaw(wikitext, ["relationships", "relationship"], 4000);
                 const kind = (charSignal || charSection) ? "character" : "place";
+                // COZY M510-54: ONE PERSON, ONE ENTRY. A name looked up again under another form ("Rukia" after "Rukia
+                // Kuchiki" — a stale miss carried into a branch, found the second time) landed on the page already kept and
+                // wrote it again under the new key: two Rukias in the drawer. The same page of the same wiki is the same
+                // person — the new name joins its aliases, the miss under that name goes, and the one entry answers.
+                const twinKey = Object.keys(c).find((k2) => k2 !== key && c[k2] && c[k2].found && c[k2].sections && normName(c[k2].name) === normName(title) && String(c[k2].wiki || "") === String(wiki || ""));
+                if (twinKey) {
+                    const twin = c[twinKey];
+                    twin.aliases = [...new Set([...(twin.aliases || []), ...aliases, name].filter((a) => a && normName(a) !== normName(twin.name)))];
+                    twin.ts = Date.now();
+                    if (c[key] && !c[key].found) delete c[key];
+                    saveCache();
+                    debug(`✓ ${title} again, as "${name}" — the same person: kept once`);
+                    return twin;
+                }
                 c[key] = { name: title, sections, aliases, relRaw, rel: {}, wiki, kind, found: true, ts: Date.now() };
                 // LLM curation runs in the BACKGROUND — this turn ships the regex
                 // sections immediately, the dossier upgrades every turn after.
@@ -1893,7 +2004,7 @@ async function groundArc(query, opts = {}) {
             let exact = null;
             try {
                 const cap = query.replace(/\S+/g, w => w[0].toUpperCase() + w.slice(1));
-                const r = await fetch(`${apiBase(wiki)}?action=query&titles=${encodeURIComponent(cap)}&redirects=1&format=json&origin=*`);
+                const r = await wikiFetch(`${apiBase(wiki)}?action=query&titles=${encodeURIComponent(cap)}&redirects=1&format=json&origin=*`);
                 if (r.ok) {
                     const p = Object.values((await r.json())?.query?.pages || {})[0];
                     if (p && p.pageid && !("missing" in p)) exact = p.title;
@@ -1905,7 +2016,7 @@ async function groundArc(query, opts = {}) {
             // character page becomes the pinned "story position". A structural exact hit
             // skips the search entirely.
             if (!exact || !structural.test(exact)) {
-                const res = await fetch(`${apiBase(wiki)}?action=query&list=search&srlimit=8&format=json&origin=*&srsearch=${encodeURIComponent(query)}`);
+                const res = await wikiFetch(`${apiBase(wiki)}?action=query&list=search&srlimit=8&format=json&origin=*&srsearch=${encodeURIComponent(query)}`);
                 if (res.ok) {
                     const hits = ((await res.json())?.query?.search || []).map(h => h.title);
                     const best = pickArcHit(hits, query);
@@ -2549,6 +2660,17 @@ function nameTokenOwners() {
     return owner;
 }
 
+/* M539: the word at [i, i+len) in the lower-cased text is used for a family or a house, not a person */
+const GROUP_AFTER = /^(?:'s)?\s+(?:clan|clans|family|families|household|house|houses|estate|compound|elders?|heirs?|bloodline|lineage|line|branch|main family|head family|members?|retainers?|guards?)\b/u;
+function groupUseAt(lower, i, len) {
+    const after = lower.slice(i + len, i + len + 40);
+    const before = lower.slice(Math.max(0, i - 24), i);
+    if (GROUP_AFTER.test(after)) return true;                 // "Zenin clan", "Zenin elders"
+    if (/^s\b/u.test(after) && /\bthe\s+$/u.test(before)) return true; // "the Zenins"
+    if (/\b(?:house|clan|family)\s+of\s+$/u.test(before)) return true; // "house of Zenin"
+    return false;
+}
+export function castNamedInForHarness(text) { return castNamedIn(text); } /* exported for the harness (M539) */
 /**
  * WHO DOES THIS TEXT NAME? Full name, alias, or a name token owned by exactly one
  * cached character — matched WITHOUT REGARD TO CASE.
@@ -2583,8 +2705,17 @@ function castNamedIn(text) {
                 if (t.length < 3 || NOISE_WORDS.has(t) || COMMON_LOWERCASE.has(t)) continue;
                 if (STOPWORDS.has(t[0].toUpperCase() + t.slice(1))) continue;
                 if (owner.get(t) !== e.name) continue;          // shared token — never a reference
-                const m = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "iu").exec(lower);
-                if (m) { at = m.index; break; }
+                /* M539: A FAMILY NAME USED FOR THE FAMILY IS NOT ONE OF THEM. "The Zenin clan" named Ogi Zenin — the only Zenin
+                 * the cache held — as if he typed Ogi: a single word owned by one cached person was taken for that person,
+                 * even where the words around it make it the clan ("the Zenin clan", "Zenin elders", "the Zenins", "house of
+                 * Zenin"). An occurrence used for the group is not a reference; only an occurrence that names a person counts. */
+                const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(t)}(?![\\p{L}\\p{N}])`, "giu");
+                let m;
+                while ((m = re.exec(lower))) {
+                    if (groupUseAt(lower, m.index, t.length)) continue;
+                    at = m.index; break;
+                }
+                if (at >= 0) break;
             }
         }
         if (at >= 0) hits.push({ name: e.name, at });
@@ -2658,6 +2789,33 @@ function orderLinesByNeed(lines, need) {
         KEEP_ALWAYS.some(k => line.startsWith(k)) || rankOf(line) < wanted.length);
 }
 
+/* Hosts may silence absence notices independently of the extension's user setting. */
+const HOST_SILENCES_MISSES = false;
+/* M537: one slip from a found name's word — a typo, never a different word (the first letter kept; one edit for a word of four
+ * to six letters, two from seven) */
+function editDistance(a, b) {
+    const m = a.length, n = b.length;
+    if (Math.abs(m - n) > 2) return 3;
+    const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+    for (let j = 1; j <= n; j++) d[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+            if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+        }
+    }
+    return d[m][n];
+}
+function nearFoundToken(t, foundTokens) {
+    if (!t || t.length < 4) return false;
+    const room = t.length >= 7 ? 2 : 1;
+    for (const f of foundTokens) {
+        if (f.length < 4 || f[0] !== t[0]) continue;
+        if (editDistance(t, f) <= room) return true;
+    }
+    return false;
+}
+export function unverifiedNamedForHarness(userMsg, store, wikisCsv, excludes) { return unverifiedNamed(userMsg, store, wikisCsv, excludes); } /* exported for the harness (M537) */
 /**
  * ⌀ NEGATIVE VERIFICATION — the missing half of "verify". Grounding answers
  * "what does canon say about X?"; this answers "does canon say ANYTHING about
@@ -2738,6 +2896,11 @@ function unverifiedNamed(userMsg, store, wikisCsv, excludes = []) {
         // a sentence fragment that once failed a lookup, not a thing the story
         // asked about.
         if (!toks.length || toks.every(t => NOISE_WORDS.has(t) || COMMON_LOWERCASE.has(t))) continue;
+        /* M537: A MISSPELLING OF SOMEONE FOUND IS NOT "NOT FOUND". He typed "Gojo Satorou"; the wiki's Satoru Gojo was found, but
+         * "satorou" is not "satoru", so the note told the storyteller to "treat Gojo Satorou as original to this story" — and its
+         * thinking had to argue the note down. A token one slip from a found one (two for a long word, the first letter kept)
+         * is owned by that found canon; at least one token must be exact, so a different name sharing nothing is still news. */
+        if (toks.every(t => foundTokens.has(t) || nearFoundToken(t, foundTokens)) && toks.some(t => foundTokens.has(t))) continue;
         if (toks.every(t => foundTokens.has(t))) continue;
         // Principals exclude by ANY shared token: the persona "Jovan" silences
         // "Jovan Kael" too — principals are few, and noise about the player
@@ -2825,7 +2988,7 @@ function lensedEntry(entry, lens) {
         const d = { ...entry.dossier };
         // v0.67.2: powers and the world around them are timeline too ("Ōken Clothing" from the last arc; "her current
         // captaincy" as the 13th Division's why) — a host lens covers them as well
-        // v0.68.2: and their quotes — "As captain, I…" is timeline too (a host's lens judges each one; Cozy Tavern M681)
+        // v0.68.2 (upstream 4b71b18; M681 in Cozy): and their quotes — "As captain, I…" is timeline too
         for (const k of ["identity", "brief", "facts", "secrets", "dynamics", "abilities", "related", "voice"]) if (L[k] !== undefined) d[k] = L[k];
         e.dossier = d;
     }
@@ -3349,7 +3512,12 @@ function relevantCanonNote(sceneMsgs, castNames, arc = undefined, extras = {}) {
     // (interceptor, preview, post-generation rebuilds) carries it by
     // construction instead of each call site remembering to.
     let unvBlock = "";
-    if (s.reportUnverified !== false && extras.userMsg) {
+    /* M538: CANON SPEAKS ONLY OF WHAT IT FOUND. His word: "if it's not canon then just be silent — why inject something, and
+     * even something wrong". The ⌀ line told the storyteller that what a lookup MISSED — "Zenin clan" (the wiki's own page
+     * spells it Zen'in), "Gojo Satorou" (a typo) — was "original to this story… never import outside facts": an instruction
+     * built on a failed search, and wrong whenever the search was. A miss proves nothing about the story's world; in Cozy
+     * Tavern it is never sent. (The lookups it missed stay in canon's own room, for his eyes.) */
+    if (!HOST_SILENCES_MISSES && s.reportUnverified !== false && extras.userMsg) {
         let principals = [];
         try { const c = getContext(); principals = [c.name1, c.name2]; } catch (e) { /* harness: no ST context */ }
         const unv = unverifiedNamed(extras.userMsg, store, activeWikis(),
@@ -3957,18 +4125,21 @@ function hostScenePlace() {
  * name (or one of its parts — "Kuchiki Manor — the tea room") becomes the setting;
  * a place canon does not know leaves NO setting — never a wrong one. Nothing is looked
  * up here (a header's words are no evidence of a wiki page), and nothing is announced.
- */
-function followHostPlace() {
-    const place = String(hostScenePlace() || "").trim();
-    let want = "";
-    if (place) {
-        const parts = [place, ...place.split(/\s*(?:—|–|,|;|\s-\s|\()\s*/).map(x => x.replace(/\)$/, "").trim())]
-            .map(x => x.replace(/^the\s+/i, "").trim()).filter(x => x.length >= 3);
-        for (const part of parts) {
-            const hit = cacheEntryFor(part.toLowerCase());
-            if (hit && (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name))) { want = hit.key; break; }
-        }
+ * M625: the setting a place names, in a canon memory — one answer for the turn (followHostPlace, over the live memory)
+ * and for a branch made from an earlier page (the app's bridge, over the copy it is making) */
+export function settingKeyIn(store, place, find = (n) => cacheEntryIn(store, n)) {
+    const p = String(place || "").trim();
+    if (!p) return "";
+    const parts = [p, ...p.split(/\s*(?:—|–|,|;|\s-\s|\()\s*/).map(x => x.replace(/\)$/, "").trim())]
+        .map(x => x.replace(/^the\s+/i, "").trim()).filter(x => x.length >= 3);
+    for (const part of parts) {
+        const hit = find(part.toLowerCase());
+        if (hit && (hit.entry.kind === "place" || PLACE_WORDS.test(hit.entry.name))) return hit.key;
     }
+    return "";
+}
+function followHostPlace() {
+    const want = settingKeyIn(null, hostScenePlace(), (n) => cacheEntryFor(n));
     if ((chatSettingKey() || "") !== want) setChatPin("canon_grounding_setting", want);
 }
 
@@ -4186,7 +4357,7 @@ function chatWikiOk() {
 async function fetchSearchTitles(wikiSpec, name) {
     try {
         const url = `${apiBase(wikiSpec)}?action=query&list=search&srlimit=3&format=json&origin=*&srsearch=${encodeURIComponent(name)}`;
-        const res = await fetch(url);
+        const res = await wikiFetch(url);
         if (!res || !res.ok) return null;
         const data = await res.json();
         const arr = data?.query?.search;
@@ -4196,7 +4367,7 @@ async function fetchSearchTitles(wikiSpec, name) {
 async function fetchLastEdit(wikiSpec) {
     try {
         const url = `${apiBase(wikiSpec)}?action=query&list=recentchanges&rclimit=1&rcprop=timestamp&format=json&origin=*`;
-        const res = await fetch(url);
+        const res = await wikiFetch(url);
         if (!res || !res.ok) return null;
         const data = await res.json();
         return data?.query?.recentchanges?.[0]?.timestamp || null;
@@ -4253,6 +4424,13 @@ function verifyOrDiscoverWiki(opts = {}) {
     self.catch(() => {});   // a rejection here must never surface as unhandled
     return self;
 }
+/* M619: THE DISCOVERY ANSWER IS READ LIKE EVERY OTHER ANSWER HERE. It alone was parsed strictly (the whole answer as JSON, code
+ * fences stripped): a model that wrote "Here is the JSON:" before it, or thought aloud first, lost its franchise, slugs and
+ * canon names, and discovery fell back to the protagonist's name alone — "No wiki matched this story" on a story whose wiki
+ * it had just named. Read now with parseJsonCandidates (reasoning and fences set aside, the last whole object taken). */
+export function readDiscovery(out) {
+    return parseJsonCandidates(String(out || ""), "{", "}", (v) => v && typeof v === "object" && !Array.isArray(v));
+}
 async function discoverWikiOnce(opts = {}) {
     const myEpoch = chatEpoch;
     const s = settings();
@@ -4305,7 +4483,7 @@ async function discoverWikiOnce(opts = {}) {
         { maxTokens: 140, budgetMs: Math.min(Number(s.parserBudgetMs) || 30000, 15000) });
     if (myEpoch !== chatEpoch) return;
     let parsed = null;
-    try { parsed = JSON.parse(String(out || "").replace(/```json|```/gi, "").trim()); } catch (e) { /* fails safe */ }
+    parsed = readDiscovery(out); /* M619 */
     const probes = probeNamesFrom(parsed, probeName);
     // An ORIGINAL protagonist is in no wiki — so before touching candidates,
     // re-verify the ACTIVE config with the franchise's CANON names: a correct
@@ -4884,6 +5062,14 @@ globalThis.CanonGrounding_intercept = async function (chat, contextSize, abort, 
                     try {
                         const wt = await fetchWikitext(e.wiki, e.name);
                         if (!wt) return;
+                        // M509-2: a page that is an episode, a chapter, a disambiguation or the series itself is
+                        // not an entity — the entry goes, and the gate keeps it out when the name is asked again
+                        if (isEpisodePage(wt) || isDisambiguation(wt) || isMetaSeriesPage(wt)) {
+                            delete store[key];
+                            debug(`♻ not an entity, let go: ${e.name}`);
+                            saveCache();
+                            return;
+                        }
                         const rebuilt = await buildEntrySections(e.wiki, e.name, wt, s, e.kind !== "place");
                         if (Object.values(rebuilt).some(Boolean)) {
                             e.sections = rebuilt;
@@ -6132,6 +6318,7 @@ const HOST_API = Object.freeze({
     last: () => ({ text: lastInjection, at: lastInjectionAt, source: lastSource, reasons: lastReasons.slice() }),
     cache: () => cache(),
     entryFor: (name) => cacheEntryFor(String(name || "").toLowerCase()),
+    settingKeyIn: (store, place) => settingKeyIn(store, place), /* M625 */
     entryIn: (store, name) => { const hit = cacheEntryIn(store, String(name || "").toLowerCase()); return hit ? { key: hit.key, entry: hit.entry } : null; },
     forget: (key) => forgetEntry(key),
     lookAgain: (key) => lookEntryUpAgain(key),

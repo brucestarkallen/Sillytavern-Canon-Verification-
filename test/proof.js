@@ -76,7 +76,8 @@ const sandbox = {
     lastCastLen: 0,
     console,
 };
-const body = pieces.join("\n\n") + `
+/* The shared host functions are also ESM exports; evaluate their declarations in this function sandbox. */
+const body = pieces.map((p) => p.replace(/^export /gm, "")).join("\n\n") + `
 saveCache = () => {};   // persistence is sim's job — the real saveCache needs live ST context
 return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          extractInfoboxFields, extractSection, extractSectionRaw, extractTrivia,
@@ -93,7 +94,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          abilityLine, appearanceLine, normName, dossierDigest, sampleSection, negativeTtl, SOFT_NEGATIVE_TTL, NEGATIVE_TTL,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
          arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom, wikiFingerprint,
-         nameTokens, isPlaceholderName, discoveryCorpus, chatEvidenceTerms, groundedNames,
+         nameTokens, isPlaceholderName, discoveryCorpus, chatEvidenceTerms, groundedNames, wikiFetch, castNamedIn, readDiscovery, settingKeyIn, isEpisodePage, castListLook,
          setCast: (c, l) => { lastCast = c; lastCastLen = l; },
          getCast: () => lastCast };
 `;
@@ -1937,6 +1938,40 @@ console.log("[v0.68.2 the story's lens reaches their quotes]");
     T("…and the cache entry's quotes are untouched", entry.dossier.voice.length === 2);
     const kept = api.lensedEntry(entry, () => ({ facts: [] }));
     T("a lens that says nothing of the quotes leaves them as they are", kept.dossier.voice.length === 2);
+}
+
+// ------------------------------------------------- v0.68.3 the copies share their paid-for fixes
+console.log("[v0.68.3 shared wiki and host fixes]");
+{
+    T("same-page deduplication is wired before the new cache entry", /if \(twinKey\)/.test(api.__src) && api.__src.indexOf("if (twinKey)") < api.__src.indexOf("c[key] = { name: title"));
+    const previousFetch = globalThis.fetch; let wikiSignal;
+    globalThis.fetch = (url, options) => { wikiSignal = options?.signal; return Promise.resolve({ ok: true }); };
+    try { api.wikiFetch("https://example.test/wiki"); T("the real wiki request has its deadline signal", !!wikiSignal && !wikiSignal.aborted); } finally { globalThis.fetch = previousFetch; }
+    eq("Japanese display term survives", api.cleanWikitext("The {{nihongo|Tenth Division|十番隊|Jūbantai}} stands."), "The Tenth Division stands.");
+    eq("tooltip shows its visible term", api.cleanWikitext("A {{tt|shitagi|下着}}."), "A shitagi.");
+    eq("unknown display template keeps its prose", api.cleanWikitext("A {{Ruby|kosode|小袖}}."), "A kosode.");
+    eq("a nested display template keeps its prose", api.cleanWikitext("A {{Ruby|{{small|kosode}}|小袖}}."), "A kosode.");
+    eq("spoiler template contributes no future event", api.cleanWikitext("Now {{spoiler|she becomes captain}}."), "Now .");
+    T("episode lead is an event", api.isEpisodePage("This is the 25th episode of the anime."));
+    T("episode infobox is an event", api.isEpisodePage("{{Infobox episode|airdate=Today}}"));
+    T("a character mentioning an episode is still a character", !api.isEpisodePage("Rukia is a Soul Reaper who appears in an episode."));
+    T("a cast list is not a face", api.castListLook("Rukia Kuchiki Renji Abarai Ichigo Kurosaki Byakuya Kuchiki Toshiro Hitsugaya"));
+    T("an older cast-list entry is poisoned", api.entryPoisoned({ sections: { look: "Rukia Kuchiki Renji Abarai Ichigo Kurosaki Byakuya Kuchiki Toshiro Hitsugaya" } }));
+    const json = '{"franchise":"Bleach","slugs":["bleach"],"names":["Rukia Kuchiki"]}';
+    for (const prefix of ["", "Here is the JSON:\n", "<think>{this is Bleach}</think>\n"]) {
+        T("discovery reads the whole object after prose or thought", api.readDiscovery(prefix + json)?.franchise === "Bleach");
+    }
+    T("discovery with no object remains empty", api.readDiscovery("I cannot tell.") === null);
+    const places = { seireitei: { name: "Seireitei", kind: "place", found: true, sections: { identity: "A city." } } };
+    eq("branch and live host use the same compound place lookup", api.settingKeyIn(places, "Seireitei — western gate"), "seireitei");
+    eq("unknown place clears rather than invents a setting", api.settingKeyIn(places, "A distant inn"), "");
+    const old = sandbox.__settings;
+    sandbox.__settings = { cache: { ogi: { name: "Ogi Zenin", found: true, sections: { identity: "A sorcerer." } } }, contextWindow: 10 };
+    eq("a clan alone names no individual", api.castNamedIn("The Zenin clan waits.").length, 0);
+    T("the clan guard preserves an individual mention", api.castNamedIn("Ogi waits by the door.").includes("Ogi Zenin"));
+    const found = { gojo: { name: "Satoru Gojo", found: true, wiki: "jjk", sections: { identity: "A sorcerer." } }, typo: { name: "Gojo Satorou", found: false, wikiSet: "jjk", reason: "no-page", trusted: true } };
+    eq("a typo of a known person is no absence", api.unverifiedNamed("Gojo Satorou?", found, "jjk", []).length, 0);
+    sandbox.__settings = old;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

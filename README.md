@@ -56,6 +56,20 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.68.3 (one shared source for both hosts)
+
+Proven by `test/proof.js` (626) and `test/sim.mjs` (453), measured from the full suites.
+
+The fixes previously held only in Cozy Tavern are merged into the extension: bounded wiki requests, visible Japanese
+and display-template words, episode and cast-list rejection and cache healing, same-page alias deduplication, clan
+mentions kept apart from individual people, known-name typo handling, tolerant wiki-discovery JSON, and one shared
+place resolver for live scenes and branches. The host receipt exports are available to both integrations.
+
+SillyTavern keeps its existing absence-notice default. Cozy's adapter explicitly keeps those notices silent and omits
+SillyTavern's settings panel. Its generated copy is checked and locked, so local edits cannot be silently overwritten
+by a future vendor run. Every prior assertion remains; the validity-gate witness now includes the episode guard, and
+the pure sandbox evaluates exported function declarations without changing product code.
+
 ## Changelog — v0.68.2 (the lens reaches their quotes)
 
 Proven by `test/proof.js` (605) + `test/sim.mjs` (431); **1 guard negative-tested** (the key taken back out of

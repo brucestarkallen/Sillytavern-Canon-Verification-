@@ -30,8 +30,10 @@ let pass = 0, fail = 0;
 const T = (name, cond) => { cond ? pass++ : (fail++, console.log("  FAIL:", name)); };
 
 const fetchLog = [];
-globalThis.fetch = async (url) => {
+const fetchSignals = [];
+globalThis.fetch = async (url, options) => {
     fetchLog.push(url);
+    fetchSignals.push(options?.signal);
     const u = new URL(url);
     const titles = u.searchParams.get("titles");
     const page = u.searchParams.get("page");
@@ -195,7 +197,7 @@ extension_settings.canon_grounding = {
     debug: false, llmParser: true, llmProfileId: "p1", parserEveryTurn: false, llmDossier: false, castAuditor: false, lowercaseNames: false, maxBlockMs: 8000, firstMeetWaitMs: 8000,
     useLedger: false, groundFromReplies: true, cache: {}, migrated_v2: true,
 };
-await import(pathToFileURL(path.join(extDir, "index.js")).href);
+const shared = await import(pathToFileURL(path.join(extDir, "index.js")).href);
 const intercept = globalThis.CanonGrounding_intercept;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1200,7 +1202,8 @@ console.log("[41] v0.43.0 the wiring law — every guard has a CALL SITE");
     // anything reads the text, and above the trusted/untrusted character gate:
     // the caller vouches for the NAME, we chose the PAGE, so trust cannot carry.
     const ensure = src.slice(src.indexOf("async function ensureGrounded"));
-    const guard = ensure.indexOf("if (isDisambiguation(wikitext) || isMetaSeriesPage(wikitext))");
+    // Episode pages now share the same unconditional validity gate.
+    const guard = ensure.indexOf("if (isDisambiguation(wikitext) || isMetaSeriesPage(wikitext) || isEpisodePage(wikitext))");
     const charGate = ensure.indexOf("const charSignal = extractInfoboxFields(wikitext,");
     T("the page-validity guard sits ABOVE the character-signal gate",
         guard > -1 && charGate > -1 && guard < charGate);
@@ -2080,6 +2083,44 @@ console.log("[66] v0.68.0 the setting follows the host's place");
     const mf = JSON.parse(fs.readFileSync(path.join(here, "..", "manifest.json"), "utf8"));
     const stamp = (src.match(/const CG_VERSION = "([^"]+)"/) || [])[1];
     T(`manifest ${mf.version} === CG_VERSION ${stamp}`, !!stamp && stamp === mf.version);
+}
+
+console.log("[v0.68.3 shared pipeline wiring]");
+{
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    T("all eight wiki call sites use the bounded request", (code.match(/await wikiFetch\(/g) || []).length === 8);
+    T("wiki requests carry an abort signal", /fetch\(url, \{ signal:/.test(code));
+    T("the interceptor's actual wiki requests all carry deadline signals", fetchSignals.length > 0 && fetchSignals.every((signal) => signal && typeof signal.aborted === "boolean"));
+    T("episode guard is wired into lookup and cache healing", /if \(isDisambiguation\(wikitext\).*isEpisodePage\(wikitext\)/.test(code) && /if \(isEpisodePage\(wt\)/.test(code));
+    T("family guard is wired into token selection", /groupUseAt\(lower, m.index, t.length\)/.test(code));
+    T("typo guard is wired into absence selection", /nearFoundToken\(t, foundTokens\)/.test(code));
+    T("discovery uses its tolerant reader", /parsed = readDiscovery\(out\)/.test(code));
+    T("same wiki and title merge into one entry", /if \(twinKey\)/.test(code) && /return twin/.test(code));
+    T("the live host uses the shared place resolver", /settingKeyIn\(null, hostScenePlace\(\)/.test(code));
+    T("the host exposes the branch place resolver", typeof globalThis.CanonGrounding_api.settingKeyIn === "function");
+    T("the receipt remains available to hosts", typeof shared.lastInjectionReport === "function");
+    T("the host receipt reads the actual latest injection", shared.lastInjectionReport().note === globalThis.CanonGrounding_api.last().text);
+    T("visible template words reach the shared cleaner", shared.cleanWikitext("{{nihongo|Tenth Division|十番隊}} {{Ruby|kosode|小袖}} {{tt|shitagi|下着}}") === "Tenth Division kosode shitagi");
+    T("an episode is rejected through the public host door", shared.isEpisodeOrChapterPage("This is the 25th episode of the anime."));
+    T("an older cast list is rejected through the public host door", shared.isCastListLook("Rukia Kuchiki Renji Abarai Ichigo Kurosaki Byakuya Kuchiki Toshiro Hitsugaya"));
+    T("the shared discovery door keeps JSON after a model's prose", shared.readDiscovery('Here is the JSON: {"franchise":"Bleach"}')?.franchise === "Bleach");
+    const known = { gojo: { name: "Satoru Gojo", found: true, wiki: "jjk", sections: { identity: "A sorcerer." } }, typo: { name: "Gojo Satorou", found: false, wikiSet: "jjk", reason: "no-page", trusted: true } };
+    T("the real absence door silences a known person's typo", shared.unverifiedNamedForHarness("Gojo Satorou?", known, "jjk", []).length === 0);
+    T("the shared branch place door resolves a compound place", shared.settingKeyIn({ seireitei: { name: "Seireitei", kind: "place", found: true, sections: { identity: "A city." } } }, "Seireitei — west gate") === "seireitei");
+    const api = globalThis.CanonGrounding_api;
+    const savedMeta = globalThis.__ctx.chatMetadata;
+    globalThis.__ctx.chatMetadata = { canon_grounding_wiki: "testwiki", canon_grounding_cache: { ogi: { name: "Ogi Zenin", found: true, sections: { identity: "A sorcerer." } } } };
+    T("the actual cache's clan does not summon its sole family member", shared.castNamedInForHarness("The Zenin clan waits.").length === 0);
+    globalThis.__ctx.chatMetadata.canon_grounding_cache = { canonicaltwin: { name: "CanonicalTwin", found: true, wiki: "testwiki", sections: { identity: "A person." }, ts: Date.now() }, aliastwin: { name: "AliasTwin", found: false, wikiSet: "testwiki", reason: "no-page" } };
+    const oldFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => /titles=Alias[Tt]win/.test(url) ? { ok: true, json: async () => ({ query: { pages: { 1: { pageid: 1, title: "CanonicalTwin" } } } }) }  : /action=parse.*page=CanonicalTwin$/.test(url) ? { ok: true, json: async () => ({ parse: { wikitext: { '*': "{{Infobox Character\n| alias = AliasTwin\n| hair = black\n}}\n'''CanonicalTwin''' is a warrior." } } }) } : oldFetch(url, opts);
+    try {
+        const samePerson = await api.lookAgain("aliastwin");
+        T("a redirected second name returns the person already kept", samePerson?.name === "CanonicalTwin");
+        T("the lookup keeps that person's page exactly once", Object.values(api.cache()).filter((e) => e.found && e.name === "CanonicalTwin").length === 1);
+        T("the second name becomes an alias of that one entry", api.cache().canonicaltwin.aliases?.some((name) => name.toLowerCase() === "aliastwin"));
+    } finally { globalThis.fetch = oldFetch; globalThis.__ctx.chatMetadata = savedMeta; }
+
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
