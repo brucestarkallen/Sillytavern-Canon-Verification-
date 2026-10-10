@@ -58,7 +58,7 @@ These are the honest rough edges, in priority order for improvement:
 
 ## Changelog — v0.68.3 (one shared source for both hosts)
 
-Proven by `test/proof.js` (626) and `test/sim.mjs` (453), measured from the full suites.
+Proven by `test/proof.js` (627) and `test/sim.mjs` (454), measured from the full suites.
 
 The fixes previously held only in Cozy Tavern are merged into the extension: bounded wiki requests, visible Japanese
 and display-template words, episode and cast-list rejection and cache healing, same-page alias deduplication, clan

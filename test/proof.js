@@ -1969,8 +1969,10 @@ console.log("[v0.68.3 shared wiki and host fixes]");
     sandbox.__settings = { cache: { ogi: { name: "Ogi Zenin", found: true, sections: { identity: "A sorcerer." } } }, contextWindow: 10 };
     eq("a clan alone names no individual", api.castNamedIn("The Zenin clan waits.").length, 0);
     T("the clan guard preserves an individual mention", api.castNamedIn("Ogi waits by the door.").includes("Ogi Zenin"));
-    const found = { gojo: { name: "Satoru Gojo", found: true, wiki: "jjk", sections: { identity: "A sorcerer." } }, typo: { name: "Gojo Satorou", found: false, wikiSet: "jjk", reason: "no-page", trusted: true } };
-    eq("a typo of a known person is no absence", api.unverifiedNamed("Gojo Satorou?", found, "jjk", []).length, 0);
+    const found = { gojo: { name: "Satoru Gojo", found: true, wiki: "jjk", sections: { identity: "A sorcerer." } }, typo: { name: "Gojo Satorou", found: false, searched: ["jjk.fandom.com"], reason: "no-page", trusted: true } };
+    eq("a typo of a known person is no absence", api.unverifiedNamed("Gojo Satorou?", found, "jjk.fandom.com", []).length, 0);
+    found.other = { name: "Gojo Kenta", found: false, searched: ["jjk.fandom.com"], reason: "no-page", trusted: true };
+    T("an unrelated person sharing a family name still has a verdict", api.unverifiedNamed("Gojo Kenta?", found, "jjk.fandom.com", []).includes("Gojo Kenta"));
     sandbox.__settings = old;
 }
 
