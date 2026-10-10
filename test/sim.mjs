@@ -2101,6 +2101,7 @@ console.log("[v0.68.3 shared pipeline wiring]");
     T("the receipt remains available to hosts", typeof shared.lastInjectionReport === "function");
     T("the host receipt reads the actual latest injection", shared.lastInjectionReport().note === globalThis.CanonGrounding_api.last().text);
     T("visible template words reach the shared cleaner", shared.cleanWikitext("{{nihongo|Tenth Division|十番隊}} {{Ruby|kosode|小袖}} {{tt|shitagi|下着}}") === "Tenth Division kosode shitagi");
+    T("blank English and language wrappers reach the shared cleaner", shared.cleanWikitext("{{nihongo||浴衣|yukata}} {{lang|ja|浴衣}}") === "yukata 浴衣");
     T("an episode is rejected through the public host door", shared.isEpisodeOrChapterPage("This is the 25th episode of the anime."));
     T("an older cast list is rejected through the public host door", shared.isCastListLook("Rukia Kuchiki Renji Abarai Ichigo Kurosaki Byakuya Kuchiki Toshiro Hitsugaya"));
     T("the shared discovery door keeps JSON after a model's prose", shared.readDiscovery('Here is the JSON: {"franchise":"Bleach"}')?.franchise === "Bleach");

@@ -58,7 +58,13 @@ These are the honest rough edges, in priority order for improvement:
 
 ## Changelog — v0.68.3 (one shared source for both hosts)
 
-Proven by `test/proof.js` (627) and `test/sim.mjs` (454), measured from the full suites.
+Proven by `test/proof.js` (629) and `test/sim.mjs` (455), measured from the full suites.
+
+Eleven focused negative controls each make both suites exit 1 on the actual guarded behavior: wiki deadlines, episode
+rejection, cast-list healing, family mentions, typo handling, discovery JSON, compound places, same-page deduplication,
+unknown-template display text, empty-English romanization and language wrappers. Each guard was disabled alone in a
+separate scratch copy. The simulation also verifies the real wiki request signals and lookup deduplication, and the
+new proof fixtures include a positive verdict for a different person so a stale miss cannot pass vacuously.
 
 The fixes previously held only in Cozy Tavern are merged into the extension: bounded wiki requests, visible Japanese
 and display-template words, episode and cast-list rejection and cache healing, same-page alias deduplication, clan

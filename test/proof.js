@@ -1948,6 +1948,8 @@ console.log("[v0.68.3 shared wiki and host fixes]");
     globalThis.fetch = (url, options) => { wikiSignal = options?.signal; return Promise.resolve({ ok: true }); };
     try { api.wikiFetch("https://example.test/wiki"); T("the real wiki request has its deadline signal", !!wikiSignal && !wikiSignal.aborted); } finally { globalThis.fetch = previousFetch; }
     eq("Japanese display term survives", api.cleanWikitext("The {{nihongo|Tenth Division|十番隊|Jūbantai}} stands."), "The Tenth Division stands.");
+    eq("an empty English term uses its romanization", api.cleanWikitext("{{nihongo||浴衣|yukata}}"), "yukata");
+    eq("a language wrapper carries its text rather than its language code", api.cleanWikitext("{{lang|ja|浴衣}}"), "浴衣");
     eq("tooltip shows its visible term", api.cleanWikitext("A {{tt|shitagi|下着}}."), "A shitagi.");
     eq("unknown display template keeps its prose", api.cleanWikitext("A {{Ruby|kosode|小袖}}."), "A kosode.");
     eq("a nested display template keeps its prose", api.cleanWikitext("A {{Ruby|{{small|kosode}}|小袖}}."), "A kosode.");
