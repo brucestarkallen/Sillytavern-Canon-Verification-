@@ -1927,5 +1927,17 @@ console.log("[v0.67.2 the story's lens reaches powers and the world around them]
     T("no lens: the very same entry", api.lensedEntry(entry, null) === entry);
 }
 
+// ------------------------------------------------- v0.68.2 the lens covers their quotes
+console.log("[v0.68.2 the story's lens reaches their quotes]");
+{
+    const entry = { name: "Rukia Kuchiki", sections: { identity: "canon lead" },
+        dossier: { identity: "Captain", brief: "b", facts: [], secrets: [], voice: ["As captain of the 13th, I will not yield.", "Idiot!"] } };
+    const seen = api.lensedEntry(entry, () => ({ voice: ["Idiot!"] }));
+    T("a quote from a rank the story has not reached is not carried", JSON.stringify(seen.dossier.voice) === JSON.stringify(["Idiot!"]));
+    T("…and the cache entry's quotes are untouched", entry.dossier.voice.length === 2);
+    const kept = api.lensedEntry(entry, () => ({ facts: [] }));
+    T("a lens that says nothing of the quotes leaves them as they are", kept.dossier.voice.length === 2);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

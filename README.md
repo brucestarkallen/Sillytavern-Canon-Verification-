@@ -56,6 +56,15 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.68.2 (the lens reaches their quotes)
+
+Proven by `test/proof.js` (605) + `test/sim.mjs` (431); **1 guard negative-tested** (the key taken back out of
+`lensedEntry`: proof 604/1 failed, sim 430/1 failed).
+
+A person's quotes are timeline too: "As captain of the 13th, I will not yield" rode the note's Voice line in a story
+where she never became captain, while every other word canon says of her went through the host's lens. A host lens
+now covers `voice` as well (a lens that says nothing of the quotes leaves them as they are).
+
 ## Changelog — v0.68.1 (order only)
 
 Proven by `test/proof.js` (602) + `test/sim.mjs` (430). The host-place functions now sit

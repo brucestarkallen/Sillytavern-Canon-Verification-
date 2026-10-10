@@ -1982,7 +1982,7 @@ console.log("[65] v0.67.0 the story's lens");
         sections: { identity: "Hostala is the current captain of the east wing.", physical: "hair: Hostala-colored" },
         rel: { hostbeta: "Hostala married Hostbeta in the epilogue." },
         dossier: { identity: "The current captain of the east wing", brief: "A calm duelist who leads the east wing.",
-            facts: ["Married to Hostbeta", "Wields a spear"], secrets: [], abilities: ["Crown Armor: granted when she took the captaincy"], voice: [],
+            facts: ["Married to Hostbeta", "Wields a spear"], secrets: [], abilities: ["Crown Armor: granted when she took the captaincy"], voice: ["As Captain of the East Wing, I command it."],
             related: [{ name: "East Wing", why: "her current captaincy" }],
             dynamics: { Hostbeta: "Her husband, whom she adores." } } });
     const hostbeta = () => ({ name: "Hostbeta", found: true, kind: "character", wiki: "testwiki", aliases: [], ts: Date.now(),
@@ -2006,7 +2006,7 @@ console.log("[65] v0.67.0 the story's lens");
     // the story's lens: here she leads nothing and never married him
     setup();
     globalThis.__ctx.canonLens = (e) => e.name === "Hostala"
-        ? { identity: "A duelist of the east wing", brief: "A calm duelist.", facts: ["Wields a spear"], dynamics: {}, pairs: { hostbeta: "" }, abilities: [], related: [{ name: "East Wing", why: "" }] }
+        ? { identity: "A duelist of the east wing", brief: "A calm duelist.", facts: ["Wields a spear"], dynamics: {}, pairs: { hostbeta: "" }, abilities: [], related: [{ name: "East Wing", why: "" }], voice: [] }
         : null;
     await intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
     const seen = lastInjection();
@@ -2015,6 +2015,7 @@ console.log("[65] v0.67.0 the story's lens");
         !/Married to Hostbeta/.test(seen) && !/leads the east wing/.test(seen) && !/current captain/i.test(seen) && !/Her husband/.test(seen) && !/married Hostbeta in the epilogue/.test(seen));
     T("the other person, without a lens, is canon as it is", /Hostbeta:/.test(seen) && /Hostbeta-colored/.test(seen));
     T("v0.67.2: powers go through the lens too (the world around them: proof.js, lensedEntry)", !/Crown Armor/.test(seen) && /Crown Armor/.test(plain));
+    T("v0.68.2: their quotes go through the lens too — a line from a rank the story never gave her is not her voice", !/As Captain of the East Wing/.test(seen) && /As Captain of the East Wing/.test(plain));
     T("the cache itself stays canon", globalThis.__ctx.chatMetadata.canon_grounding_cache.hostala.dossier.facts.includes("Married to Hostbeta"));
     // the lens moves after the turn: the host rebuilds the turn's own note
     globalThis.__ctx.canonLens = (e) => e.name === "Hostala" ? { identity: "A duelist of the east wing", facts: [], dynamics: {}, pairs: { hostbeta: "" } } : null;
