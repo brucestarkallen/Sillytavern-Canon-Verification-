@@ -61,6 +61,32 @@ globalThis.fetch = async (url, options) => {
     if (u.hostname.endsWith(".wiki.gg") && !u.hostname.startsWith("foundsaga") && sr) {
         return { ok: false, json: async () => ({}) };   // no wiki.gg fork for these
     }
+    if (u.hostname.startsWith("redirwiki")) {
+        // v0.68.6: the wiki's own redirects — whole ("Soi Fon" → "Suì-Fēng") and to a section ("Senbonzakura" → "Byakuya Kuchiki#Zanpakutō")
+        if (titles === "Soi Fon") return { ok: true, json: async () => ({ query: { redirects: [{ from: "Soi Fon", to: "Suì-Fēng" }], pages: { 5: { pageid: 5, title: "Suì-Fēng" } } } }) };
+        if (titles === "Senbonzakura") return { ok: true, json: async () => ({ query: { redirects: [{ from: "Senbonzakura", to: "Byakuya Kuchiki", tofragment: "Zanpakutō" }], pages: { 6: { pageid: 6, title: "Byakuya Kuchiki" } } } }) };
+        if (titles) return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };
+        if (sr) return { ok: true, json: async () => ({ query: { search: [] } }) };
+        if (page === "Suì-Fēng") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'\'\'\'Suì-Fēng\'\'\'' is the captain of the Second Division.
+{{Infobox
+| hair = black, two long braids bound in white cloth
+}}
+== Appearance ==
+Suì-Fēng is a petite woman with black hair bound in two long braids.
+== Personality ==
+Cold and exacting.` } } }) };
+        if (page === "Byakuya Kuchiki") return { ok: true, json: async () => ({ parse: { wikitext: { "*":
+`'\'\'\'Byakuya Kuchiki\'\'\'' is the captain of the Sixth Division.
+{{Infobox
+| hair = black, kenseikan
+}}
+== Appearance ==
+Byakuya is a tall man with long black hair held in a kenseikan.
+== Personality ==
+Reserved.` } } }) };
+        return { ok: true, json: async () => ({}) };
+    }
     if (u.hostname.startsWith("bleachstub")) {
         if (titles === "Zarblade") return { ok: true, json: async () => ({ query: { pages: { 9: { pageid: 9, title: "Zarblade" } } } }) };
         if (titles) return { ok: true, json: async () => ({ query: { pages: { "-1": { title: titles, missing: "" } } } }) };
@@ -2137,6 +2163,46 @@ console.log("[v0.68.3 shared pipeline wiring]");
         T("the second name becomes an alias of that one entry", api.cache().canonicaltwin.aliases?.some((name) => name.toLowerCase() === "aliastwin"));
     } finally { globalThis.fetch = oldFetch; globalThis.__ctx.chatMetadata = savedMeta; }
 
+}
+
+console.log("[v0.68.6] the wiki's own redirect is its word; a miss of an older rule is asked again once");
+{
+    const meta6 = globalThis.__ctx.chatMetadata;
+    const boundBefore = meta6.canon_grounding_wiki;
+    meta6.canon_grounding_wiki = "redirwiki";   // the chat's own universe (it outranks the global field)
+    const c6 = meta6.canon_grounding_cache;
+    // the verdict an older build left: Soi Fon found as Suì-Fēng and refused, kept as "no such page" for a day
+    c6["soi fon"] = { name: "Soi Fon", sections: {}, wiki: null, found: false, reason: "no-page", trusted: true, searched: ["redirwiki"], ts: Date.now() };
+    const q6 = parseQueue.length;
+    globalThis.__ctx.chat.push(msg("Soi Fon stepped out of the shadow of the gate.", false));
+    const run6 = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    parseQueue[q6]?.resolve('["Soi Fon"]');
+    await run6;
+    const soi = c6["soi fon"];
+    T("Soi Fon is grounded as the page the wiki redirects her to", soi && soi.found === true && soi.name === "Suì-Fēng");
+    T("her name stays with the entry as an alias", soi && (soi.aliases || []).includes("Soi Fon"));
+    T("…and she is injected this very turn", /two long braids/.test(lastInjection()));
+    const fetchedBefore = fetchLog.length;
+    const q6b = parseQueue.length;
+    globalThis.__ctx.chat.push(msg("Across the yard, Senbonzakura scattered.", false));
+    const run6b = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    parseQueue[q6b]?.resolve('["Senbonzakura"]');
+    await run6b;
+    const senbon = c6["senbonzakura"];
+    T("a redirect to a section of a page is not that page", senbon && senbon.found === false && !Object.values(c6).some((e) => e && e.found && e.name === "Byakuya Kuchiki"));
+    T("the miss carries this build's rule", senbon && senbon.missRule === 2);
+    T("it was looked for once", fetchLog.slice(fetchedBefore).filter((u) => /titles=Senbonzakura/.test(u)).length === 1);
+    const fetchedAgain = fetchLog.length;
+    const stamp = senbon && senbon.ts;
+    globalThis.__ctx.chat.push(msg("Once more, Senbonzakura scattered.", false));
+    const run6c = intercept(globalThis.__ctx.chat, 4096, () => {}, "normal");
+    await sleep(20);
+    if (parseQueue.length > q6b + 1) parseQueue[parseQueue.length - 1]?.resolve('["Senbonzakura"]');
+    await run6c;
+    T("a miss of this rule holds: not looked for again", !fetchLog.slice(fetchedAgain).some((u) => /titles=Senbonzakura/.test(u)) && c6["senbonzakura"] && c6["senbonzakura"].ts === stamp);
+    if (boundBefore === undefined) delete meta6.canon_grounding_wiki; else meta6.canon_grounding_wiki = boundBefore;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

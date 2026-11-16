@@ -56,6 +56,23 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.68.6 (the wiki's own redirect is its word)
+
+Proven by `test/proof.js` (644) and `test/sim.mjs` (464); **the new scenario negative-tested** (on v0.68.5, sim 460/4 failed — Soi
+Fon left a miss, her alias and her look missing, and the miss with no rule stamp).
+
+Seen in Cozy Tavern's log of the owner's Bleach tale: `"Suì-Fēng" does not cover query "Soi Fon" (missing token) — treated as
+miss`, then `✕ no usable wiki page for "Soi Fon"`. The tale's roster names the Second Division's captain "Soi Fon"; the Bleach wiki
+redirects that name to her page, "Suì-Fēng". The exact-title lookup followed the redirect, and the coverage guard — built against a
+fuzzy search landing on the wrong person — refused the very page the wiki had named, and kept the refusal as "no such page" for a
+day: she was never grounded in fourteen pages.
+
+- The exact-title lookup remembers a redirect that reaches the page itself (no section), and the coverage guard takes the wiki at
+  its word: the page is grounded, the name kept as its alias. A redirect to a section ("Senbonzakura" → "Byakuya Kuchiki#Zanpakutō")
+  is a part of a page, never the page — still a miss.
+- A miss now carries the rule that wrote it (`missRule`). A miss without it was written before v0.68.6, under the rule that refused
+  the wiki's own redirects: it has no horizon, is asked again once, and the miss written then carries the stamp.
+
 ## Changelog — v0.68.5 (no name across a line break)
 
 Proven by `test/proof.js` (632) and `test/sim.mjs` (457); **2 guards negative-tested** (on v0.68.4's extraction, proof 630/2 failed —

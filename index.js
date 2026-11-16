@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.68.5";
+const CG_VERSION = "0.68.6";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -850,6 +850,7 @@ async function findPageTitle(wiki, name) {
             const d = await r.json();
             const p = Object.values(d?.query?.pages || {})[0];
             if (p && p.pageid && !("missing" in p) && !isMediaTitle(p.title)) {
+                if (redirectedWhole(d.query, exactName, p.title)) rememberRedirect(wiki, name, p.title);   // v0.68.6
                 return p.title;
             }
         }
@@ -1526,9 +1527,42 @@ const NEGATIVE_TTL = 1000 * 60 * 60 * 24; // don't re-search a "not found" for 2
 // what makes a character the story is actively addressing stay silently ungrounded
 // while the note fills with whoever happens to still be cached.
 const SOFT_NEGATIVE_TTL = 1000 * 60 * 20;
+// v0.68.6 — A MISS IS KEPT UNDER THE RULE THAT WROTE IT. Before v0.68.6 a name the wiki
+// itself redirects to a page ("Soi Fon" → "Suì-Fēng", the Bleach wiki's own redirect)
+// was found by the exact-title lookup and then refused by the coverage guard, and the
+// refusal was kept as "no such page" for a day: a captain of the story's roster never
+// grounded. A miss without this stamp was written under that rule — it has no horizon,
+// is asked again once, and the miss written then carries the stamp.
+const MISS_RULE = 2;
 function negativeTtl(entry) {
+    if (entry && entry.missRule !== MISS_RULE) return 0;
     return (entry && entry.reason && entry.reason !== "no-page") ? SOFT_NEGATIVE_TTL : NEGATIVE_TTL;
 }
+// v0.68.6 — THE WIKI'S OWN REDIRECT IS THE WIKI'S OWN WORD. The exact-title lookup asks
+// with redirects=1; when the name reaches the page through redirects that point at the
+// page itself, the wiki has said the name IS that page, and the coverage guard (built
+// against a fuzzy SEARCH landing on a wrong person) takes the wiki at its word. A
+// redirect to a SECTION ("Senbonzakura" → "Byakuya Kuchiki#Zanpakutō") is a part of
+// the page, never the page: it is no such word.
+function redirectedWhole(query, asked, title) {
+    const q = query && typeof query === "object" ? query : {};
+    const norm = (Array.isArray(q.normalized) ? q.normalized : []).find(n => n && n.from === asked);
+    let cur = norm ? norm.to : asked;
+    const hops = Array.isArray(q.redirects) ? q.redirects : [];
+    let moved = false;
+    for (let i = 0; i <= hops.length; i++) {
+        const hop = hops.find(h => h && h.from === cur);
+        if (!hop) break;
+        if (hop.tofragment) return false;
+        cur = hop.to;
+        moved = true;
+    }
+    return moved && cur === title;
+}
+const WIKI_REDIRECTS = new Set();
+const redirectKey = (wiki, name, title) => String(wiki) + "\n" + normName(name) + "\n" + String(title);
+function rememberRedirect(wiki, name, title) { WIKI_REDIRECTS.add(redirectKey(wiki, name, title)); }
+function wikiRedirects(wiki, name, title) { return WIKI_REDIRECTS.has(redirectKey(wiki, name, title)); }
 
 // Markup that has no business inside an injected section: image syntax, table
 // syntax, magic words, comment shrapnel, tab plumbing. Presence means the entry
@@ -1782,8 +1816,12 @@ async function ensureGrounded(name, trusted = false) {
                 // on "Akito Miyake" grounds a hallucinated hybrid onto a real-but-
                 // wrong person; that's a MISS, not a match. ("Alya" → alias passes.)
                 if (!titleCoversQuery(name, title, aliases)) {
-                    debug(`"${title}" does not cover query "${name}" (missing token) — treated as miss`);
-                    continue;   // try the next wiki; negative-caches below if none pan out
+                    if (wikiRedirects(wiki, name, title)) {
+                        debug(`↪ "${name}" is ${wiki}'s own redirect to "${title}" — the same page`);   // v0.68.6
+                    } else {
+                        debug(`"${title}" does not cover query "${name}" (missing token) — treated as miss`);
+                        continue;   // try the next wiki; negative-caches below if none pan out
+                    }
                 }
                 if (name && name.toLowerCase() !== title.toLowerCase()) aliases.push(name);
                 // Raw material for per-pair dynamics: the whole Relationships subtree,
@@ -1831,7 +1869,7 @@ async function ensureGrounded(name, trusted = false) {
         // STORY referenced something canon lacks; a regex-candidate miss means a
         // guess went nowhere ("nod back"). Only the former is evidence of absence
         // — the ⌀ notice reads this stamp, so junk can never be "verified missing".
-        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, trusted: !!trusted, searched: normWikiSet(activeWikis()), ts: Date.now() };
+        c[key] = { name, sections: {}, wiki: null, found: false, reason: missReason, trusted: !!trusted, searched: normWikiSet(activeWikis()), missRule: MISS_RULE, ts: Date.now() };
         saveCache();
         debug(`✕ no usable wiki page for "${name}" on: ${activeWikis()}`);
     }

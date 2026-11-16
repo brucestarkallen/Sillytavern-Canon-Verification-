@@ -91,7 +91,7 @@ return { extractCandidateNames, normalizeNameWord, isMediaTitle, cleanWikitext,
          setEvidence: (m) => { castEvidence = m; },
          splitEvidenceStrength, unverifiedNamed, composedNoteValid, noteFingerprint, __noteParts, mcCanonName,
          parseCast, verifyCastEvidence, isDisambiguation, identityLine, isMetaSeriesPage, parseCanonIntent, apiBase, extractDistinguishing, resolveAgainstKnown, titleCoversQuery, needsFirstMeetWait, extractLookProse, tightenLook, entryPoisoned, normWikiSet, missCoversCurrentWikis, stripMetaBlocks, emptyNoteDiagnosis,
-         abilityLine, appearanceLine, normName, dossierDigest, sampleSection, negativeTtl, SOFT_NEGATIVE_TTL, NEGATIVE_TTL,
+         abilityLine, appearanceLine, normName, dossierDigest, sampleSection, negativeTtl, SOFT_NEGATIVE_TTL, NEGATIVE_TTL, MISS_RULE, redirectedWhole, rememberRedirect, wikiRedirects,
          infoboxScope, plausibleFieldValue, physicalImplausible, templateBlocks,
          arcAlreadyReached, arcTransition, slugifyTitle, titleMatchesName, pickLiveHost, discoverCandidates, probeNamesFrom, wikiFingerprint,
          nameTokens, isPlaceholderName, discoveryCorpus, chatEvidenceTerms, groundedNames, wikiFetch, castNamedIn, readDiscovery, settingKeyIn, isEpisodePage, castListLook,
@@ -224,7 +224,7 @@ T("canonical name resolves to nickname-keyed entry (no refetch path)", api.cache
 T("second alias resolves too", api.cacheEntryFor("solitary princess")?.key === "alya");
 T("isUnhandledName false for alias-known (post-gen gate fix)", api.isUnhandledName("Alisa Mikhailovna Kujou") === false);
 sandbox.__settings.wikis = "testwiki";
-sandbox.__settings.cache["mitsugoshi"] = { name: "mitsugoshi", sections: {}, found: false, searched: ["testwiki"], ts: Date.now() };
+sandbox.__settings.cache["mitsugoshi"] = { name: "mitsugoshi", sections: {}, found: false, searched: ["testwiki"], missRule: api.MISS_RULE, ts: Date.now() };
 T("fresh negative covering the current wiki list is handled", api.isUnhandledName("Mitsugoshi") === false);
 sandbox.__settings.cache["crossover ghost"] = { name: "crossover ghost", sections: {}, found: false, searched: ["some-old-wiki"], ts: Date.now() };
 T("fresh negative from a DIFFERENT wiki list re-asks", api.isUnhandledName("Crossover Ghost") === true);
@@ -459,12 +459,28 @@ T("the battle page DID cover the query — the title filter is the only guard",
     api.titleCoversQuery("Rukia", "Rukia Kuchiki & Yasutora Sado vs. Shrieker", []));
 // Absence of a page is durable knowledge; failure to extract from a page we FOUND
 // is our own heuristic failing, and must not lock the character out for 24h.
-T("no-page keeps the full day", api.negativeTtl({ reason: "no-page" }) === api.NEGATIVE_TTL);
-T("no-facts heals soon", api.negativeTtl({ reason: "no-facts" }) === api.SOFT_NEGATIVE_TTL);
-T("not-character heals soon", api.negativeTtl({ reason: "not-character" }) === api.SOFT_NEGATIVE_TTL);
-T("meta-page heals soon", api.negativeTtl({ reason: "meta-page" }) === api.SOFT_NEGATIVE_TTL);
-T("a reasonless legacy entry keeps the full day", api.negativeTtl({}) === api.NEGATIVE_TTL);
+const R = api.MISS_RULE;
+T("no-page keeps the full day", api.negativeTtl({ reason: "no-page", missRule: R }) === api.NEGATIVE_TTL);
+T("no-facts heals soon", api.negativeTtl({ reason: "no-facts", missRule: R }) === api.SOFT_NEGATIVE_TTL);
+T("not-character heals soon", api.negativeTtl({ reason: "not-character", missRule: R }) === api.SOFT_NEGATIVE_TTL);
+T("meta-page heals soon", api.negativeTtl({ reason: "meta-page", missRule: R }) === api.SOFT_NEGATIVE_TTL);
+T("a reasonless entry of this rule keeps the full day", api.negativeTtl({ missRule: R }) === api.NEGATIVE_TTL);
 T("soft is genuinely shorter", api.SOFT_NEGATIVE_TTL < api.NEGATIVE_TTL);
+// v0.68.6: a miss written before the wiki's own redirects were honored is asked again once
+T("a miss with no rule stamp has no horizon", api.negativeTtl({ reason: "no-page" }) === 0 && api.negativeTtl({}) === 0);
+T("a miss of an older rule has no horizon", api.negativeTtl({ reason: "no-page", missRule: 1 }) === 0);
+// v0.68.6: THE WIKI'S OWN REDIRECT IS THE WIKI'S OWN WORD (the Bleach wiki: "Soi Fon" → "Suì-Fēng", "Senbonzakura" → "Byakuya Kuchiki#Zanpakutō")
+T("a whole redirect names the page", api.redirectedWhole({ redirects: [{ from: "Soi Fon", to: "Suì-Fēng" }] }, "Soi Fon", "Suì-Fēng"));
+T("a redirect to a section never names the page", !api.redirectedWhole({ redirects: [{ from: "Senbonzakura", to: "Byakuya Kuchiki", tofragment: "Zanpakutō" }] }, "Senbonzakura", "Byakuya Kuchiki"));
+T("no redirect is no such word", !api.redirectedWhole({}, "Rukia Kuchiki", "Rukia Kuchiki") && !api.redirectedWhole({ redirects: [] }, "Rukia", "Rukia Kuchiki"));
+T("a chain of whole redirects names the page", api.redirectedWhole({ redirects: [{ from: "A", to: "B" }, { from: "B", to: "C" }] }, "A", "C"));
+T("a chain with a section anywhere does not", !api.redirectedWhole({ redirects: [{ from: "A", to: "B", tofragment: "x" }, { from: "B", to: "C" }] }, "A", "C"));
+T("a redirect that ends on another page does not name this one", !api.redirectedWhole({ redirects: [{ from: "A", to: "B" }] }, "A", "C"));
+T("the wiki's normalized form is followed", api.redirectedWhole({ normalized: [{ from: "Soi fon", to: "Soi Fon" }], redirects: [{ from: "Soi Fon", to: "Suì-Fēng" }] }, "Soi fon", "Suì-Fēng"));
+T("the coverage guard alone refuses it", !api.titleCoversQuery("Soi Fon", "Suì-Fēng", []));
+api.rememberRedirect("bleach", "Soi Fon", "Suì-Fēng");
+T("a remembered redirect is that wiki's word for that page", api.wikiRedirects("bleach", "soi fon", "Suì-Fēng"));
+T("…never another wiki's, nor another page's", !api.wikiRedirects("naruto", "Soi Fon", "Suì-Fēng") && !api.wikiRedirects("bleach", "Soi Fon", "Byakuya Kuchiki"));
 T("disambig template detected", api.isDisambiguation("{{Disambiguation}}\nRose may refer to several characters."));
 T("'may refer to' lead detected", api.isDisambiguation("'''Rose''' may refer to:\n* [[Rose Oriana]]\n* [[Rose (episode)]]"));
 T("normal page not flagged", !api.isDisambiguation("'''Rose Oriana''' is the second princess of the Oriana Kingdom. She may also be seen at the academy."));
