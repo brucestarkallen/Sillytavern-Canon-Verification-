@@ -161,8 +161,10 @@ ${page} trusts ${other} with her life and teases ${other} constantly.` } } }) };
 
 const parseQueue = [];
 const sentPrompts = [];
-const svc = { sendRequest: (id, messages) => {
+const sentRooms = [];   // v0.68.4: the room each request asked for (its maxTokens)
+const svc = { sendRequest: (id, messages, maxTokens) => {
     sentPrompts.push((messages || []).map(m => m.content).join("\n"));
+    sentRooms.push(maxTokens);
     return new Promise((resolve, reject) => parseQueue.push({ resolve, reject }));
 } };
 
@@ -326,11 +328,22 @@ globalThis.__ctx = { ...ctxA, chat: [], chatMetadata: { canon_grounding_cache: {
 const cacheB = globalThis.__ctx.chatMetadata.canon_grounding_cache;
 // No CHAT_CHANGED event needed: the dossier fix is ENTRY-binding, not epoch —
 // getContext() now resolving to chat B is exactly the hazard under test.
-parseQueue[qBase + 1].resolve('{"identity":"UNIVERSE-A person","brief":"built from chat A wikitext"}');
+// v0.68.4: the dossier comes back as long as a real model writes one at its contract's fullest (the owner's workers' model wrote
+// Byakuya's past 4,000 characters), from a provider that writes nothing past the room it was asked for — the room must hold it
+const LONG_DOSSIER = JSON.stringify({ identity: "UNIVERSE-A person", brief: "built from chat A wikitext. " + "Twinname keeps the gate ledger and speaks little, answering questions with questions until trust is earned. ".repeat(9),
+    facts: Array.from({ length: 8 }, (_, i) => `Fact ${i + 1}: Twinname has kept the gate ledger since the winter the river froze, every entry in their own hand, dated to the hour and countersigned by the watch sergeant on duty.`),
+    secrets: Array.from({ length: 4 }, (_, i) => `Secret ${i + 1}: paid a dead sergeant's debt from their own wage and never told the widow where the money came from.`),
+    abilities: Array.from({ length: 4 }, (_, i) => `Gatekeeper's Count ${i + 1}: reads a crowd by its footfall; fails in rain and in silence.`),
+    voice: ['"The ledger does not care who you were yesterday."', '"Ask me again when you have earned it."', '"Every name here cost someone a night."'],
+    dynamics: Object.fromEntries(["Ash", "Bryn", "Cole", "Dara", "Eden"].map(n => [n, `Treats ${n} with a courtesy that never quite reaches warmth, keeps the old ledger debts between them unspoken, and is the first to stand when ${n} enters a room.`])),
+    related: [{ name: "the Watch", why: "the company they keep" }, { name: "the gate", why: "the post they hold" }, { name: "the ledger", why: "their record of debts" }] }, null, 1);
+T("the dossier's request asks for room for the whole answer (v0.68.4)", sentRooms[qBase + 1] * 4 >= LONG_DOSSIER.length);
+parseQueue[qBase + 1].resolve(LONG_DOSSIER.slice(0, (sentRooms[qBase + 1] || 0) * 4));
 await sleep(30);
 T("B's same-named character got NO dossier", !cacheB.twinname.dossier);
 T("B's entry carries no in-flight stamp either", !cacheB.twinname.dossierTs);
 T("the dossier landed on A's entry (the one that asked)", !!(cacheA.twinname.dossier && cacheA.twinname.dossier.identity === "UNIVERSE-A person"));
+T("whole, down to its last facts (v0.68.4)", !!(cacheA.twinname.dossier && cacheA.twinname.dossier.facts.length === 8 && cacheA.twinname.dossier.related.length === 3));
 extension_settings.canon_grounding.llmDossier = false;
 
 console.log("[9] cross-chat write guards (static witnesses)");

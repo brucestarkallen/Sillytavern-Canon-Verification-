@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.68.3";
+const CG_VERSION = "0.68.4";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -3726,6 +3726,16 @@ function dossierDigest(name, wikitext, relRaw) {
     ].filter(l => !/^[A-Z]+: ?$/.test(l)).join("\n");
 }
 
+/* v0.68.4 — THE ROOM A DOSSIER AND A SCENE'S CAST ASK FOR HOLDS THE ANSWER THEIR OWN CONTRACT ASKS FOR. Played on the owner's workers'
+ * model (DeepSeek V4.1 Flash 1017 on synthetic, his Bleach tale through Cozy Tavern with canon on), the dossier's 1,000 tokens cut Byakuya
+ * Kuchiki's, Shunsui Kyōraku's and Shinji Hirako's mid-answer (3 of 9; the six that came whole wrote 500–988) — an object cut short
+ * reads as nothing, so the three never had a dossier, on any page — and the cast's 800 cut the scene's list 7 times in 12 (the salvage
+ * keeps the whole entries before the cut; the least central went). The dossier's contract alone (an identity, a 60–100-word brief, eight
+ * facts, four secrets, four abilities, three quotes, five dynamics, three related) runs past 1,000 at its fullest. A room is a ceiling,
+ * never a cost: the model stops where its answer ends. */
+const DOSSIER_ROOM = 2000;
+const CAST_ROOM = 1600;
+
 /**
  * LLM-curated dossier: instead of injecting regex-extracted section fragments, the
  * model READS the page and writes the injection — identity, load-bearing facts,
@@ -3738,7 +3748,7 @@ function dossierDigest(name, wikitext, relRaw) {
 async function buildDossier(name, wikitext, relRaw) {
     const digest = dossierDigest(name, wikitext, relRaw);
     const systemText = (settings().promptDossier || "").trim() || DEFAULT_PROMPT_DOSSIER;
-    const out = await llmCall(systemText, digest, { maxTokens: 1000, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
+    const out = await llmCall(systemText, digest, { maxTokens: DOSSIER_ROOM, budgetMs: (Number(settings().parserBudgetMs) || 30000) * 2 });
     return parseDossier(out);
 }
 
@@ -4777,7 +4787,7 @@ function needsFirstMeetWait(lastUserMsg, priorMsgs) {
 async function parseSceneCharacters(sceneText, userMsg = "") {
     const systemText = (settings().promptParser || "").trim() || DEFAULT_PROMPT_PARSER;
     const userText = `<scene>\n${sceneText}\n</scene>\n\nJSON array of canon entities to look up:`;
-    const out = await llmCall(systemText, userText, { maxTokens: 800 });
+    const out = await llmCall(systemText, userText, { maxTokens: CAST_ROOM });
     if (!out) return null;        // timeout / no backend / empty output → FAILURE, not "nobody here"
     const cast = parseCast(out);  // [] only when the model explicitly answered []
     if (cast === null) {

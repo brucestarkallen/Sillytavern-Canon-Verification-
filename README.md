@@ -56,6 +56,19 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.68.4 (room for the whole dossier)
+
+Proven by `test/proof.js` (629) and `test/sim.mjs` (457); **1 guard negative-tested** (the sim's new dossier, written as long as a
+real model writes one, from a provider that writes nothing past the room it is asked for: on v0.68.3's room, sim 454/3 failed —
+the room, the dossier landing, its last facts).
+
+Played on the owner's workers' model (DeepSeek V4.1 Flash 1017 through Cozy Tavern, his Bleach tale with canon on), the dossier's
+1,000 tokens cut Byakuya Kuchiki's, Shunsui Kyōraku's and Shinji Hirako's mid-answer (3 of 9; the six that came whole wrote 500–988).
+An object cut short reads as nothing, so those three never had a dossier on any turn, and a retry is cut the same way. The cast
+parser's 800 cut its list 7 times in 12 (the salvage keeps the whole entries before the cut; the least central went). The dossier's
+own contract at its fullest runs past 1,000. Rooms now 2,000 (dossier) and 1,600 (cast) — a ceiling, never a cost: the model stops
+where its answer ends.
+
 ## Changelog — v0.68.3 (one shared source for both hosts)
 
 Proven by `test/proof.js` (629) and `test/sim.mjs` (455), measured from the full suites.
