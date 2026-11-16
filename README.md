@@ -56,6 +56,18 @@ These are the honest rough edges, in priority order for improvement:
    famous real people are usually already correct from the model itself; the
    planned fix there is a lightweight identity *pointer*, not a fact dump.
 
+## Changelog — v0.68.5 (no name across a line break)
+
+Proven by `test/proof.js` (632) and `test/sim.mjs` (457); **2 guards negative-tested** (on v0.68.4's extraction, proof 630/2 failed —
+the title over the user's first word, and a name ending a line).
+
+Seen in Cozy Tavern's log of the owner's Bleach tale: the name finder read a capitalized run across line breaks, so a card's title
+on one line and the user's first word on the next ("Bleach — The Hidden Eye" / "Start the opening scene") were one name, "Hidden Eye
+Start", looked up on the wiki; and a name ending one line took the next line's first word ("Rukia Kuchiki" / "Looked up." became
+"Rukia Kuchiki Looked" — a page that does not exist, in place of hers). A name now keeps to its line, and a line's first word opens
+a sentence like any other (the blanks trimmed before the sentence test took the line break with them). A whole name opening a line
+is still found.
+
 ## Changelog — v0.68.4 (room for the whole dossier)
 
 Proven by `test/proof.js` (629) and `test/sim.mjs` (457); **1 guard negative-tested** (the sim's new dossier, written as long as a

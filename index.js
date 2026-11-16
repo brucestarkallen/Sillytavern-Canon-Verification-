@@ -96,7 +96,7 @@ let lastReasons = [];        // reasons SNAPSHOT taken with the injected note, s
 let chatEpoch = 0;          // bumped on CHAT_CHANGED — async work from an older epoch is discarded
 let parseSerial = 0;        // monotonically increasing parse id — only the LATEST parse may apply
 const INJECT_KEY = "CANON_GROUNDING";
-const CG_VERSION = "0.68.4";
+const CG_VERSION = "0.68.5";
 // Tag set on the legacy chat-spliced canon note (old-ST fallback when
 // setExtensionPrompt is unavailable) so every later pass can find and remove it.
 const FALLBACK_TAG = "canon_grounding_fallback";
@@ -713,7 +713,11 @@ function extractCandidateNames(text) {
     // Unicode letters throughout — "Ayanokōji" and "Tōshirō" are ONE token, not
     // ASCII fragments. \b is ASCII-blind (it fails after a trailing ō), so explicit
     // letter lookarounds mark the word edges instead.
-    const capRe = /(?<![\p{L}\p{M}])(\p{Lu}[\p{Ll}\p{M}][\p{L}\p{M}'’-]*(?:\s+\p{Lu}[\p{Ll}\p{M}][\p{L}\p{M}'’-]*){0,3})(?![\p{L}\p{M}])/gu;
+    // A name never runs across a line break: a card's title on one line and the
+    // user's first word on the next ("The Hidden Eye" / "Start the opening scene")
+    // were read as one name, "Hidden Eye Start", and a name ending one line took the
+    // next line's first word ("Rukia Kuchiki" / "Looked up." → "Rukia Kuchiki Looked").
+    const capRe = /(?<![\p{L}\p{M}])(\p{Lu}[\p{Ll}\p{M}][\p{L}\p{M}'’-]*(?:[^\S\r\n]+\p{Lu}[\p{Ll}\p{M}][\p{L}\p{M}'’-]*){0,3})(?![\p{L}\p{M}])/gu;
     let m;
     while ((m = capRe.exec(clean)) !== null) {
         let words = m[1].trim().split(/\s+/).map(normalizeNameWord).filter(w => w.length >= 2);
@@ -728,8 +732,11 @@ function extractCandidateNames(text) {
             // that sit MID-sentence — which a stripped leading stopword also proves
             // ("Then Cid" ⇒ "Cid" was mid-phrase even though the MATCH starts the line).
             if (!hadLeading) {
-                const before = clean.slice(0, m.index).replace(/\s+$/, "");
-                if (before === "" || /[.!?:;\n"”)]$/.test(before)) continue;
+                const lead = clean.slice(0, m.index);
+                const before = lead.replace(/\s+$/, "");
+                // A line's first word opens a sentence too: trimming the blanks before
+                // it took its line break with them, so the test above never saw it.
+                if (before === "" || /[.!?:;\n"”)]$/.test(before) || /\n[^\S\n]*$/.test(lead)) continue;
             }
         }
         out.add(words.join(" "));

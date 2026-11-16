@@ -132,6 +132,9 @@ T("McGonagall extracted whole (was 'Gonagall')", api.extractCandidateNames("She 
 T("DxD extracted (was missed)", api.extractCandidateNames("The world of DxD is dangerous.").includes("DxD"));
 eq("honorific stripped", api.extractCandidateNames("He waved at Alya-chan warmly."), ["Alya"]);
 eq("possessive stripped", api.extractCandidateNames("He took Cid's sword away."), ["Cid"]);
+eq("no name across a line break (title over the user's first word)", api.extractCandidateNames("Bleach — The Hidden Eye\nStart the opening scene of the plot essential"), ["Hidden Eye"]);
+eq("a name ending a line keeps to its line", api.extractCandidateNames("Rukia Kuchiki\nLooked up."), ["Rukia Kuchiki"]);
+eq("a whole name opening a line is still found", api.extractCandidateNames("Silence in the hall\nByakuya Kuchiki stayed by the doors."), ["Byakuya Kuchiki"]);
 T("contraction → stopword filtered", api.extractCandidateNames("Later He'll return to town.").length === 0);
 T("ALLCAPS shouting excluded", api.extractCandidateNames("She screamed STOP RIGHT THERE loudly.").length === 0);
 eq("lowercase short question", api.extractCandidateNames("whats rose oriana hair color"), ["rose oriana"]);
